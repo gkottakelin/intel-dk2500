@@ -52,7 +52,7 @@
 | 彩色图 | Windows 阶段优先使用 UVC/OpenCV |
 | 深度图 | Windows 阶段优先使用 OpenNI |
 | 点云 | 参考 OpenNI `GeneratePointCloud` 示例 |
-| 点云可视化 | 使用 `pointcloud_viewer.py` 打开最新 `.ply` 并支持旋转、缩放 |
+| 点云可视化 | 使用 `run_openni_sample.py pointcloud-viewer` 连续生成并显示 Viewer 风格点云 |
 | RGB-D 融合 | 后续做 ROI 深度统计、坐标反投影和手眼标定 |
 | DK2500 迁移 | 在 Ubuntu + ROS2 环境中使用 Orbbec ROS2 wrapper |
 | GitHub 管理 | 上传 `project/` 和依赖清单，不直接上传 `.venv-gemini/` |
