@@ -1,0 +1,10 @@
+# Snapshot of packages observed in D:\jetarm\.venv-gemini.
+# This is a reference snapshot, not a recommendation to commit the venv itself.
+av==12.3.0
+numpy==2.4.6
+opencv-python==4.13.0.92
+pygame==2.6.1
+pynput==1.8.2
+pyorbbecsdk2==2.1.1
+six==1.17.0
+
