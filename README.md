@@ -35,6 +35,7 @@
 | `docs/GeminiProPlus_Windows_OpenNI资料定位.md` | Windows 资料包中 OpenNI 示例、源码和运行方式定位 |
 | `src/gemini_windows/README.md` | 第二阶段 Windows SDK/OpenNI/UVC 数据读取代码说明 |
 | `src/gemini_windows/run_openni_sample.py` | 运行 Windows OpenNI 示例程序 |
+| `src/gemini_windows/depth_viewer.py` | 深度伪彩可视化 Viewer，默认开启激光、关闭 LDP/近距离保护 |
 | `src/gemini_windows/opencv_uvc_color_test.py` | 使用 OpenCV 读取 Gemini Pro Plus 的 UVC 彩色画面 |
 | `src/gemini_windows/pointcloud_viewer.py` | 可视化 OpenNI 生成的 `.ply` 点云文件 |
 | `src/gemini_windows/windows_usb_check.py` | Windows PnP/USB 层面的相机检查脚本 |
@@ -51,6 +52,7 @@
 | 舵机控制 | Python 串口协议控制，后续封装为 ROS2 节点 |
 | 彩色图 | Windows 阶段优先使用 UVC/OpenCV |
 | 深度图 | Windows 阶段优先使用 OpenNI |
+| 深度可视化 | 使用 `run_openni_sample.py depth-viewer` 显示深度伪彩图 |
 | 点云 | 参考 OpenNI `GeneratePointCloud` 示例 |
 | 点云可视化 | 使用 `run_openni_sample.py pointcloud-viewer` 连续生成并显示 Viewer 风格点云 |
 | RGB-D 融合 | 后续做 ROI 深度统计、坐标反投影和手眼标定 |

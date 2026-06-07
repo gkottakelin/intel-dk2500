@@ -34,6 +34,7 @@ SAMPLES = {
 }
 
 PYTHON_SAMPLES = {
+    "depth-viewer": ["depth_viewer.py"],
     "pointcloud-viewer": ["pointcloud_viewer.py", "--live"],
     "pointcloud-watch": ["pointcloud_viewer.py", "--watch"],
 }
@@ -95,4 +96,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
