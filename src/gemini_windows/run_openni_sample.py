@@ -28,15 +28,24 @@ SAMPLES = {
     "infrared": "InfraredReaderPoll.exe",
     "infrared-event": "InfraredReaderEvent.exe",
     "viewer": "SimpleViewer.exe",
+    "depth-viewer": "SimpleViewer.exe",
     "pointcloud": "GeneratePointCloud.exe",
     "multi-depth": "MultiDepthViewer.exe",
     "extended-api": "ExtendedAPI.exe",
 }
 
 PYTHON_SAMPLES = {
-    "depth-viewer": ["depth_viewer.py"],
     "pointcloud-viewer": ["pointcloud_viewer.py", "--live"],
     "pointcloud-watch": ["pointcloud_viewer.py", "--watch"],
+}
+
+DEFAULT_ARGS = {
+    # SimpleViewer.exe [0:Non UVC/1:UVC] [colorMirror: 0/1]
+    # In SimpleViewer/main.cpp, colorMirror=1 triggers cv::flip(depth, 1).
+    # Gemini Pro Plus color is commonly mirrored through UVC on this setup.
+    # Passing "1 1" makes SimpleViewer flip the aligned depth layer to match RGB.
+    "viewer": ["1", "1"],
+    "depth-viewer": ["1", "1"],
 }
 
 
@@ -57,28 +66,40 @@ def run_python_sample(sample: str, extra_args: list[str]) -> None:
     subprocess.run(command, cwd=str(ROOT), check=False)
 
 
+def sample_args(sample: str, extra_args: list[str]) -> list[str]:
+    if extra_args:
+        return extra_args
+    return DEFAULT_ARGS.get(sample, [])
+
+
 def run_openni_sample(sample: str, extra_args: list[str]) -> None:
     exe = BIN_DIR / SAMPLES[sample]
     if not exe.exists():
         raise FileNotFoundError(f"未找到示例程序：{exe}")
 
+    actual_args = sample_args(sample, extra_args)
+
     print(f"OpenNI SDK: {OPENNI_ROOT}")
     print(f"运行示例: {exe.name}")
+    if actual_args:
+        print(f"示例参数: {' '.join(actual_args)}")
     print("提示：请先关闭 Orbbec Viewer；按任意键或 ESC 可退出部分示例。")
 
     if sample in {"color", "color-event"}:
         print("注意：Gemini Pro Plus 的彩色头在 Windows 下通常是 UVC 设备；如本示例启动失败，请使用 color-uvc。")
     if sample == "color-uvc":
         print("说明：color-uvc 通过 UVC 读取彩色 MJPEG/YUV，更适合当前 Gemini Pro Plus。")
-    if sample == "viewer":
-        print("说明：viewer 是 RGB-D 二维对齐叠加显示，不是三维点云显示。")
+    if sample in {"viewer", "depth-viewer"}:
+        print("说明：该入口使用官方 OpenNI SimpleViewer 框架显示 RGB-D 对齐叠加。")
+        print("默认参数为 1 1，用于修正当前 UVC 彩色图像镜像导致的黄色深度层左右反相。")
+        print("若你的设备画面不需要镜像修正，可运行：viewer 1 0 或 depth-viewer 1 0。")
     if sample == "pointcloud":
         print("说明：GeneratePointCloud.exe 官方示例只生成 50 帧，到 50 帧会自动停止。")
         print("如需 Viewer 风格的连续点云可视化，请运行：")
         print("python project/src/gemini_windows/run_openni_sample.py pointcloud-viewer")
     print("")
 
-    subprocess.run([str(exe), *extra_args], cwd=str(BIN_DIR), env=openni_env(), check=False)
+    subprocess.run([str(exe), *actual_args], cwd=str(BIN_DIR), env=openni_env(), check=False)
 
 
 def main() -> None:
