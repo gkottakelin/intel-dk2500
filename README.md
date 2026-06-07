@@ -36,6 +36,7 @@
 | `src/gemini_windows/README.md` | 第二阶段 Windows SDK/OpenNI/UVC 数据读取代码说明 |
 | `src/gemini_windows/run_openni_sample.py` | 运行 Windows OpenNI 示例程序 |
 | `src/gemini_windows/opencv_uvc_color_test.py` | 使用 OpenCV 读取 Gemini Pro Plus 的 UVC 彩色画面 |
+| `src/gemini_windows/pointcloud_viewer.py` | 可视化 OpenNI 生成的 `.ply` 点云文件 |
 | `src/gemini_windows/windows_usb_check.py` | Windows PnP/USB 层面的相机检查脚本 |
 | `tests/test_bus_servo.py` | 舵机协议帧、校验和状态解析单元测试 |
 
@@ -51,7 +52,7 @@
 | 彩色图 | Windows 阶段优先使用 UVC/OpenCV |
 | 深度图 | Windows 阶段优先使用 OpenNI |
 | 点云 | 参考 OpenNI `GeneratePointCloud` 示例 |
+| 点云可视化 | 使用 `pointcloud_viewer.py` 打开最新 `.ply` 并支持旋转、缩放 |
 | RGB-D 融合 | 后续做 ROI 深度统计、坐标反投影和手眼标定 |
 | DK2500 迁移 | 在 Ubuntu + ROS2 环境中使用 Orbbec ROS2 wrapper |
 | GitHub 管理 | 上传 `project/` 和依赖清单，不直接上传 `.venv-gemini/` |
-
