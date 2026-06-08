@@ -62,14 +62,14 @@ class JointControllerTest(unittest.TestCase):
         self.assertEqual(self.config["joints"]["joint5_wrist_roll"]["control_mode"], "motor")
 
     def test_j2_segmented_run_time_profile(self):
-        command = self.planner.plan_target("J2", 800, current_positions={"j2": 500})
+        command = self.planner.plan_target("J2", 875, current_positions={"j2": 500})
         small = self.planner.plan_target("J2", 520, current_positions={"j2": 500})
         micro = self.planner.plan_target("J2", 508, current_positions={"j2": 500})
 
         self.assertIsInstance(command, ServoMoveCommand)
         self.assertEqual(command.servo_id, 2)
-        self.assertEqual(command.target_position, 800)
-        self.assertEqual(command.run_time_ms, 3000)
+        self.assertEqual(command.target_position, 875)
+        self.assertEqual(command.run_time_ms, 3750)
         self.assertEqual(small.run_time_ms, 4)
         self.assertEqual(micro.run_time_ms, 1)
 
@@ -95,7 +95,7 @@ class JointControllerTest(unittest.TestCase):
         j5 = self.planner.plan_angle_target("J5", -60.0, current_positions={"j5": 500})
 
         self.assertEqual(j1.target_position, 550)
-        self.assertEqual(j2.target_position, 800)
+        self.assertEqual(j2.target_position, 875)
         self.assertEqual(j4.target_position, 500)
         self.assertEqual(j5.target_position, 250)
 

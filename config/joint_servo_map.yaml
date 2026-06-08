@@ -95,14 +95,14 @@ joints:
     position:
       min: 500
       vertical: 500
-      max: 800
+      max: 875
     angle:
       min_deg: 0
       vertical_deg: 0
       max_deg: 90
       position_500_deg: 0
-      position_800_deg: 90
-      deg_per_position_unit: 0.30
+      position_875_deg: 90
+      deg_per_position_unit: 0.24
     observed_motion:
       position_decrease: moves_up
       position_increase: moves_down_or_away_from_vertical
