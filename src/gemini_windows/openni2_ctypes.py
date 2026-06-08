@@ -294,10 +294,13 @@ class OpenNI2:
         )
         return int(data.value) if rc == ONI_STATUS_OK else None
 
-    def configure_laser_and_ldp(self, *, laser_on: bool, ldp_on: bool) -> None:
+    def configure_laser_and_ldp(self, *, laser_on: bool, close_range_protection_off: bool) -> None:
+        # Gemini Pro Plus on this Windows driver is inverted from the label in
+        # some samples: writing LDP=1 disables near-range protection.
+        ldp_raw_value = int(close_range_protection_off)
         self.set_device_int(OBEXTENSION_ID_LASER_EN, int(laser_on), "laser emitter enable")
-        if not self.set_device_int(OBEXTENSION_ID_LDP_EN, int(ldp_on), "LDP / close-range protection"):
-            self.set_device_int(XN_MODULE_PROPERTY_LDP_ENABLE, int(ldp_on), "legacy LDP / close-range protection")
+        if not self.set_device_int(OBEXTENSION_ID_LDP_EN, ldp_raw_value, "LDP raw value / near protection off"):
+            self.set_device_int(XN_MODULE_PROPERTY_LDP_ENABLE, ldp_raw_value, "legacy LDP raw value / near protection off")
 
     def create_stream(
         self,

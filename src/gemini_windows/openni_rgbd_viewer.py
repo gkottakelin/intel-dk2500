@@ -256,7 +256,10 @@ def run_viewer(args) -> None:
 
         import cv2
 
-        device.configure_laser_and_ldp(laser_on=not args.laser_off, ldp_on=args.ldp_on)
+        device.configure_laser_and_ldp(
+            laser_on=not args.laser_off,
+            close_range_protection_off=not args.near_protection_on,
+        )
         depth_stream, ir_stream = create_streams(device, args)
         openni_streams = [depth_stream] + ([ir_stream] if ir_stream is not None else [])
 
@@ -362,7 +365,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--no-ir", action="store_true")
     parser.add_argument("--laser-off", action="store_true", help="Do not enable the laser emitter at startup.")
-    parser.add_argument("--ldp-on", action="store_true", help="Keep LDP / close-range protection enabled.")
+    parser.add_argument(
+        "--ldp-on",
+        dest="near_protection_on",
+        action="store_false",
+        default=False,
+        help="Compatibility flag: on this Gemini/driver, LDP raw value 1 disables near-range protection.",
+    )
+    parser.add_argument(
+        "--near-protection-on",
+        action="store_true",
+        default=False,
+        help="Enable near-range protection. Default is off, matching the verified Orbbec Viewer setup.",
+    )
     parser.add_argument("--no-color-auto-exposure", action="store_true")
     parser.add_argument("--mirror-color", action="store_true")
     parser.add_argument("--mirror-depth", action="store_true")
