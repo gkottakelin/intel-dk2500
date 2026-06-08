@@ -1,0 +1,347 @@
+# JetArm joint-to-servo map.
+# Sources:
+# - Visual inspection of the three arm photos provided on 2026-06-08.
+# - User-provided measured servo IDs, ranges, angle ranges, and motion notes.
+
+metadata:
+  version: 0.2
+  status: measured_partial
+  default_com_port: COM15
+  baudrate: 115200
+  position_unit: servo_raw_0_to_1000
+  angle_unit: deg
+  notes:
+    - Joint 6 is the gripper open/close servo, not an arm pose DOF.
+    - Angle mappings below use the user-provided endpoint ranges.
+    - URDF axis signs still need final validation against real small-step motion.
+    - J2 has special torque constraints and must not be driven in motor mode.
+    - J6 uses motor mode during grasp; stable position means the fingers touched an object.
+    - Camera structure/calibration data is intentionally kept in a separate YAML file.
+    - Gripper geometry is not modeled for now; use the measured grasp point directly.
+    - Except for J2, observed joint position error is negligible for current debugging.
+
+coordinate_convention:
+  base_link:
+    x: arm_forward
+    y: arm_left
+    z: up
+  urdf_axis_guess_note: >
+    Axis guesses assume a common ROS-style base frame where +Z is vertical,
+    +X points forward from the base, and +Y points to the robot left.
+
+groups:
+  arm:
+    joints:
+      - joint1_base_yaw
+      - joint2_shoulder_pitch
+      - joint3_elbow_pitch
+      - joint4_wrist_pitch
+      - joint5_wrist_roll
+  gripper:
+    joints:
+      - joint6_gripper
+
+joints:
+  joint1_base_yaw:
+    servo_id: 1
+    function: base_yaw
+    role: arm_pose
+    control_mode: servo
+    inferred_from: lower circular turntable/base servo in images 1 and 2
+    confidence: high
+    motion_description: whole arm rotates left/right around the vertical base axis
+    urdf_axis_guess_xyz: [0, 0, 1]
+    position:
+      min: 0
+      center: 500
+      max: 1000
+    angle:
+      min_deg: -120
+      center_deg: 0
+      max_deg: 120
+      position_0_deg: -120
+      position_500_deg: 0
+      position_1000_deg: 120
+      deg_per_position_unit: 0.24
+    observed_motion:
+      position_decrease: counterclockwise_rotation
+      position_increase: clockwise_rotation
+      viewpoint: from_above_assumed
+    drive_constraints:
+      allowed_mode: servo
+      motion_profile:
+        large_motion:
+          condition: abs(delta_position) > 30
+          position_delta_over_run_time_ms_min: 0.1
+        small_motion:
+          condition: abs(delta_position) < 30
+          position_delta_over_run_time_ms_min: 1.0
+        note: values recorded from user guidance; interpret before generating run_time_ms
+    urdf_positive_motion: counterclockwise_rotation_from_above_right_hand_rule
+    direction_sign: -1
+    home_position: 500
+    limit_test_required: false
+
+  joint2_shoulder_pitch:
+    servo_id: 2
+    function: shoulder_pitch
+    role: arm_pose
+    control_mode: servo_only
+    motor_mode_allowed: false
+    inferred_from: lower side servo above the base, driving the first arm link
+    confidence: medium_high
+    motion_description: first arm link swings forward/backward and raises/lowers the arm
+    urdf_axis_guess_xyz: [0, 1, 0]
+    position:
+      min: 500
+      vertical: 500
+      max: 800
+    angle:
+      min_deg: 0
+      vertical_deg: 0
+      max_deg: 90
+      position_500_deg: 0
+      position_800_deg: 90
+      deg_per_position_unit: 0.30
+    observed_motion:
+      position_decrease: moves_up
+      position_increase: moves_down_or_away_from_vertical
+      note: >
+        User confirmed 500 -> 800 moves downward / away from vertical.
+    drive_constraints:
+      reason: high_torque_joint
+      allowed_mode: servo
+      forbidden_mode: motor
+      position_delta_over_run_time_ms_approx: 20
+      position_delta_over_run_time_ms_confirmed: true
+      run_time_formula: max(abs(delta_position) / 20, 1)
+      motion_profile:
+        large_motion:
+          condition: abs(delta_position) > 20
+          min_delta_position_exclusive: 20
+          position_delta_over_run_time_ms_min: 0.1
+        small_motion:
+          condition: 10 < abs(delta_position) <= 20
+          min_delta_position_exclusive: 10
+          max_delta_position_inclusive: 20
+          position_delta_over_run_time_ms_min: 5.0
+        micro_motion:
+          condition: abs(delta_position) <= 10
+          max_delta_position_inclusive: 10
+          position_delta_over_run_time_ms_min: 20.0
+        note: >
+          User text repeated 10 < delta < 20 for both small and micro motion;
+          micro motion is interpreted as abs(delta_position) <= 10.
+      run_time_ms_min: 1
+      run_time_rounding: ceil_to_integer_ms
+      interpretation_needs_confirmation: false
+      near_90_deg_position_error: 10
+      near_90_deg_error_reason: torque_load
+    urdf_positive_motion: position_increase_moves_down_or_away_from_vertical
+    direction_sign: 1
+    home_position: 500
+    limit_test_required: false
+
+  joint3_elbow_pitch:
+    servo_id: 3
+    function: elbow_pitch
+    role: arm_pose
+    control_mode: servo
+    inferred_from: middle circular horn on the elbow side plate in images 1 and 2
+    confidence: high
+    motion_description: forearm bends/extends relative to upper arm
+    urdf_axis_guess_xyz: [0, 1, 0]
+    position:
+      min: 0
+      center: 500
+      max: 1000
+    angle:
+      min_deg: -120
+      center_deg: 0
+      max_deg: 120
+      position_0_deg: -120
+      position_500_deg: 0
+      position_1000_deg: 120
+      deg_per_position_unit: 0.24
+    observed_motion:
+      position_decrease: moves_up
+      position_increase: moves_down
+    drive_constraints:
+      allowed_mode: servo
+      motion_profile:
+        large_motion:
+          condition: abs(delta_position) > 30
+          position_delta_over_run_time_ms_min: 0.1
+        small_motion:
+          condition: abs(delta_position) < 30
+          position_delta_over_run_time_ms_min: 1.0
+        note: values recorded from user guidance; interpret before generating run_time_ms
+    urdf_positive_motion: position_increase_moves_down
+    direction_sign: 1
+    home_position: 500
+    limit_test_required: false
+
+  joint4_wrist_pitch:
+    servo_id: 4
+    function: wrist_pitch
+    role: arm_pose
+    control_mode: servo
+    inferred_from: upper green side plate circular horn near the wrist in images 1 and 2
+    confidence: high
+    motion_description: wrist pitches up/down relative to the forearm
+    urdf_axis_guess_xyz: [0, 1, 0]
+    position:
+      min: 100
+      center: 500
+      max: 1000
+    angle:
+      min_deg: -96
+      center_deg: 0
+      max_deg: 120
+      position_100_deg: -96
+      position_500_deg: 0
+      position_1000_deg: 120
+      deg_per_position_unit: 0.24
+    observed_motion:
+      position_decrease: moves_up
+      position_increase: moves_down
+    drive_constraints:
+      allowed_mode: servo
+      motion_profile:
+        large_motion:
+          condition: abs(delta_position) > 30
+          position_delta_over_run_time_ms_min: 0.1
+        small_motion:
+          condition: abs(delta_position) < 30
+          position_delta_over_run_time_ms_min: 1.0
+        note: values recorded from user guidance; interpret before generating run_time_ms
+    urdf_positive_motion: position_increase_moves_down
+    direction_sign: 1
+    home_position: 500
+    limit_test_required: false
+
+  joint5_wrist_roll:
+    servo_id: 5
+    function: wrist_roll
+    role: arm_pose
+    control_mode: motor
+    inferred_from: HX-12H servo inside the top green U bracket in image 3
+    confidence: medium_high
+    motion_description: gripper assembly rotates around the tool/forearm axis
+    urdf_axis_guess_xyz: [1, 0, 0]
+    axis_frame: local_tool_frame_guess
+    position:
+      min: 250
+      center: 500
+      max: 750
+    angle:
+      min_deg: -60
+      center_deg: 0
+      max_deg: 60
+      position_250_deg: -60
+      position_500_deg: 0
+      position_750_deg: 60
+      deg_per_position_unit: 0.24
+    observed_motion:
+      position_decrease: counterclockwise_rotation
+      position_increase: clockwise_rotation
+      viewpoint: gripper_front_or_tool_axis_view_needs_confirmation
+    drive_constraints:
+      allowed_mode: motor
+      motor_speed_negative: -100
+      motor_speed_positive: 100
+    urdf_positive_motion: counterclockwise_rotation_by_right_hand_rule_about_local_tool_x
+    direction_sign: -1
+    home_position: 500
+    limit_test_required: false
+
+  joint6_gripper:
+    servo_id: 10
+    function: gripper_open_close
+    role: end_effector
+    control_mode: motor_for_grasp
+    inferred_from: front black servo and four-bar gripper linkage in image 3
+    confidence: high
+    motion_description: two gripper fingers open/close through a four-bar linkage
+    urdf_axis_guess_xyz: null
+    urdf_model_hint: model as gripper/finger mimic joints, not as an arm planning DOF
+    modeling_strategy: do_not_model_gripper_geometry_for_now
+    position:
+      min: 100
+      max: 700
+    gripper_positions:
+      open_approx: 100
+      closed_approx: 700
+    observed_motion:
+      position_increase: gripper_tightens
+      position_decrease: gripper_opens
+    grasp_detection:
+      mode: motor_position_stall
+      rule: position_stable_means_object_contact
+      force_control_note: higher_motor_speed_means_higher_grip_force
+      soft_grip_speed: 100
+      firm_grip_speed: 200
+      stable_duration_s: 2.0
+      stable_tolerance_position_units: 5
+    release:
+      mode: motor_until_position
+      motor_speed: -100
+      target_position: 100
+      stop_tolerance_position_units: 5
+      timeout_s: 5.0
+      stop_rule: stop_when_position_less_than_or_equal_target
+    direction_sign: null
+    home_position: 500
+    limit_test_required: true
+
+robot_geometry:
+  units: m
+  source: user_measurements
+  pose_context: vertical_home_pose
+  table_plane:
+    frame: base_link
+    equation: z = 0
+    z: 0.0
+  joint_origins_xyz:
+    joint1_base_yaw: [0.0, 0.0, 0.0]
+    joint2_shoulder_pitch: [0.0, 0.0, 0.105]
+    joint3_elbow_pitch: [0.0, 0.0, 0.235]
+    joint4_wrist_pitch: [0.0, 0.0, 0.365]
+    joint5_wrist_roll: [0.0, 0.0, 0.425]
+    grasp_point: [0.0, 0.0, 0.527]
+  joint2_height: 0.105
+  joint2_to_joint3_link_length: 0.13
+  joint3_to_joint4_link_length: 0.13
+  joint4_to_joint5_wrist_rotation_center: 0.06
+  joint5_to_joint6_grasp_point: 0.102
+  tool0_to_tcp_offset_xyz_m: [0.0, 0.0, 0.527]
+  tool0_to_tcp_note: directly equal to the measured grasp point for current debugging
+  gripper_modeling:
+    enabled: false
+    grasp_point_xyz: [0.0, 0.0, 0.527]
+    note: fine offsets will be adjusted during real operation
+
+error_model:
+  joint2:
+    near_90_deg_position_error: 10
+    reason: torque_load
+  other_joints:
+    position_error: negligible_for_current_debugging
+
+remaining_required_measurements:
+  per_joint:
+    - urdf_axis_sign_after_small_step_test
+    - safe_home_position_if_different_from_center
+    - validate_servo_motion_profile_thresholds
+  robot_geometry:
+    - confirm_tool0_frame_definition_when_building_urdf
+  calibration:
+    - camera data is tracked separately in camera_structure.yaml
+
+recommended_validation:
+  first_step: read all servo positions without moving
+  second_step: move one servo at a time by a very small increment
+  third_step: never use motor-mode limit testing on joint2
+  fourth_step: use motor-mode stable-position detection for joint6 grasp contact
+  dry_run_example: python project\src\servo_limit_tester.py --servo-id 10 --direction positive
+  confirmed_gripper_example: python project\src\servo_limit_tester.py --servo-id 10 --direction positive --speed 20 --confirm

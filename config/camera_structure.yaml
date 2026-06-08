@@ -1,0 +1,43 @@
+# JetArm camera structure and calibration data.
+# This file is intentionally separate from joint_servo_map.yaml.
+
+metadata:
+  version: 0.1
+  status: placeholder
+  camera_model: Gemini Pro Plus
+  notes:
+    - Fill this after the arm-only debugging stage is stable.
+    - Keep camera mounting, intrinsics, extrinsics, and hand-eye calibration here.
+
+camera_mount:
+  type: null  # eye_to_hand or eye_in_hand
+  mounted_on: null
+  description: null
+
+frames:
+  color_frame: camera_color_optical_frame
+  depth_frame: camera_depth_optical_frame
+  target_base_frame: base_link
+
+intrinsics:
+  color: null
+  depth: null
+
+extrinsics:
+  camera_to_base_link: null
+  camera_to_tool0: null
+
+depth_alignment:
+  mode: null
+  color_to_depth_offset_px:
+    x: null
+    y: null
+
+calibration_targets:
+  table_plane:
+    frame: base_link
+    equation: z = 0
+  hand_eye:
+    method: null
+    sample_count: null
+    reprojection_error: null
