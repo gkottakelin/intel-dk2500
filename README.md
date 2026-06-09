@@ -1,56 +1,66 @@
 # AI 视觉自然语言机械臂开发文件夹
 
-`project/` 是本项目的开发工作区，用于集中保存架构规划、资料索引、源代码、配置、测试、阶段总结和后续 ROS2/DK2500 迁移内容。
+`project/` 是 JetArm 机械臂项目的开发工作区，用于集中保存当前 RGB 视觉闭环方案、源码、ROS2 机械臂描述、配置、测试和阶段总结。
+
+## 当前唯一主线
+
+```text
+自然语言任务
+-> 云端大模型解析/目标检测
+-> 本地 RGB 彩色图视觉闭环
+-> J1-J5 servo 运动规划
+-> J6 motor 夹取/释放
+-> 任务完成后回 home
+```
+
+当前方案只读取 RGB 彩色图。
+
+home 位置：
+
+```text
+J1=500, J2=550, J3=550, J4=900, J5=500, J6=360
+```
 
 ## 目录结构
 
 | 目录 | 用途 |
 |---|---|
-| `项目架构规划/` | 项目总体架构规划和资料并入索引 |
-| `docs/` | 开发说明、接口说明、相机调试文档 |
-| `src/` | Python/ROS2/算法/应用源代码 |
-| `src/gemini_windows/` | Windows 阶段 Gemini Pro Plus RGB-D 数据读取和调试代码 |
+| `项目架构规划/` | 当前项目架构、资料索引和主路线说明 |
+| `docs/` | 当前运动规划、舵机接口和文档索引 |
+| `src/` | Python/ROS2/算法/应用源码 |
+| `ros2_ws/src/jetarm_description/` | ROS2 Humble 机械臂 URDF/Xacro、RViz 显示和 J6 夹爪映射 |
 | `tests/` | 单元测试、集成测试、硬件链路测试 |
-| `config/` | 相机、手眼标定、舵机限位、AI 模型等配置 |
+| `config/` | 相机、舵机限位、AI 模型、视觉闭环参数等配置 |
 | `launch/` | 后续 ROS2 启动文件 |
 | `scripts/` | 环境配置、设备检查、调试脚本 |
-| `data/` | RGB-D 样本、标定数据、实验数据 |
+| `data/` | RGB 样本、标定数据、实验数据 |
 
 ## 当前关键文件
 
 | 文件 | 说明 |
 |---|---|
-| `项目进度总结.md` | 当前项目完成情况、未完成任务、下一阶段建议 |
-| `项目方法总结.md` | 项目中使用的方法、解决的问题和实现的功能 |
-| `GitHub仓库准备说明.md` | GitHub 建仓、提交内容和虚拟环境处理建议 |
-| `环境重建说明.md` | 如何重新创建 `.venv-gemini` 开发环境 |
-| `requirements.txt` | 项目运行依赖 |
-| `requirements-venv-gemini.txt` | 当前 `.venv-gemini` 依赖快照 |
-| `项目架构规划/AI视觉自然语言机械臂项目架构规划.md` | 项目总体蓝图 |
-| `项目架构规划/资料并入索引.md` | 相关资料在工作区中的位置索引 |
-| `src/bus_servo.py` | 基于总线舵机协议的 Python 串口控制接口，默认 `115200bps` |
+| `docs/README.md` | 文档索引和当前主线说明 |
+| `docs/视觉闭环运动规划开发方案.md` | 当前 RGB-only 视觉闭环运动规划主方案 |
 | `docs/总线舵机Python控制接口.md` | 舵机状态读取、servo 模式、motor 模式接口说明 |
-| `docs/GeminiProPlus深度相机Windows使用说明.md` | Windows 上位机观察 Gemini Pro Plus 和 RGB-D 数据处理说明 |
-| `docs/Gemini相机分步开发步骤.md` | Gemini Pro Plus 从 Windows 验证到 ROS2/DK2500 迁移的阶段计划 |
-| `docs/GeminiProPlus_Windows_OpenNI资料定位.md` | Windows 资料包中 OpenNI 示例、源码和运行方式定位 |
-| `src/gemini_windows/README.md` | 第二阶段 Windows SDK/OpenNI/UVC 数据读取代码说明 |
-| `src/gemini_windows/run_openni_sample.py` | 运行 Windows OpenNI 示例程序；`viewer/depth-viewer` 默认使用官方 `SimpleViewer.exe 1 1` |
-| `src/gemini_windows/opencv_uvc_color_test.py` | 使用 OpenCV 读取 Gemini Pro Plus 的 UVC 彩色画面 |
-| `src/gemini_windows/pointcloud_viewer.py` | 可视化 OpenNI 生成的 `.ply` 点云文件 |
-| `src/gemini_windows/windows_usb_check.py` | Windows PnP/USB 层面的相机检查脚本 |
+| `机械臂开发规划.md` | 下一阶段机械臂运动规划和视觉闭环开发路线 |
+| `使用手册.md` | 当前代码、ROS2 显示包、舵机调试入口 |
+| `项目进度总结.md` | 当前项目完成情况、未完成任务、下一阶段建议 |
+| `项目方法总结.md` | 当前项目采用的方法、解决的问题和实现的功能 |
+| `项目架构规划/AI视觉自然语言机械臂项目架构规划.md` | 当前总体蓝图 |
+| `项目架构规划/资料并入索引.md` | 当前资料入口索引 |
+| `ros2_ws/src/jetarm_description/README.md` | ROS2 机械臂描述、J6 夹爪映射和 RViz 显示说明 |
+| `src/bus_servo.py` | 基于总线舵机协议的 Python 串口控制接口，默认 `115200bps` |
 | `tests/test_bus_servo.py` | 舵机协议帧、校验和状态解析单元测试 |
+| `tests/test_urdf_description.py` | ROS2 机械臂描述、J6 夹爪和 launch 参数测试 |
 
 ## 当前技术路线
 
 | 链路 | 当前策略 |
 |---|---|
 | 舵机控制 | Python 串口协议控制，后续封装为 ROS2 节点 |
-| 彩色图 | Windows 阶段优先使用 UVC/OpenCV |
-| 深度图 | Windows 阶段优先使用 OpenNI |
-| RGB-D 对齐可视化 | 使用 `run_openni_sample.py viewer` / `depth-viewer` 调用官方 `SimpleViewer.exe` |
-| 镜像修正 | 默认传入 `SimpleViewer.exe 1 1`，修正黄色深度层和 RGB 左右反相 |
-| 点云 | 参考 OpenNI `GeneratePointCloud` 示例生成 `.ply` |
-| 点云可视化 | 使用 `run_openni_sample.py pointcloud-viewer` 连续生成并显示 Viewer 风格点云 |
-| RGB-D 融合 | 后续做 ROI 深度统计、坐标反投影和手眼标定 |
-| DK2500 迁移 | 在 Ubuntu + ROS2 环境中使用 Orbbec ROS2 wrapper |
-| GitHub 管理 | 上传 `project/` 和依赖清单，不直接上传 `.venv-gemini/` |
+| ROS2 显示 | `jetarm_description` 提供 URDF/Xacro、RViz 显示、J6 GUI 原始值映射 |
+| J6 夹爪 | 真实位置范围 `0..1000`；`0` 完全张开，`700` 几何闭合，`700..1000` 只增加夹持力 |
+| 彩色图 | 只读取 RGB 彩色图，用于目标检测、夹爪定位和视觉闭环 |
+| 视觉闭环 | 使用夹爪橙色末端标记和目标像素误差，迭代修正 J1-J5 |
+| 云端大模型 | 负责自然语言任务解析、目标检测结果结构化和执行步骤生成 |
+| 安全策略 | 使用现有关节限位，桌面高度为 `z=0`，每次任务完成后回 home |
