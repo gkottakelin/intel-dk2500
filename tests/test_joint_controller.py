@@ -120,6 +120,16 @@ class JointControllerTest(unittest.TestCase):
         self.assertEqual(negative.speed, -100)
         self.assertEqual(same.speed, 0)
 
+    def test_j6_gripper_position_range_and_release_direction(self):
+        close_force = self.planner.plan_target("J6", 1000, current_positions={"j6": 700})
+        release = self.planner.plan_target("J6", 0, current_positions={"j6": 700})
+
+        self.assertIsInstance(close_force, MotorCommand)
+        self.assertEqual(close_force.speed, 100)
+        self.assertEqual(close_force.target_position, 1000)
+        self.assertEqual(release.speed, -100)
+        self.assertEqual(release.target_position, 0)
+
     def test_executor_calls_fake_controller(self):
         controller = FakeController({1: 500, 5: 500})
         controller.position_sequences[5] = [520, 550, 595, 645]

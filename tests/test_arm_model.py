@@ -20,11 +20,11 @@ class ArmModelTest(unittest.TestCase):
 
     def test_home_pose_matches_measured_grasp_point(self):
         result = self.model.forward_kinematics_from_positions(
-            {"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500, "J6": 100}
+            {"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500, "J6": 0}
         )
 
         assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.527))
-        self.assertEqual(result.gripper_position, 100)
+        self.assertEqual(result.gripper_position, 0)
 
     def test_raw_position_to_model_angle_uses_direction_sign(self):
         self.assertAlmostEqual(math.degrees(self.model.position_to_model_angle_rad("J1", 1000)), -120.0)
@@ -54,7 +54,13 @@ class ArmModelTest(unittest.TestCase):
 
     def test_rejects_positions_outside_yaml_limits(self):
         with self.assertRaises(JointRangeError):
-            self.model.forward_kinematics_from_positions({"J6": 99})
+            self.model.forward_kinematics_from_positions({"J6": -1})
+
+    def test_allows_gripper_force_increase_range(self):
+        result = self.model.forward_kinematics_from_positions({"J6": 1000})
+
+        assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.527))
+        self.assertEqual(result.gripper_position, 1000)
 
     def test_forward_kinematics_from_model_angles(self):
         result = self.model.forward_kinematics_from_model_angles_deg({"J1": 90, "J2": 90})
@@ -87,14 +93,14 @@ class ArmModelTest(unittest.TestCase):
                     "--position",
                     "J5=500",
                     "--position",
-                    "J6=100",
+                    "J6=0",
                     "--json",
                 ]
             )
 
         self.assertEqual(rc, 0)
         self.assertIn('"tcp_xyz"', buffer.getvalue())
-        self.assertIn('"gripper_position": 100', buffer.getvalue())
+        self.assertIn('"gripper_position": 0', buffer.getvalue())
 
 
 if __name__ == "__main__":

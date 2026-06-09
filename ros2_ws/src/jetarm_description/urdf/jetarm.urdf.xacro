@@ -14,6 +14,9 @@
   <xacro:property name="j4_lower" value="-1.6755160819145563"/>
   <xacro:property name="j4_upper" value="2.0943951023931953"/>
   <xacro:property name="j5_limit" value="1.0471975511965976"/>
+  <xacro:property name="j6_visual_closed_angle" value="1.5707963267948966"/>
+  <xacro:property name="j6_visual_open_angle" value="1.5707963267948966"/>
+  <xacro:property name="gripper_arm_length" value="0.102"/>
 
   <material name="jetarm_green">
     <color rgba="0.0 0.55 0.18 1.0"/>
@@ -26,6 +29,9 @@
   </material>
   <material name="tcp_red">
     <color rgba="0.85 0.05 0.02 1.0"/>
+  </material>
+  <material name="finger_rubber">
+    <color rgba="0.015 0.015 0.018 1.0"/>
   </material>
 
   <link name="base_link">
@@ -154,9 +160,16 @@
 
   <link name="tool_roll_link">
     <visual>
-      <origin xyz="0 0 ${link_5_tcp / 2.0}" rpy="0 0 0"/>
+      <origin xyz="0 0 0.012" rpy="0 0 0"/>
       <geometry>
-        <box size="0.024 0.024 ${link_5_tcp}"/>
+        <cylinder radius="0.017" length="0.024"/>
+      </geometry>
+      <material name="jetarm_dark"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="0.014"/>
       </geometry>
       <material name="jetarm_dark"/>
     </visual>
@@ -176,24 +189,81 @@
       </geometry>
       <material name="tcp_red"/>
     </visual>
-  </link>
-
-  <!-- J6 is shown as a gripper state marker; tcp_link remains the grasp point. -->
-  <joint name="joint6_gripper" type="prismatic">
-    <parent link="tcp_link"/>
-    <child link="gripper_marker_link"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
-    <axis xyz="1 0 0"/>
-    <limit lower="0.0" upper="0.03" effort="2.0" velocity="0.05"/>
-  </joint>
-
-  <link name="gripper_marker_link">
     <visual>
-      <origin xyz="0.018 0 0" rpy="0 0 0"/>
+      <origin xyz="0 0 -0.035" rpy="0 0 0"/>
       <geometry>
-        <box size="0.036 0.012 0.012"/>
+        <box size="0.018 0.06 0.012"/>
       </geometry>
       <material name="joint_black"/>
     </visual>
+  </link>
+
+  <!--
+    J6 is one gripper command. joint_state_mapper.py maps the raw 0..1000
+    servo position to this visual angle: 0 is fully open, 700 is closed, and
+    700..1000 stays geometrically closed while representing more grip force.
+    The opposite arm is a mimic joint, not a second control parameter.
+  -->
+  <joint name="joint6_gripper" type="revolute">
+    <parent link="tool_roll_link"/>
+    <child link="left_gripper_finger_link"/>
+    <origin xyz="0 0 0" rpy="${-j6_visual_open_angle} 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="0.0" upper="${j6_visual_closed_angle}" effort="2.0" velocity="0.5"/>
+  </joint>
+
+  <link name="left_gripper_finger_link">
+    <visual>
+      <origin xyz="0 0 ${gripper_arm_length / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.010 ${gripper_arm_length}"/>
+      </geometry>
+      <material name="joint_black"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 ${gripper_arm_length}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.016 0.014 0.020"/>
+      </geometry>
+      <material name="finger_rubber"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${gripper_arm_length / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.010 ${gripper_arm_length}"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint6_gripper_mimic" type="revolute">
+    <parent link="tool_roll_link"/>
+    <child link="right_gripper_finger_link"/>
+    <origin xyz="0 0 0" rpy="${j6_visual_open_angle} 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="${-j6_visual_closed_angle}" upper="0.0" effort="2.0" velocity="0.5"/>
+    <mimic joint="joint6_gripper" multiplier="-1.0" offset="0.0"/>
+  </joint>
+
+  <link name="right_gripper_finger_link">
+    <visual>
+      <origin xyz="0 0 ${gripper_arm_length / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.010 ${gripper_arm_length}"/>
+      </geometry>
+      <material name="joint_black"/>
+    </visual>
+    <visual>
+      <origin xyz="0 0 ${gripper_arm_length}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.016 0.014 0.020"/>
+      </geometry>
+      <material name="finger_rubber"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${gripper_arm_length / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.010 0.010 ${gripper_arm_length}"/>
+      </geometry>
+    </collision>
   </link>
 </robot>

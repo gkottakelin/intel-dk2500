@@ -3,6 +3,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -12,10 +13,20 @@ def generate_launch_description():
 
     package_share = FindPackageShare("jetarm_description")
     xacro_file = PathJoinSubstitution([package_share, "urdf", "jetarm.urdf.xacro"])
+    gui_xacro_file = PathJoinSubstitution([package_share, "urdf", "jetarm_gui.urdf.xacro"])
     rviz_file = PathJoinSubstitution([package_share, "rviz", "jetarm.rviz"])
 
     robot_description = {
-        "robot_description": Command([FindExecutable(name="xacro"), " ", xacro_file])
+        "robot_description": ParameterValue(
+            Command([FindExecutable(name="xacro"), " ", xacro_file]),
+            value_type=str,
+        )
+    }
+    gui_robot_description = {
+        "robot_description": ParameterValue(
+            Command([FindExecutable(name="xacro"), " ", gui_xacro_file]),
+            value_type=str,
+        )
     }
 
     return LaunchDescription(
@@ -32,15 +43,32 @@ def generate_launch_description():
                 package="joint_state_publisher_gui",
                 executable="joint_state_publisher_gui",
                 output="screen",
-                parameters=[robot_description],
+                parameters=[gui_robot_description],
+                remappings=[("/joint_states", "/joint_states_raw")],
                 condition=IfCondition(use_gui),
             ),
             Node(
                 package="joint_state_publisher",
                 executable="joint_state_publisher",
                 output="screen",
-                parameters=[robot_description],
+                parameters=[gui_robot_description],
+                remappings=[("/joint_states", "/joint_states_raw")],
                 condition=UnlessCondition(use_gui),
+            ),
+            Node(
+                package="jetarm_description",
+                executable="joint_state_mapper.py",
+                name="jetarm_joint_state_mapper",
+                output="screen",
+                parameters=[
+                    {
+                        "raw_topic": "/joint_states_raw",
+                        "mapped_topic": "/joint_states",
+                        "gripper_joint": "joint6_gripper",
+                        "raw_closed_position": 700.0,
+                        "visual_closed_angle_rad": 1.5707963267948966,
+                    }
+                ],
             ),
             Node(
                 package="rviz2",

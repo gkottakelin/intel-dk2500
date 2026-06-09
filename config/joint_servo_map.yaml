@@ -4,7 +4,7 @@
 # - User-provided measured servo IDs, ranges, angle ranges, and motion notes.
 
 metadata:
-  version: 0.2
+  version: 0.3
   status: measured_partial
   default_com_port: COM15
   baudrate: 115200
@@ -17,7 +17,7 @@ metadata:
     - J2 has special torque constraints and must not be driven in motor mode.
     - J6 uses motor mode during grasp; stable position means the fingers touched an object.
     - Camera structure/calibration data is intentionally kept in a separate YAML file.
-    - Gripper geometry is not modeled for now; use the measured grasp point directly.
+    - Gripper geometry is modeled as an RViz-friendly two-arm scissor visual approximation starting at J5; the TCP remains the measured grasp point.
     - Except for J2, observed joint position error is negligible for current debugging.
 
 coordinate_convention:
@@ -260,18 +260,20 @@ joints:
     function: gripper_open_close
     role: end_effector
     control_mode: motor_for_grasp
-    inferred_from: front black servo and four-bar gripper linkage in image 3
+    inferred_from: user sketch and front black gripper servo near J5
     confidence: high
-    motion_description: two gripper fingers open/close through a four-bar linkage
+    motion_description: two scissor arms start from J5 and open/close symmetrically
     urdf_axis_guess_xyz: null
-    urdf_model_hint: model as gripper/finger mimic joints, not as an arm planning DOF
-    modeling_strategy: do_not_model_gripper_geometry_for_now
+    urdf_model_hint: display exposes one joint6_gripper control; the opposite scissor arm is a mimic joint
+    modeling_strategy: single_j6_control_with_mimic_scissor_arm_from_j5_tcp_kept_at_measured_grasp_point
     position:
-      min: 100
-      max: 700
+      min: 0
+      max: 1000
     gripper_positions:
-      open_approx: 100
-      closed_approx: 700
+      open: 0
+      closed_geometry_limit: 700
+      max_force_position: 1000
+      note: positions 700..1000 do not further close the fingers; they increase gripping force
     observed_motion:
       position_increase: gripper_tightens
       position_decrease: gripper_opens
@@ -279,6 +281,7 @@ joints:
       mode: motor_position_stall
       rule: position_stable_means_object_contact
       force_control_note: higher_motor_speed_means_higher_grip_force
+      force_increase_position_range: [700, 1000]
       soft_grip_speed: 100
       firm_grip_speed: 200
       stable_duration_s: 2.0
@@ -286,12 +289,12 @@ joints:
     release:
       mode: motor_until_position
       motor_speed: -100
-      target_position: 100
+      target_position: 0
       stop_tolerance_position_units: 5
       timeout_s: 5.0
       stop_rule: stop_when_position_less_than_or_equal_target
     direction_sign: null
-    home_position: 500
+    home_position: 0
     limit_test_required: true
 
 robot_geometry:
@@ -317,9 +320,14 @@ robot_geometry:
   tool0_to_tcp_offset_xyz_m: [0.0, 0.0, 0.527]
   tool0_to_tcp_note: directly equal to the measured grasp point for current debugging
   gripper_modeling:
-    enabled: false
+    enabled: true
+    type: procedural_two_arm_scissor_visual_approximation
     grasp_point_xyz: [0.0, 0.0, 0.527]
-    note: fine offsets will be adjusted during real operation
+    raw_position_to_visual_state:
+      position_0: fully_open_fingers_in_one_straight_line
+      position_700: geometrically_closed
+      position_700_to_1000: closed_force_increase_only
+    note: visual links are two simple scissor arms starting at J5; fine offsets will be adjusted during real operation
 
 error_model:
   joint2:

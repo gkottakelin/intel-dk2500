@@ -6,6 +6,13 @@ The URDF joint angles are model/URDF angles, not raw servo positions. Use
 `project/src/arm_model.py` to convert raw positions and to validate
 `joint_angles -> tcp_pose`.
 
+The launch file uses a small joint-state mapper for J6. The GUI slider shows the
+real raw bus-servo range: `0` is fully open, `700` is geometrically closed, and
+`700..1000` stays visually closed while representing extra gripping force on
+real hardware. The display URDF exposes one `joint6_gripper` visual joint; the
+opposite scissor arm is a mimic joint, not another control parameter. Both arms
+start at J5. At raw `0`, the two fingers are fully open in one straight line.
+
 ## Build In Ubuntu 22.04 / ROS 2 Humble
 
 ```bash
