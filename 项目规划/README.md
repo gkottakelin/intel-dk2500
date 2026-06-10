@@ -12,10 +12,12 @@ RGB 彩色图
 -> J6 motor 夹取/释放
 ```
 
-主方案：
+当前方案文档：
 
 ```text
-project/docs/视觉闭环运动规划开发方案.md
+project/docs/方案1_视觉闭环运动规划开发方案.md
+project/docs/方案2_云端多模态大模型机械臂控制方案.md
+project/docs/方案3_固定物块尺寸单目测距机械臂规划方案.md
 ```
 
 ## 文件说明

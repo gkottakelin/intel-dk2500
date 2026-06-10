@@ -61,7 +61,7 @@ log/
 ```powershell
 cd D:\jetarm\project
 git status
-git add README.md docs src tests config ros2_ws 项目架构规划 *.md requirements.txt
+git add README.md docs src tests config ros2_ws 项目规划 *.md requirements.txt
 git commit -m "Initial JetArm RGB visual servo project"
 ```
 
