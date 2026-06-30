@@ -7,7 +7,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-tk fonts-noto-cjk
+sudo apt install -y python3 python3-venv python3-tk python3-numpy python3-serial fonts-noto-cjk
 ```
 
 创建独立 Python 环境：
@@ -16,6 +16,9 @@ sudo apt install -y python3 python3-venv python3-tk fonts-noto-cjk
 cd ubuntu22_04_operation_terminal
 bash setup.sh
 ```
+
+`setup.sh` 默认使用 Ubuntu 官方的软件包并创建带 `--system-site-packages` 的虚拟
+环境，不需要访问 PyPI，因此在 pip 代理不可用时也可以安装。
 
 ## 2. 串口权限
 
@@ -97,6 +100,8 @@ config/terminal.json
 ## 7. 常见问题
 
 - `No module named tkinter`：安装 `python3-tk` 后重新运行 `setup.sh`。
+- `pip` 显示 `Cannot connect to proxy`：新版 `setup.sh` 不再调用 pip；安装
+  `python3-numpy` 和 `python3-serial` 后重新运行即可。
 - `Permission denied: /dev/ttyUSB0`：加入 `dialout` 组并重新登录。
 - 未发现串口：检查 USB 转串口设备与内核日志：`dmesg | tail -n 30`。
 - 中文显示方框：安装 `fonts-noto-cjk` 后重新启动程序。
