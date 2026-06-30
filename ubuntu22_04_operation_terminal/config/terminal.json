@@ -1,0 +1,83 @@
+{
+  "serial": {
+    "baudrate": 115200,
+    "timeout_s": 0.2
+  },
+  "control": {
+    "tick_ms": 80,
+    "vertical_speed_m_s": 0.05,
+    "max_horizontal_speed_m_s": 0.05,
+    "j5_speed": 100,
+    "j6_speed": 100,
+    "j6_grip_speed": 300,
+    "home_run_time_ms": 1200,
+    "max_joint_step_deg": 4.0,
+    "damping": 0.02,
+    "local_search_step_units": 8
+  },
+  "home": {
+    "J1": 500,
+    "J2": 550,
+    "J3": 550,
+    "J4": 900,
+    "J5": 500,
+    "J6": 360
+  },
+  "joints": {
+    "J1": {
+      "servo_id": 1,
+      "position_min": 0,
+      "position_max": 1000,
+      "angle_min_deg": -120.0,
+      "angle_max_deg": 120.0,
+      "direction_sign": -1.0
+    },
+    "J2": {
+      "servo_id": 2,
+      "position_min": 500,
+      "position_max": 875,
+      "angle_min_deg": 0.0,
+      "angle_max_deg": 90.0,
+      "direction_sign": 1.0
+    },
+    "J3": {
+      "servo_id": 3,
+      "position_min": 0,
+      "position_max": 1000,
+      "angle_min_deg": -120.0,
+      "angle_max_deg": 120.0,
+      "direction_sign": 1.0
+    },
+    "J4": {
+      "servo_id": 4,
+      "position_min": 100,
+      "position_max": 1000,
+      "angle_min_deg": -96.0,
+      "angle_max_deg": 120.0,
+      "direction_sign": 1.0
+    },
+    "J5": {
+      "servo_id": 5,
+      "position_min": 250,
+      "position_max": 750,
+      "angle_min_deg": -60.0,
+      "angle_max_deg": 60.0,
+      "direction_sign": -1.0
+    },
+    "J6": {
+      "servo_id": 10,
+      "position_min": 0,
+      "position_max": 1000,
+      "angle_min_deg": 0.0,
+      "angle_max_deg": 0.0,
+      "direction_sign": 1.0
+    }
+  },
+  "geometry_m": {
+    "base_to_joint2": 0.105,
+    "joint2_to_joint3": 0.13,
+    "joint3_to_joint4": 0.13,
+    "joint4_to_joint5": 0.06,
+    "joint5_to_tcp": 0.102
+  }
+}
