@@ -1,6 +1,6 @@
-# 基于云端/本地双模型与RGB视觉闭环的桌面机械臂抓放系统
+# 慧语灵臂——基于Intel Core Ultra的具身智能机械臂系统
 
-Desktop Robotic Arm Pick-and-Place System Based on Switchable Cloud/Local Models and RGB Visual Closed-Loop Control
+Huiyu Lingbi: An Embodied Intelligent Robotic Arm System Based on Intel Core Ultra
 
 作品设计报告
 
@@ -16,7 +16,7 @@ Desktop Robotic Arm Pick-and-Place System Based on Switchable Cloud/Local Models
 
 # 参赛作品原创性声明
 
-本团队郑重声明：本报告所述作品“基于云端/本地双模型与RGB视觉闭环的桌面机械臂抓放系统”是在指导教师指导下，由参赛成员围绕总线舵机机械臂、RGB视觉感知、自然语言任务理解和闭环控制独立开展方案设计、程序编写、系统集成与测试形成的作品。报告中引用的总线舵机通信协议、JetArm机械臂资料、Gemini Pro Plus相机资料、ROS 2、OpenCV以及相关机器人学和视觉伺服文献均在参考文献中注明来源；第三方开源软件仅作为基础开发工具使用，作品的系统架构、关节参数整理、控制程序、运动学模型、操作终端以及面向本项目的闭环任务流程由本团队完成。
+本团队郑重声明：本报告所述作品“慧语灵臂——基于Intel Core Ultra的具身智能机械臂系统”是在指导教师指导下，由参赛成员围绕总线舵机机械臂、RGB视觉感知、自然语言任务理解和闭环控制独立开展方案设计、程序编写、系统集成与测试形成的作品。报告中引用的总线舵机通信协议、JetArm机械臂资料、Gemini Pro Plus相机资料、ROS 2、OpenCV以及相关机器人学和视觉伺服文献均在参考文献中注明来源；第三方开源软件仅作为基础开发工具使用，作品的系统架构、关节参数整理、控制程序、运动学模型、操作终端以及面向本项目的闭环任务流程由本团队完成。
 
 本团队承诺所提交的文字、程序、图表和测试记录真实、可追溯，不存在抄袭、剽窃、伪造测试数据或侵犯他人知识产权的情况。对于尚未完成真机测试的性能项目，本报告统一标注为“设计目标”或“待实测”，不以设计值代替实测结论。本声明如有不实，本团队愿承担由此产生的相应责任。
 
