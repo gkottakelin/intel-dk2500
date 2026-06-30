@@ -498,7 +498,6 @@ def choose_serial_port_dialog(root: Any, initial_port: Optional[str] = None) -> 
     dialog.title("COM口设置")
     dialog.resizable(False, False)
     dialog.transient(root)
-    dialog.grab_set()
 
     body = ttk.Frame(dialog, padding=18)
     body.grid(row=0, column=0, sticky="nsew")
@@ -559,6 +558,11 @@ def choose_serial_port_dialog(root: Any, initial_port: Optional[str] = None) -> 
     x = root.winfo_screenwidth() // 2 - dialog.winfo_reqwidth() // 2
     y = root.winfo_screenheight() // 2 - dialog.winfo_reqheight() // 2
     dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+    dialog.lift()
+    dialog.attributes("-topmost", True)
+    dialog.after(500, lambda: dialog.attributes("-topmost", False))
+    dialog.wait_visibility()
+    dialog.grab_set()
     root.wait_window(dialog)
     return result["port"]
 
@@ -857,12 +861,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.port:
                 selected_port = select_linux_serial_port(args.port)
             else:
-                root.withdraw()
+                root.title("JetArm Ubuntu 操作终端")
+                root.geometry("720x480")
                 selected_port = choose_serial_port_dialog(root)
                 if selected_port is None:
                     root.destroy()
                     return 0
-                root.deiconify()
+                root.geometry("1080x680")
             controller = BusServoController(
                 selected_port,
                 args.baudrate or settings.baudrate,
