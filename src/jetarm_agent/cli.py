@@ -194,6 +194,12 @@ async def run(args: argparse.Namespace) -> int:
         if args.once:
             if arm_session is not None:
                 await _send_with_tools(arm_session, args.once)
+            elif looks_like_arm_command(args.once):
+                raise ConfigurationError(
+                    "检测到机械臂指令，但机械臂工具未启用。"
+                    "请使用--arm-mode dry-run测试，或使用"
+                    "--arm-mode hardware --arm-port <串口>连接硬件。"
+                )
             else:
                 await _send(chat_session, args.once)
             return 0
@@ -252,6 +258,14 @@ async def run(args: argparse.Namespace) -> int:
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 except (RuntimeError, ValueError) as exc:
                     print(f"错误: {exc}", file=sys.stderr)
+                continue
+            if arm_session is None and looks_like_arm_command(text):
+                print(
+                    "错误: 检测到机械臂指令，但机械臂工具未启用。\n"
+                    "请退出后使用 --arm-mode dry-run 测试；确认无误后使用 "
+                    "--arm-mode hardware --arm-port <串口>。",
+                    file=sys.stderr,
+                )
                 continue
             try:
                 if arm_session is not None:

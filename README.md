@@ -113,6 +113,13 @@ Home、J5和J6控制。先在模拟模式验证：
 python3 -m src.jetarm_agent --arm-mode dry-run
 ```
 
+如果仍使用不带参数的`python3 -m src.jetarm_agent`，机械臂工具默认关闭。也可以在
+`.env`中持久设置模拟模式：
+
+```dotenv
+JETARM_ARM_MODE=dry-run
+```
+
 进入对话后可以输入：
 
 ```text
@@ -136,6 +143,13 @@ python3 ubuntu22_04_operation_terminal/jetarm_terminal.py --list-ports
 python3 -m src.jetarm_agent \
   --arm-mode hardware \
   --arm-port /dev/serial/by-id/usb-你的设备名称
+```
+
+需要以后直接运行时，可在`.env`中改为：
+
+```dotenv
+JETARM_ARM_MODE=hardware
+JETARM_ARM_PORT=/dev/serial/by-id/usb-你的设备名称
 ```
 
 若只有一个`ttyUSB/ttyACM`设备，也可以省略`--arm-port`自动选择。硬件模式启动时

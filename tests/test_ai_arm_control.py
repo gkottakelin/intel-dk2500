@@ -119,6 +119,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             10,
         )
 
+    async def test_arm_command_detection_does_not_require_model_guessing(self):
+        self.assertTrue(looks_like_arm_command("向前移动5厘米"))
+        self.assertTrue(looks_like_arm_command("夹紧夹爪"))
+        self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
+
     async def test_ai_tool_call_executes_distance_planner_and_returns_result(self):
         fake = FakeToolModelClient(
             [
