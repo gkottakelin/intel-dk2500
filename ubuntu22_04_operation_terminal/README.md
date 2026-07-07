@@ -35,9 +35,19 @@ groups
 bash run.sh --list-ports
 ```
 
-程序依次查找稳定的 `/dev/serial/by-id/*`、`/dev/ttyUSB*` 和
-`/dev/ttyACM*`。只发现一个设备时会自动选择；发现多个设备时必须使用
-`--port` 指定。
+程序会结合 PySerial、稳定路径 `/dev/serial/by-id/*`、`/dev/serial/by-path/*`
+以及常见的 `ttyUSB`、`ttyACM`、`ttyAMA`、`ttyTHS` 等设备节点查找串口。
+只发现一个设备时会自动选择；发现多个设备时必须使用 `--port` 指定。
+
+如果 USB 设备管理器能看到 CH340，但下拉框为空，先运行：
+
+```bash
+bash run.sh --diagnose-ports
+```
+
+这通常表示 USB 层识别了设备，但 Linux 没有创建 `/dev/ttyUSB*`，不是下拉框
+过滤规则的问题。诊断结果会提示检查 `ch341` 驱动及 Ubuntu 22.04 的
+`brltty` 抢占问题。
 
 ## 3. 运行
 
@@ -103,6 +113,7 @@ config/terminal.json
 - `pip` 显示 `Cannot connect to proxy`：新版 `setup.sh` 不再调用 pip；安装
   `python3-numpy` 和 `python3-serial` 后重新运行即可。
 - `Permission denied: /dev/ttyUSB0`：加入 `dialout` 组并重新登录。
-- 未发现串口：检查 USB 转串口设备与内核日志：`dmesg | tail -n 30`。
+- 未发现串口：运行 `bash run.sh --diagnose-ports`，根据结果检查 USB 转串口
+  驱动和内核日志。
 - 中文显示方框：安装 `fonts-noto-cjk` 后重新启动程序。
 - WSL2 Ubuntu 22.04 需要 WSLg 显示 GUI，并通过 `usbipd` 将 USB 串口附加到 WSL。

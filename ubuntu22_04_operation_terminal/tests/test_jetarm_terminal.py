@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,8 @@ from jetarm_terminal import (  # noqa: E402
     TerminalSettings,
     build_packet,
     discover_linux_serial_ports,
+    discover_usb_serial_adapters,
+    serial_discovery_diagnostic,
     select_linux_serial_port,
 )
 
@@ -84,6 +87,56 @@ class UbuntuTerminalTest(unittest.TestCase):
                 discover_linux_serial_ports(root),
                 [str(root / "ttyUSB0"), str(root / "ttyACM1")],
             )
+
+    def test_discovers_nonstandard_device_reported_by_pyserial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            port = root / "customSerial0"
+            port.touch()
+            provider = lambda: [SimpleNamespace(device=str(port))]
+            self.assertEqual(
+                discover_linux_serial_ports(root, list_ports_provider=provider),
+                [str(port)],
+            )
+
+    def test_detects_ch340_at_usb_layer_without_tty_node(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            device_root = root / "dev"
+            sys_usb_root = root / "sys-usb"
+            adapter = sys_usb_root / "1-1"
+            device_root.mkdir()
+            adapter.mkdir(parents=True)
+            (adapter / "idVendor").write_text("1a86\n", encoding="utf-8")
+            (adapter / "idProduct").write_text("7523\n", encoding="utf-8")
+            (adapter / "manufacturer").write_text("QinHeng Electronics\n", encoding="utf-8")
+            (adapter / "product").write_text("CH340 serial converter\n", encoding="utf-8")
+
+            adapters = discover_usb_serial_adapters(sys_usb_root)
+            self.assertEqual(len(adapters), 1)
+            self.assertEqual(adapters[0].vendor_id, "1a86")
+            diagnostic = serial_discovery_diagnostic(
+                device_root=device_root,
+                sys_usb_root=sys_usb_root,
+                list_ports_provider=lambda: [],
+            )
+            self.assertIn("USB层已识别", diagnostic)
+            self.assertIn("ch341", diagnostic)
+            self.assertIn("brltty", diagnostic)
+
+    def test_empty_discovery_reports_connection_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            device_root = root / "dev"
+            sys_usb_root = root / "sys-usb"
+            device_root.mkdir()
+            sys_usb_root.mkdir()
+            diagnostic = serial_discovery_diagnostic(
+                device_root=device_root,
+                sys_usb_root=sys_usb_root,
+                list_ports_provider=lambda: [],
+            )
+            self.assertIn("数据线", diagnostic)
 
     def test_selects_single_serial_port_and_rejects_multiple(self):
         with tempfile.TemporaryDirectory() as directory:

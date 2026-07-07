@@ -30,7 +30,15 @@ HEADER = b"\x55\x55"
 SERVO_MOVE_TIME_WRITE = 1
 SERVO_POS_READ = 28
 SERVO_OR_MOTOR_MODE_WRITE = 29
-LINUX_SERIAL_PATTERNS = ("ttyUSB*", "ttyACM*")
+LINUX_SERIAL_PATTERNS = (
+    "ttyUSB*",
+    "ttyACM*",
+    "ttyAMA*",
+    "ttyTHS*",
+    "ttyXRUSB*",
+    "ttyCH343USB*",
+)
+KNOWN_USB_SERIAL_VENDOR_IDS = {"0403", "10c4", "1a86", "067b"}
 ARM_JOINTS = ("J1", "J2", "J3", "J4")
 
 
@@ -82,6 +90,19 @@ class TerminalSettings:
     def position_limits(self, joint_name: str) -> tuple[int, int]:
         joint = self.joints[joint_name]
         return int(joint["position_min"]), int(joint["position_max"])
+
+
+@dataclass(frozen=True)
+class UsbSerialAdapter:
+    vendor_id: str
+    product_id: str
+    manufacturer: str
+    product: str
+
+    @property
+    def label(self) -> str:
+        name = " ".join(part for part in (self.manufacturer, self.product) if part)
+        return f"{name or 'USB serial adapter'} ({self.vendor_id}:{self.product_id})"
 
 
 def checksum(body: bytes) -> int:
@@ -445,22 +466,119 @@ class ManualServoRuntime:
         return min(candidates, key=lambda item: float(np.linalg.norm(self.model.tcp(item) - target_tcp)))
 
 
-def discover_linux_serial_ports(device_root: str | Path = "/dev") -> list[str]:
+def _pyserial_list_ports() -> list[Any]:
+    try:
+        from serial.tools import list_ports  # type: ignore
+    except ImportError:
+        return []
+    return list(list_ports.comports())
+
+
+def discover_linux_serial_ports(
+    device_root: str | Path = "/dev",
+    *,
+    list_ports_provider: Optional[Callable[[], list[Any]]] = None,
+) -> list[str]:
+    """Discover serial ports from stable links, device names, and PySerial."""
+
     root = Path(device_root)
     candidates: list[Path] = []
-    by_id = root / "serial" / "by-id"
-    if by_id.is_dir():
-        candidates.extend(path for path in sorted(by_id.iterdir()) if path.exists() or path.is_symlink())
+    for stable_dir_name in ("by-id", "by-path"):
+        stable_dir = root / "serial" / stable_dir_name
+        if stable_dir.is_dir():
+            candidates.extend(
+                path
+                for path in sorted(stable_dir.iterdir())
+                if path.exists() or path.is_symlink()
+            )
     for pattern in LINUX_SERIAL_PATTERNS:
         candidates.extend(sorted(root.glob(pattern)))
+
+    provider = list_ports_provider
+    if provider is None and root.resolve(strict=False) == Path("/dev"):
+        provider = _pyserial_list_ports
+    if provider is not None:
+        for port in provider():
+            device = str(getattr(port, "device", "") or "").strip()
+            if device:
+                candidates.append(Path(device))
+
     result: list[str] = []
     seen: set[str] = set()
     for path in candidates:
+        if not path.exists() and not path.is_symlink():
+            continue
         resolved = str(path.resolve(strict=False))
         if resolved not in seen:
             seen.add(resolved)
             result.append(str(path))
     return result
+
+
+def discover_usb_serial_adapters(
+    sys_usb_root: str | Path = "/sys/bus/usb/devices",
+) -> list[UsbSerialAdapter]:
+    """Find USB-layer serial adapters even when no tty node was created."""
+
+    root = Path(sys_usb_root)
+    if not root.is_dir():
+        return []
+    adapters: list[UsbSerialAdapter] = []
+
+    def read_value(directory: Path, name: str) -> str:
+        try:
+            return (directory / name).read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError, UnicodeError):
+            return ""
+
+    for directory in sorted(root.iterdir()):
+        vendor_id = read_value(directory, "idVendor").lower()
+        product_id = read_value(directory, "idProduct").lower()
+        manufacturer = read_value(directory, "manufacturer")
+        product = read_value(directory, "product")
+        description = f"{manufacturer} {product}".lower()
+        looks_serial = any(
+            word in description
+            for word in ("serial", "uart", "ch340", "ch341", "cp210", "ftdi")
+        )
+        if vendor_id in KNOWN_USB_SERIAL_VENDOR_IDS or looks_serial:
+            adapters.append(
+                UsbSerialAdapter(
+                    vendor_id=vendor_id or "????",
+                    product_id=product_id or "????",
+                    manufacturer=manufacturer,
+                    product=product,
+                )
+            )
+    return adapters
+
+
+def serial_discovery_diagnostic(
+    *,
+    device_root: str | Path = "/dev",
+    sys_usb_root: str | Path = "/sys/bus/usb/devices",
+    list_ports_provider: Optional[Callable[[], list[Any]]] = None,
+) -> str:
+    ports = discover_linux_serial_ports(
+        device_root, list_ports_provider=list_ports_provider
+    )
+    if ports:
+        return "已发现串口: " + ", ".join(ports)
+
+    adapters = discover_usb_serial_adapters(sys_usb_root)
+    if adapters:
+        adapter_text = ", ".join(adapter.label for adapter in adapters)
+        if any(adapter.vendor_id == "1a86" for adapter in adapters):
+            return (
+                f"USB层已识别 {adapter_text}，但未创建/dev串口。"
+                "请检查ch341驱动；Ubuntu 22.04还可能被brltty抢占。"
+                "运行程序的--diagnose-ports查看处理命令。"
+            )
+        return (
+            f"USB层已识别 {adapter_text}，但未创建/dev串口。"
+            "请检查对应USB串口驱动和内核日志。"
+        )
+    return "未发现USB串口设备或/dev串口节点，请检查数据线、供电和USB连接。"
 
 
 def select_linux_serial_port(
@@ -511,7 +629,13 @@ def choose_serial_port_dialog(root: Any, initial_port: Optional[str] = None) -> 
     port_box = ttk.Combobox(body, textvariable=port_value, width=48, state="normal")
     port_box.grid(row=2, column=0, sticky="ew", pady=(6, 8), padx=(0, 8))
     status_value = tk.StringVar(value="")
-    ttk.Label(body, textvariable=status_value, foreground="#526172").grid(
+    ttk.Label(
+        body,
+        textvariable=status_value,
+        foreground="#526172",
+        wraplength=620,
+        justify="left",
+    ).grid(
         row=3, column=0, columnspan=2, sticky="w", pady=(0, 12)
     )
 
@@ -523,7 +647,7 @@ def choose_serial_port_dialog(root: Any, initial_port: Optional[str] = None) -> 
         if ports:
             status_value.set(f"发现 {len(ports)} 个串口，也可以手动输入设备路径")
         else:
-            status_value.set("未自动发现串口，请连接设备后刷新或手动输入")
+            status_value.set(serial_discovery_diagnostic())
 
     def accept() -> None:
         value = port_value.get().strip()
@@ -824,6 +948,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=None, help="override serial timeout in seconds")
     parser.add_argument("--dry-run", action="store_true", help="open the UI without a real serial device")
     parser.add_argument("--list-ports", action="store_true", help="list detected USB serial devices and exit")
+    parser.add_argument(
+        "--diagnose-ports",
+        action="store_true",
+        help="diagnose USB-visible devices that have no Linux tty node",
+    )
     return parser
 
 
@@ -835,9 +964,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.list_ports:
         ports = discover_linux_serial_ports()
         if not ports:
-            print("未发现 ttyUSB/ttyACM 串口")
+            print(serial_discovery_diagnostic())
             return 1
         print("\n".join(ports))
+        return 0
+
+    if args.diagnose_ports:
+        print(serial_discovery_diagnostic())
+        print("\n建议依次执行：")
+        print("  lsusb -nn | grep -i -E '1a86|CH340|CH341'")
+        print("  lsmod | grep ch341")
+        print("  sudo modprobe ch341")
+        print("  sudo dmesg | tail -n 80")
+        print("  ls -l /dev/ttyUSB* /dev/serial/by-id/* 2>/dev/null")
+        print("若dmesg显示brltty抢占，且不使用盲文设备，请检查brltty服务。")
         return 0
 
     try:

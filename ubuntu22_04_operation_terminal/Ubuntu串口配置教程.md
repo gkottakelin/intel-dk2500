@@ -37,6 +37,41 @@ lsmod | grep ch341
 sudo modprobe ch341
 ```
 
+### USB 列表有 CH340，但程序下拉框为空
+
+这是 Ubuntu 22.04 上需要优先排查的情况。设备管理器或 `lsusb` 显示
+`QinHeng Electronics CH340 serial converter`，只能证明 USB 层识别成功；程序
+需要的是内核创建的 `/dev/ttyUSB0`（或稳定链接），两者不是同一层。
+
+先运行项目诊断：
+
+```bash
+bash run.sh --diagnose-ports
+```
+
+再检查内核绑定过程：
+
+```bash
+lsusb -nn | grep -i -E '1a86|CH340|CH341'
+lsmod | grep ch341
+sudo modprobe ch341
+sudo dmesg | tail -n 80
+ls -l /dev/ttyUSB* /dev/serial/by-id/* 2>/dev/null
+```
+
+如果日志先显示 CH340 已绑定到 `ttyUSB0`，随后又显示 `brltty` 抢占接口并断开
+`ttyUSB0`，说明是 Ubuntu 22.04 已知的 `brltty` 冲突。**只有确认电脑不使用盲文
+显示器时**，才执行：
+
+```bash
+sudo apt remove brltty
+sudo reboot
+```
+
+如果需要盲文设备，不要卸载 `brltty`，应为具体 USB VID/PID 调整其规则。若日志
+完全没有 `ttyUSB0` 绑定记录，则继续检查 `ch341` 模块、USB 数据线、USB 接口和
+虚拟机 USB 直通，而不是手动填写一个不存在的 `/dev/ttyUSB0`。
+
 如果 `lsusb` 也看不到设备，应检查 USB 数据线、接口、供电和虚拟机的 USB 直通设置。
 
 ## 2. 永久解决串口权限（这一步我已经做过了）
@@ -151,6 +186,12 @@ cd ~/Desktop/ubuntu22_04_operation_terminal
 
 ```bash
 bash run.sh --list-ports
+```
+
+USB 层有设备但未列出串口时运行完整诊断：
+
+```bash
+bash run.sh --diagnose-ports
 ```
 
 使用截图中已经识别到的稳定路径启动：
