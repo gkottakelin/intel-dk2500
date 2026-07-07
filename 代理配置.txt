@@ -1,0 +1,20 @@
+grep -nEi 'proxy|7897' ~/.bashrc ~/.profile 2>/dev/null
+
+nano ~/.bashrc
+
+export ALL_PROXY="socks5://127.0.0.1:7897"
+export all_proxy="$ALL_PROXY"
+
+export HTTP_PROXY="$ALL_PROXY"
+export http_proxy="$ALL_PROXY"
+
+export HTTPS_PROXY="$ALL_PROXY"
+export https_proxy="$ALL_PROXY"
+
+export NO_PROXY="api.moonshot.cn,localhost,127.0.0.1"
+export no_proxy="$NO_PROXY"
+
+source ~/.bashrc
+
+env | grep -i proxy
+git pull
