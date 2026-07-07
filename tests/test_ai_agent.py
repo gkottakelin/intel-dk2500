@@ -7,11 +7,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
-from project.src.jetarm_agent.openai_compatible import APIClientError, OpenAICompatibleClient
-from project.src.jetarm_agent.roundtrip_test import run_counter_roundtrip_test
-from project.src.jetarm_agent.session import ChatSession
-from project.src.jetarm_agent.tooling import TestCounter, ToolExecutionError, ToolRegistry
+try:
+    from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
+    from project.src.jetarm_agent.openai_compatible import APIClientError, OpenAICompatibleClient
+    from project.src.jetarm_agent.roundtrip_test import run_counter_roundtrip_test
+    from project.src.jetarm_agent.session import ChatSession
+    from project.src.jetarm_agent.tooling import TestCounter, ToolExecutionError, ToolRegistry
+except ModuleNotFoundError:
+    from src.jetarm_agent.config import AgentSettings, ConfigurationError
+    from src.jetarm_agent.openai_compatible import APIClientError, OpenAICompatibleClient
+    from src.jetarm_agent.roundtrip_test import run_counter_roundtrip_test
+    from src.jetarm_agent.session import ChatSession
+    from src.jetarm_agent.tooling import TestCounter, ToolExecutionError, ToolRegistry
 
 
 def write_config(directory: str, **api_overrides) -> Path:

@@ -5,14 +5,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
+from .arm_control import (
+    ARM_TOOL_SYSTEM_PROMPT,
+    DEFAULT_TERMINAL_CONFIG,
+    ArmControlConfig,
+    JetArmToolController,
+    build_arm_tool_registry,
+    looks_like_arm_command,
+)
 from .config import AgentSettings, ConfigurationError, DEFAULT_CONFIG_PATH
 from .openai_compatible import APIClientError, OpenAICompatibleClient
 from .roundtrip_test import run_counter_roundtrip_test
 from .session import ChatSession
+from .tool_agent import ToolCallingSession
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +38,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="运行程序->AI->计数工具->AI贯通测试",
     )
     parser.add_argument("--env-file", default=None, help="可选.env文件路径")
+    parser.add_argument(
+        "--arm-mode",
+        choices=("off", "dry-run", "hardware"),
+        default=None,
+        help="机械臂工具模式；默认off，hardware会打开真实串口",
+    )
+    parser.add_argument("--arm-port", default=None, help="机械臂串口，如/dev/ttyUSB0")
+    parser.add_argument("--arm-config", default=None, help="Ubuntu终端terminal.json路径")
+    parser.add_argument(
+        "--arm-max-distance-cm",
+        type=float,
+        default=None,
+        help="AI单次TCP移动距离上限，默认10cm",
+    )
     return parser
 
 
@@ -49,23 +73,29 @@ def _load_env_file(path: Optional[str]) -> None:
         load_dotenv()
 
 
-def _print_help() -> None:
+def _print_help(*, arm_enabled: bool = False) -> None:
     print("可用命令:")
     print("  /help     显示帮助")
     print("  /clear    清空当前对话上下文")
     print("  /history  显示当前上下文")
     print("  /config   显示非敏感API配置")
     print("  /tool-test 运行AI调用本地代码的3秒贯通测试")
+    if arm_enabled:
+        print("  /arm-status 读取机械臂关节和TCP状态")
+        print("  /arm-home   直接回到home位姿")
+        print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
     print("  /exit     退出")
 
 
-def _print_history(session: ChatSession) -> None:
-    if not session.history:
+def _print_history(session: object) -> None:
+    history = getattr(session, "history", [])
+    if not history:
         print("当前没有对话记录。")
         return
-    for index, message in enumerate(session.history, 1):
-        label = "你" if message["role"] == "user" else "AI"
-        print(f"{index:02d} {label}: {message['content']}")
+    labels = {"user": "你", "assistant": "AI", "tool": "工具"}
+    for index, message in enumerate(history, 1):
+        label = labels.get(message.get("role"), str(message.get("role", "?")))
+        print(f"{index:02d} {label}: {message.get('content', '')}")
 
 
 async def _send(session: ChatSession, text: str) -> str:
@@ -73,6 +103,21 @@ async def _send(session: ChatSession, text: str) -> str:
     answer = await session.ask(text, on_token=lambda token: print(token, end="", flush=True))
     print()
     return answer
+
+
+async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
+    result = await session.ask(
+        text,
+        require_any_tool=looks_like_arm_command(text),
+        required_tool_retries=1,
+    )
+    for call in result.tool_calls:
+        print(
+            f"[arm-tool] {call.name} "
+            f"{json.dumps(call.result, ensure_ascii=False)}"
+        )
+    print(f"AI: {result.text}")
+    return result.text
 
 
 async def _run_tool_test(
@@ -97,7 +142,7 @@ async def run(args: argparse.Namespace) -> int:
         model=args.model,
     )
     client = OpenAICompatibleClient(settings)
-    session = ChatSession(settings, client)
+    chat_session = ChatSession(settings, client)
 
     print("JetArm AI 对话终端")
     print(f"API: {settings.base_url}")
@@ -107,45 +152,114 @@ async def run(args: argparse.Namespace) -> int:
         await _run_tool_test(settings, client)
         return 0
 
-    if args.once:
-        await _send(session, args.once)
-        return 0
+    arm_mode = args.arm_mode or os.getenv("JETARM_ARM_MODE", "off").strip()
+    arm_port = args.arm_port or os.getenv("JETARM_ARM_PORT") or None
+    arm_config_path = Path(
+        args.arm_config
+        or os.getenv("JETARM_ARM_CONFIG", "")
+        or DEFAULT_TERMINAL_CONFIG
+    )
+    max_distance_cm = (
+        args.arm_max_distance_cm
+        if args.arm_max_distance_cm is not None
+        else float(os.getenv("JETARM_ARM_MAX_DISTANCE_CM", "10"))
+    )
 
-    _print_help()
-    while True:
-        try:
-            text = input("\n你: ").strip()
-        except EOFError:
-            print()
+    arm_controller: JetArmToolController | None = None
+    arm_session: ToolCallingSession | None = None
+    if arm_mode != "off":
+        arm_controller = JetArmToolController(
+            ArmControlConfig(
+                mode=arm_mode,
+                serial_port=arm_port,
+                terminal_config_path=arm_config_path,
+                max_distance_cm=max_distance_cm,
+            ),
+            logger=lambda message: print(f"[arm] {message}"),
+        )
+        arm_session = ToolCallingSession(
+            settings,
+            client,
+            build_arm_tool_registry(arm_controller),
+            system_prompt=f"{settings.system_prompt}\n\n{ARM_TOOL_SYSTEM_PROMPT}",
+            max_rounds=8,
+        )
+        port_text = arm_controller.serial_port or "模拟控制器"
+        print(f"机械臂工具: {arm_mode} ({port_text})")
+
+    try:
+        if args.once:
+            if arm_session is not None:
+                await _send_with_tools(arm_session, args.once)
+            else:
+                await _send(chat_session, args.once)
             return 0
-        if not text:
-            continue
-        command = text.lower()
-        if command in {"/exit", "/quit", "exit", "quit"}:
-            return 0
-        if command == "/help":
-            _print_help()
-            continue
-        if command == "/clear":
-            session.clear()
-            print("对话上下文已清空。")
-            continue
-        if command == "/history":
-            _print_history(session)
-            continue
-        if command == "/config":
-            print(json.dumps(settings.public_summary(), ensure_ascii=False, indent=2))
-            continue
-        if command == "/tool-test":
+
+        _print_help(arm_enabled=arm_controller is not None)
+        while True:
             try:
-                await _run_tool_test(settings, client)
+                text = input("\n你: ").strip()
+            except EOFError:
+                print()
+                return 0
+            if not text:
+                continue
+            command = text.lower()
+            if command in {"/exit", "/quit", "exit", "quit"}:
+                return 0
+            if command == "/help":
+                _print_help(arm_enabled=arm_controller is not None)
+                continue
+            if command == "/clear":
+                chat_session.clear()
+                if arm_session is not None:
+                    arm_session.clear()
+                print("对话上下文已清空。")
+                continue
+            if command == "/history":
+                _print_history(arm_session or chat_session)
+                continue
+            if command == "/config":
+                summary = settings.public_summary()
+                summary["arm"] = {
+                    "mode": arm_mode,
+                    "serial_port": arm_port,
+                    "config": str(arm_config_path),
+                    "max_distance_cm": max_distance_cm,
+                }
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                continue
+            if command == "/tool-test":
+                try:
+                    await _run_tool_test(settings, client)
+                except (APIClientError, RuntimeError, ValueError) as exc:
+                    print(f"错误: {exc}", file=sys.stderr)
+                continue
+            if command in {"/arm-status", "/arm-home", "/arm-stop"}:
+                if arm_controller is None:
+                    print("错误: 机械臂工具未启用，请使用--arm-mode。", file=sys.stderr)
+                    continue
+                try:
+                    if command == "/arm-status":
+                        result = await arm_controller.state()
+                    elif command == "/arm-home":
+                        result = await arm_controller.go_home()
+                    else:
+                        result = await arm_controller.stop_all()
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                except (RuntimeError, ValueError) as exc:
+                    print(f"错误: {exc}", file=sys.stderr)
+                continue
+            try:
+                if arm_session is not None:
+                    await _send_with_tools(arm_session, text)
+                else:
+                    await _send(chat_session, text)
             except (APIClientError, RuntimeError, ValueError) as exc:
-                print(f"错误: {exc}", file=sys.stderr)
-            continue
-        try:
-            await _send(session, text)
-        except (APIClientError, RuntimeError, ValueError) as exc:
-            print(f"\n错误: {exc}", file=sys.stderr)
+                print(f"\n错误: {exc}", file=sys.stderr)
+    finally:
+        if arm_controller is not None:
+            arm_controller.close()
 
 
 def main(argv: Optional[list[str]] = None) -> int:

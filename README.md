@@ -15,10 +15,11 @@
 
 当前方案只读取 RGB 彩色图。
 
-## AI对话与工具调用终端（第一、二阶段）
+## AI对话与机械臂工具终端（第一至三阶段）
 
 当前已接入OpenAI-compatible文本API、多轮命令行对话和白名单本地工具调用。
-目前唯一注册的工具是无硬件操作的测试计数器；不会读取相机，也不会控制机械臂。
+机械臂工具默认关闭；可在`dry-run`中验证AI调用，也可显式启用真实Ubuntu串口。
+当前仍不会读取相机，距离控制是运动学估计加舵机位置反馈，不是视觉闭环。
 
 Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
@@ -96,13 +97,65 @@ python3 -m src.jetarm_agent --tool-test
 自动化测试使用假AI客户端，不访问网络、不等待3秒，也不消耗API额度：
 
 ```bash
-python3 -m unittest tests.test_ai_agent
+python3 -m unittest tests.test_ai_agent tests.test_ai_arm_control
 ```
+
+### AI自然语言控制机械臂
+
+机械臂工具复用`ubuntu22_04_operation_terminal`中的串口协议、J1-J4运动学、限位、
+Home、J5和J6控制。先在模拟模式验证：
+
+```bash
+python3 -m src.jetarm_agent --arm-mode dry-run
+```
+
+进入对话后可以输入：
+
+```text
+向前移动5厘米
+向左移动2厘米
+上升3厘米
+J5顺时针旋转0.5秒
+打开夹爪0.5秒
+抓紧
+松开夹爪
+回到home
+停止机械臂
+```
+
+模拟结果会以`[arm-tool]`开头输出，不会打开串口。确认方向、舵机ID和Home位姿均
+正确后，再明确启用硬件：
+
+```bash
+python3 ubuntu22_04_operation_terminal/jetarm_terminal.py --list-ports
+
+python3 -m src.jetarm_agent \
+  --arm-mode hardware \
+  --arm-port /dev/serial/by-id/usb-你的设备名称
+```
+
+若只有一个`ttyUSB/ttyACM`设备，也可以省略`--arm-port`自动选择。硬件模式启动时
+读取J1-J4当前位置，不会自动回Home。退出程序时会停止J5/J6并关闭串口。
+
+直接终端命令：
+
+- `/arm-status`：读取J1-J4位置和估算TCP坐标。
+- `/arm-stop`：立即停止笛卡尔速度、J5和J6。
+- `/arm-home`：发送配置中的六关节Home位姿。
+
+安全限制：
+
+- 基座坐标定义为`+X前、+Y左、+Z上`。
+- TCP按约`0.4 cm`小步规划，默认单次最多`10 cm`。
+- J5及J6的单次定时动作最多`2 s`，完成后自动停止。
+- `grip_lock`会持续抓紧，必须通过“松开/停止”解除。
+- 当前没有RGB反馈、碰撞检测和目标物闭环，运行前必须清空工作空间并准备断电。
 
 默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
 配置文件。API Key只从`MOONSHOT_API_KEY`读取，不写入JSON或源码。
 
-交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、`/exit`。
+交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、
+`/arm-status`、`/arm-stop`、`/arm-home`、`/exit`。
 
 home 位置：
 

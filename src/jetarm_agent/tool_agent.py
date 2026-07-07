@@ -46,12 +46,16 @@ class ToolCallingSession:
         self.max_rounds = max_rounds
         self.history: list[dict[str, Any]] = []
 
+    def clear(self) -> None:
+        self.history.clear()
+
     async def ask(
         self,
         text: str,
         *,
         first_tool_choice: object = "auto",
         allow_additional_tools: bool = True,
+        require_any_tool: bool = False,
         required_tool_name: str | None = None,
         required_tool_retries: int = 1,
     ) -> ToolAgentResult:
@@ -78,25 +82,29 @@ class ToolCallingSession:
             turn.append(response.assistant_message())
 
             if not response.tool_calls:
-                required_executed = required_tool_name is None or any(
-                    call.name == required_tool_name
-                    and not (
+                successful_calls = [
+                    call
+                    for call in executed
+                    if not (
                         isinstance(call.result, dict)
                         and call.result.get("status") == "error"
                     )
-                    for call in executed
+                ]
+                required_name_executed = required_tool_name is None or any(
+                    call.name == required_tool_name for call in successful_calls
                 )
-                if not required_executed:
+                any_tool_executed = not require_any_tool or bool(successful_calls)
+                if not required_name_executed or not any_tool_executed:
                     if retry_count >= required_tool_retries:
-                        raise RuntimeError(
-                            f"AI没有调用必需工具: {required_tool_name}"
-                        )
+                        required = required_tool_name or "任一已注册工具"
+                        raise RuntimeError(f"AI没有调用必需工具: {required}")
                     retry_count += 1
+                    required = required_tool_name or "适合当前指令的已注册工具"
                     turn.append(
                         {
                             "role": "user",
                             "content": (
-                                f"本次测试必须调用工具{required_tool_name}，"
+                                f"本次指令必须调用{required}，"
                                 "请现在返回tool_calls，不要只回复文字。"
                             ),
                         }
