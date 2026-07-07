@@ -46,32 +46,38 @@ class FakeModelClient:
 
 
 class DeviceConfigTest(unittest.TestCase):
-    def test_device_config_roundtrip_and_v4l2_discovery(self):
+    def test_device_config_roundtrip_and_orbbec_sdk_discovery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config_path = root / "devices.json"
-            device_root = root / "dev"
-            sys_root = root / "sys"
-            video = device_root / "video2"
-            name_path = sys_root / "video2" / "name"
-            video.parent.mkdir()
-            video.touch()
-            name_path.parent.mkdir(parents=True)
-            name_path.write_text("Orbbec RGB Camera\n", encoding="utf-8")
+            camera = SimpleNamespace(
+                name="SV1301S_U3",
+                serial_number="4-1.2-11",
+                uid="4-1.2-11",
+                selection_key="4-1.2-11",
+                vid=0x2BC5,
+                pid=0x0614,
+                label="SV1301S_U3 | SN: 4-1.2-11 | 2bc5:0614",
+            )
 
             config = RuntimeDeviceConfig(
                 arm_mode="dry-run",
-                rgb_camera=str(video),
-                rgb_camera_name="Orbbec RGB Camera",
+                rgb_camera=camera.selection_key,
+                rgb_camera_name=camera.name,
             )
             config.save(config_path)
             loaded = RuntimeDeviceConfig.load(config_path)
-            cameras = discover_rgb_cameras(device_root, sys_root)
+            cameras = discover_rgb_cameras(lambda: [camera])
 
             self.assertEqual(loaded, config)
-            self.assertEqual(cameras[0].path, str(video))
-            self.assertEqual(cameras[0].name, "Orbbec RGB Camera")
-            self.assertEqual(validate_device_interfaces(config), [])
+            self.assertEqual(cameras[0].selection_key, "4-1.2-11")
+            self.assertEqual(cameras[0].name, "SV1301S_U3")
+            self.assertEqual(
+                validate_device_interfaces(
+                    config, camera_discover=lambda: [camera]
+                ),
+                [],
+            )
 
 
 class MCPServiceTest(unittest.IsolatedAsyncioTestCase):

@@ -76,7 +76,7 @@ class JetArmMCPService:
     async def capture_rgb(self) -> RGBJpegFrame:
         camera = self.devices.rgb_camera.strip()
         if not camera:
-            raise RuntimeError("未配置RGB相机接口，请先运行设备配置程序")
+            raise RuntimeError("未配置Orbbec相机序列号/UID，请先运行设备配置程序")
         LOGGER.info("Capturing RGB frame from %s", camera)
         return await asyncio.to_thread(self.camera_capture, camera)
 
@@ -172,13 +172,13 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     def get_initial_instructions() -> str:
         return service.initial_instructions()
 
-    @mcp.tool(description="检查机械臂串口和单路RGB相机接口配置。")
+    @mcp.tool(description="检查机械臂串口和Orbbec相机序列号/UID配置。")
     def get_device_status() -> dict[str, Any]:
         return service.device_status()
 
     @mcp.tool(
         description=(
-            "从已配置的单路V4L2 RGB相机采集最新彩色画面并返回JPEG。"
+            "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
             "用户要求查看、描述、识别或分析相机画面时调用；不启动深度流。"
         )
     )

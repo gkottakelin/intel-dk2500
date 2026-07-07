@@ -6,7 +6,7 @@ httpx[socks]>=0.27,<1
 python-dotenv>=1.0,<2
 numpy>=1.23.5,<2; python_version < "3.11"
 pyserial>=3.5,<4
-# RGB-only V4L2 capture and JPEG encoding for MCP image results.
+# RGB-only Orbbec color-frame conversion and JPEG encoding for MCP image results.
 opencv-python-headless>=4.8,<4.12
 # Stable MCP Python SDK line; v2 is still pre-release.
 mcp>=1.27,<2

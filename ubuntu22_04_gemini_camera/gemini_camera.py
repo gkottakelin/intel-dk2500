@@ -21,27 +21,50 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from orbbec_native import (
-    APP_ROOT,
-    DEFAULT_SDK_CONFIG,
-    DEFAULT_SDK_LIBRARY,
-    OB_FORMAT_BGR,
-    OB_FORMAT_BGRA,
-    OB_FORMAT_I420,
-    OB_FORMAT_MJPG,
-    OB_FORMAT_NV12,
-    OB_FORMAT_NV21,
-    OB_FORMAT_RGB,
-    OB_FORMAT_UYVY,
-    OB_FORMAT_YUY2,
-    OB_FORMAT_YUYV,
-    CameraDeviceInfo,
-    Intrinsics,
-    NativeFrame,
-    OrbbecSession,
-    depth_frame_to_mm,
-    enumerate_devices,
-)
+try:
+    from .orbbec_native import (
+        APP_ROOT,
+        DEFAULT_SDK_CONFIG,
+        DEFAULT_SDK_LIBRARY,
+        OB_FORMAT_BGR,
+        OB_FORMAT_BGRA,
+        OB_FORMAT_I420,
+        OB_FORMAT_MJPG,
+        OB_FORMAT_NV12,
+        OB_FORMAT_NV21,
+        OB_FORMAT_RGB,
+        OB_FORMAT_UYVY,
+        OB_FORMAT_YUY2,
+        OB_FORMAT_YUYV,
+        CameraDeviceInfo,
+        Intrinsics,
+        NativeFrame,
+        OrbbecSession,
+        depth_frame_to_mm,
+        enumerate_devices,
+    )
+except ImportError:  # Standalone execution from this directory.
+    from orbbec_native import (
+        APP_ROOT,
+        DEFAULT_SDK_CONFIG,
+        DEFAULT_SDK_LIBRARY,
+        OB_FORMAT_BGR,
+        OB_FORMAT_BGRA,
+        OB_FORMAT_I420,
+        OB_FORMAT_MJPG,
+        OB_FORMAT_NV12,
+        OB_FORMAT_NV21,
+        OB_FORMAT_RGB,
+        OB_FORMAT_UYVY,
+        OB_FORMAT_YUY2,
+        OB_FORMAT_YUYV,
+        CameraDeviceInfo,
+        Intrinsics,
+        NativeFrame,
+        OrbbecSession,
+        depth_frame_to_mm,
+        enumerate_devices,
+    )
 
 try:
     import tkinter as tk

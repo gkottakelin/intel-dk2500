@@ -17,7 +17,13 @@ from gemini_camera import (  # noqa: E402
     pixel_to_camera_point_mm,
     select_camera_device,
 )
-from orbbec_native import CameraDeviceInfo, Intrinsics, NativeFrame, depth_frame_to_mm  # noqa: E402
+from orbbec_native import (  # noqa: E402
+    CameraDeviceInfo,
+    Intrinsics,
+    NativeFrame,
+    OrbbecSession,
+    depth_frame_to_mm,
+)
 
 
 class GeminiCameraTest(unittest.TestCase):
@@ -66,6 +72,32 @@ class GeminiCameraTest(unittest.TestCase):
     def test_pixel_to_camera_coordinates(self):
         intrinsics = Intrinsics(640, 400, 500.0, 500.0, 320.0, 200.0)
         self.assertEqual(pixel_to_camera_point_mm(320, 200, 1000.0, intrinsics), (0.0, 0.0, 1000.0))
+
+    def test_color_only_wait_never_requests_depth_frame(self):
+        class FakeApi:
+            def __init__(self):
+                self.calls = []
+
+            def call(self, name, *_args):
+                self.calls.append(name)
+                return {
+                    "ob_pipeline_wait_for_frameset": 11,
+                    "ob_frameset_color_frame": 22,
+                }[name]
+
+            def safe_delete(self, name, _value):
+                self.calls.append(name)
+
+        session = OrbbecSession.__new__(OrbbecSession)
+        session.api = FakeApi()
+        session.pipeline = 7
+        expected = NativeFrame(1, 1, 23, b"\x00\x00\x00")
+        session._copy_frame = lambda _frame, is_depth: expected
+
+        frame = session.wait_for_color_frame(1000)
+
+        self.assertEqual(frame, expected)
+        self.assertNotIn("ob_frameset_depth_frame", session.api.calls)
 
 
 if __name__ == "__main__":

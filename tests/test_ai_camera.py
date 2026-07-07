@@ -1,4 +1,5 @@
 import unittest
+import xml.etree.ElementTree as ET
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,37 +22,8 @@ except ModuleNotFoundError:
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
 
-class FakeCapture:
-    def __init__(self, frame):
-        self.frame = frame
-        self.released = False
-
-    def isOpened(self):
-        return True
-
-    def set(self, _key, _value):
-        return True
-
-    def read(self):
-        return True, self.frame
-
-    def release(self):
-        self.released = True
-
-
 class FakeCV2:
-    CAP_V4L2 = 200
-    CAP_PROP_FRAME_WIDTH = 3
-    CAP_PROP_FRAME_HEIGHT = 4
-    CAP_PROP_BUFFERSIZE = 38
     IMWRITE_JPEG_QUALITY = 1
-
-    def __init__(self):
-        self.capture = FakeCapture(np.zeros((24, 32, 3), dtype=np.uint8))
-
-    def VideoCapture(self, device, backend):
-        self.opened = (device, backend)
-        return self.capture
 
     @staticmethod
     def imencode(extension, frame, options):
@@ -61,16 +33,45 @@ class FakeCV2:
         return True, np.frombuffer(b"jpeg-bytes", dtype=np.uint8)
 
 
+class FakeOrbbecSession:
+    selection_key = ""
+    depth_enabled = True
+
+    def __init__(self, selection_key, *, library_path, config_path):
+        type(self).selection_key = selection_key
+        stream = ET.parse(config_path).getroot().find("./Pipeline/Stream")
+        type(self).depth_enabled = stream is not None and stream.find("Depth") is not None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        return None
+
+    @staticmethod
+    def wait_for_color_frame(_timeout_ms):
+        return SimpleNamespace(frame_format=5)
+
+
 class RGBCaptureTest(unittest.TestCase):
-    def test_v4l2_frame_is_encoded_and_camera_is_released(self):
+    def test_selected_orbbec_device_uses_color_only_sdk_config(self):
         fake_cv2 = FakeCV2()
 
-        frame = capture_rgb_jpeg("/dev/video2", cv2_module=fake_cv2)
+        frame = capture_rgb_jpeg(
+            "4-1.2-11",
+            cv2_module=fake_cv2,
+            session_factory=FakeOrbbecSession,
+            frame_converter=lambda _frame: np.zeros((24, 32, 3), dtype=np.uint8),
+        )
 
-        self.assertEqual(fake_cv2.opened, ("/dev/video2", fake_cv2.CAP_V4L2))
+        self.assertEqual(FakeOrbbecSession.selection_key, "4-1.2-11")
+        self.assertFalse(FakeOrbbecSession.depth_enabled)
         self.assertEqual(frame.data, b"jpeg-bytes")
         self.assertEqual((frame.width, frame.height), (32, 24))
-        self.assertTrue(fake_cv2.capture.released)
+
+    def test_old_v4l2_node_configuration_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "不再支持V4L2"):
+            capture_rgb_jpeg("/dev/video1", cv2_module=FakeCV2())
 
 
 class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
@@ -82,13 +83,13 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
             return RGBJpegFrame(b"jpeg", 640, 480)
 
         service = JetArmMCPService(
-            RuntimeDeviceConfig(arm_mode="off", rgb_camera="/dev/video4"),
+            RuntimeDeviceConfig(arm_mode="off", rgb_camera="4-1.2-11"),
             camera_capture=fake_capture,
         )
 
         frame = await service.capture_rgb()
 
-        self.assertEqual(seen, ["/dev/video4"])
+        self.assertEqual(seen, ["4-1.2-11"])
         self.assertEqual(frame.data, b"jpeg")
 
     async def test_fastmcp_returns_json_and_jpeg_content_blocks(self):
@@ -98,7 +99,7 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
             self.skipTest("MCP SDK is not installed in this test environment")
 
         service = JetArmMCPService(
-            RuntimeDeviceConfig(arm_mode="off", rgb_camera="/dev/video4"),
+            RuntimeDeviceConfig(arm_mode="off", rgb_camera="4-1.2-11"),
             camera_capture=lambda _device: RGBJpegFrame(b"jpeg", 640, 480),
         )
         server = create_mcp_server(service)

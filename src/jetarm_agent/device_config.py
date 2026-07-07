@@ -8,23 +8,24 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .arm_control import DEFAULT_TERMINAL_CONFIG, _load_terminal_module
+
+try:
+    from ubuntu22_04_gemini_camera.orbbec_native import (
+        CameraDeviceInfo,
+        enumerate_devices as enumerate_orbbec_devices,
+    )
+except ModuleNotFoundError:  # Imported as project.src.jetarm_agent in tests.
+    from project.ubuntu22_04_gemini_camera.orbbec_native import (
+        CameraDeviceInfo,
+        enumerate_devices as enumerate_orbbec_devices,
+    )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DEVICE_CONFIG_PATH = PROJECT_ROOT / "config" / "devices.json"
-
-
-@dataclass(frozen=True)
-class RGBCameraDevice:
-    path: str
-    name: str
-
-    @property
-    def label(self) -> str:
-        return f"{self.path} — {self.name or 'RGB camera'}"
 
 
 @dataclass(frozen=True)
@@ -78,25 +79,18 @@ class RuntimeDeviceConfig:
 
 
 def discover_rgb_cameras(
-    device_root: str | Path = "/dev",
-    sys_root: str | Path = "/sys/class/video4linux",
-) -> list[RGBCameraDevice]:
-    """Enumerate Linux V4L2 interfaces without starting a depth stream."""
+    enumerator: Callable[[], list[CameraDeviceInfo]] = enumerate_orbbec_devices,
+) -> list[CameraDeviceInfo]:
+    """Enumerate physical Gemini/Orbbec devices through the bundled SDK."""
 
-    devices = Path(device_root)
-    sys_devices = Path(sys_root)
-    result: list[RGBCameraDevice] = []
-    for path in sorted(devices.glob("video*")):
-        name_path = sys_devices / path.name / "name"
-        try:
-            name = name_path.read_text(encoding="utf-8").strip()
-        except (FileNotFoundError, OSError, UnicodeError):
-            name = "V4L2 camera"
-        result.append(RGBCameraDevice(str(path), name))
-    return result
+    return list(enumerator())
 
 
-def validate_device_interfaces(config: RuntimeDeviceConfig) -> list[str]:
+def validate_device_interfaces(
+    config: RuntimeDeviceConfig,
+    *,
+    camera_discover: Callable[[], list[CameraDeviceInfo]] = discover_rgb_cameras,
+) -> list[str]:
     """Return preflight errors without opening either interface permanently."""
 
     errors: list[str] = []
@@ -107,11 +101,25 @@ def validate_device_interfaces(config: RuntimeDeviceConfig) -> list[str]:
         elif not os.access(arm_path, os.R_OK | os.W_OK):
             errors.append(f"机械臂串口不可读写: {config.arm_port}")
     if config.rgb_camera:
-        camera_path = Path(config.rgb_camera)
-        if not camera_path.exists():
-            errors.append(f"RGB相机接口不存在: {config.rgb_camera}")
-        elif not os.access(camera_path, os.R_OK):
-            errors.append(f"RGB相机接口不可读: {config.rgb_camera}")
+        if config.rgb_camera.startswith("/dev/video"):
+            errors.append("检测到旧V4L2相机配置，请重新配置并选择Orbbec USB设备/序列号")
+        else:
+            try:
+                cameras = camera_discover()
+            except Exception as exc:
+                errors.append(f"Orbbec SDK枚举失败: {exc}")
+            else:
+                match = next(
+                    (
+                        camera
+                        for camera in cameras
+                        if config.rgb_camera
+                        in {camera.serial_number, camera.uid, camera.selection_key}
+                    ),
+                    None,
+                )
+                if match is None:
+                    errors.append(f"未发现配置的Orbbec相机: {config.rgb_camera}")
     return errors
 
 
@@ -131,7 +139,7 @@ def configure_devices_dialog(
     body = ttk.Frame(root, padding=18)
     body.grid(row=0, column=0, sticky="nsew")
     body.columnconfigure(1, weight=1)
-    ttk.Label(body, text="机械臂与RGB相机接口", font=("Noto Sans CJK SC", 13, "bold")).grid(
+    ttk.Label(body, text="机械臂与Gemini RGB相机", font=("Noto Sans CJK SC", 13, "bold")).grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 14)
     )
 
@@ -153,10 +161,10 @@ def configure_devices_dialog(
     port_box = ttk.Combobox(body, textvariable=port_value, width=62, state="normal")
     port_box.grid(row=2, column=1, sticky="ew", pady=4)
 
-    ttk.Label(body, text="RGB相机接口").grid(row=3, column=0, sticky="w", padx=(0, 10))
-    camera_box = ttk.Combobox(body, textvariable=camera_value, width=62, state="normal")
+    ttk.Label(body, text="Gemini设备/序列号").grid(row=3, column=0, sticky="w", padx=(0, 10))
+    camera_box = ttk.Combobox(body, textvariable=camera_value, width=62, state="readonly")
     camera_box.grid(row=3, column=1, sticky="ew", pady=4)
-    camera_by_label: dict[str, RGBCameraDevice] = {}
+    camera_by_label: dict[str, CameraDeviceInfo] = {}
 
     def refresh() -> None:
         nonlocal camera_by_label
@@ -164,18 +172,37 @@ def configure_devices_dialog(
         port_box.configure(values=ports)
         if not port_value.get() and ports:
             port_value.set(ports[0])
-        cameras = discover_rgb_cameras()
+        enumeration_error = ""
+        try:
+            cameras = discover_rgb_cameras()
+        except Exception as exc:
+            cameras = []
+            enumeration_error = str(exc)
         camera_by_label = {camera.label: camera for camera in cameras}
         camera_box.configure(values=list(camera_by_label))
         selected = next(
-            (camera.label for camera in cameras if camera.path == camera_value.get()),
+            (
+                camera.label
+                for camera in cameras
+                if camera_value.get()
+                in {camera.serial_number, camera.uid, camera.selection_key}
+            ),
             "",
         )
         if selected:
             camera_value.set(selected)
-        elif not camera_value.get() and cameras:
+        elif cameras:
             camera_value.set(cameras[0].label)
-        status_value.set(f"发现 {len(ports)} 个机械臂候选串口、{len(cameras)} 个V4L2接口")
+        else:
+            camera_value.set("")
+        if enumeration_error:
+            status_value.set(f"Orbbec SDK枚举失败: {enumeration_error}")
+        elif cameras:
+            status_value.set(
+                f"发现 {len(ports)} 个机械臂候选串口、{len(cameras)} 台Orbbec相机"
+            )
+        else:
+            status_value.set(f"发现 {len(ports)} 个机械臂候选串口，未发现Orbbec相机")
 
     ttk.Button(body, text="刷新", command=refresh).grid(
         row=2, column=2, rowspan=2, sticky="nsew", padx=(10, 0), pady=4
@@ -191,7 +218,7 @@ def configure_devices_dialog(
             arm_mode=mode_value.get().strip(),
             arm_port=port_value.get().strip(),
             arm_terminal_config=initial.arm_terminal_config,
-            rgb_camera=camera.path if camera else camera_text.split(" — ", 1)[0],
+            rgb_camera=camera.selection_key if camera else "",
             rgb_camera_name=camera.name if camera else "",
         )
         try:
@@ -219,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-gui", action="store_true")
     parser.add_argument("--arm-mode", choices=("off", "dry-run", "hardware"))
     parser.add_argument("--arm-port")
-    parser.add_argument("--camera", help="RGB V4L2接口，如/dev/video0")
+    parser.add_argument("--camera", help="Orbbec相机序列号或UID")
     parser.add_argument("--camera-name", default="")
     parser.add_argument("--arm-config", default=str(DEFAULT_TERMINAL_CONFIG))
     return parser

@@ -354,6 +354,24 @@ class OrbbecSession:
             self.api.safe_delete("ob_delete_frame", depth_frame)
             self.api.safe_delete("ob_delete_frame", frameset)
 
+    def wait_for_color_frame(self, timeout_ms: int) -> Optional[NativeFrame]:
+        """Wait for one color frame without requesting or copying a depth frame."""
+
+        frameset = self.api.call(
+            "ob_pipeline_wait_for_frameset",
+            self.pipeline,
+            ctypes.c_uint32(timeout_ms),
+        )
+        if not frameset:
+            return None
+        color_frame = 0
+        try:
+            color_frame = self.api.call("ob_frameset_color_frame", frameset)
+            return self._copy_frame(color_frame, is_depth=False) if color_frame else None
+        finally:
+            self.api.safe_delete("ob_delete_frame", color_frame)
+            self.api.safe_delete("ob_delete_frame", frameset)
+
     def intrinsics(self) -> dict[str, Intrinsics]:
         value = self.api.call("ob_pipeline_get_camera_param", self.pipeline)
 

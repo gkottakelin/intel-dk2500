@@ -117,7 +117,7 @@ source .venv-ai/bin/activate
 python3 -m src.jetarm_agent.device_config
 ```
 
-窗口中配置机械臂模式、串口和单路RGB相机`/dev/video*`接口，结果保存在本机专用的
+窗口中配置机械臂模式、串口，并通过Orbbec SDK选择Gemini USB设备/序列号，结果保存在本机专用的
 `config/devices.json`，该文件已被Git忽略。无GUI的模拟配置方式：
 
 ```bash
@@ -165,9 +165,10 @@ J5顺时针旋转0.5秒
 - 用户指定速度必须在`1–5 cm/s`。
 - 单个物理运动分段最多`3 cm`；总距离默认最多`10 cm`。
 - 只有MCP返回`status=ok`后Agent才能报告完成。
-- 当前相机配置只保存一路RGB V4L2接口，不启动深度流。
+- 当前相机配置保存Orbbec USB设备的序列号/UID，不再保存容易混淆的`/dev/video*`节点。
+- 取图时生成仅启用Color的SDK配置，不启动或读取Depth流。
 
-RGB图像链路参考`IliaLarchenko/robot_MCP`：V4L2采集最新彩色帧，MCP返回JSON文本和
+RGB图像链路参考`IliaLarchenko/robot_MCP`：Orbbec SDK按序列号采集最新彩色帧，MCP返回JSON文本和
 JPEG图像内容块，Agent把JPEG转换为Kimi支持的Base64 `image_url`，模型读取图像后生成
 描述或后续工具调用。程序只保留最近一次MCP图像，避免对话历史持续累积Base64数据。
 
