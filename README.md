@@ -15,10 +15,10 @@
 
 当前方案只读取 RGB 彩色图。
 
-## AI对话终端（第一阶段）
+## AI对话与工具调用终端（第一、二阶段）
 
-当前已先接入OpenAI-compatible文本API和多轮命令行对话。这个阶段不会读取
-相机，也不会控制机械臂。
+当前已接入OpenAI-compatible文本API、多轮命令行对话和白名单本地工具调用。
+目前唯一注册的工具是无硬件操作的测试计数器；不会读取相机，也不会控制机械臂。
 
 Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
@@ -76,10 +76,32 @@ source .venv-ai/bin/activate
 python3 -m src.jetarm_agent --once "你好，请介绍一下你自己"
 ```
 
+### AI调用本地代码贯通测试
+
+该测试严格执行以下链路：程序等待3秒并向AI发送`ok`，AI返回结构化函数调用，
+本地白名单工具将计数器从0加到1，程序把`{"status":"ok","count":1}`回传AI，
+AI再生成最终回复。测试会产生两次API请求，但不会访问相机或机械臂。
+
+```bash
+python3 -m src.jetarm_agent --tool-test
+```
+
+也可在交互终端输入`/tool-test`。成功时最后显示：
+
+```text
+[tool-test] 通过：工具调用1次，计数器=1
+```
+
+自动化测试使用假AI客户端，不访问网络、不等待3秒，也不消耗API额度：
+
+```bash
+python3 -m unittest tests.test_ai_agent
+```
+
 默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
 配置文件。API Key只从环境变量读取，不写入项目文件。
 
-交互命令：`/help`、`/clear`、`/history`、`/config`、`/exit`。
+交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、`/exit`。
 
 home 位置：
 
