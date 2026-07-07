@@ -71,6 +71,15 @@ class UbuntuTerminalTest(unittest.TestCase):
         self.assertTrue(controller.move_calls)
         self.assertTrue(all(1 <= servo_id <= 4 for servo_id, _target, _time in controller.move_calls))
 
+    def test_cartesian_step_can_use_a_longer_physical_run_time(self):
+        runtime, controller = self.make_runtime()
+        runtime.set_joystick(0, -1)
+        self.assertTrue(runtime.step_cartesian(0.08, run_time_s=0.24))
+        self.assertTrue(controller.move_calls)
+        self.assertTrue(
+            all(run_time_ms == 240 for _servo_id, _target, run_time_ms in controller.move_calls)
+        )
+
     def test_vertical_step_generates_pitch_joint_commands(self):
         runtime, controller = self.make_runtime()
         runtime.set_vertical_direction(1)
@@ -93,10 +102,34 @@ class UbuntuTerminalTest(unittest.TestCase):
             root = Path(directory)
             port = root / "customSerial0"
             port.touch()
-            provider = lambda: [SimpleNamespace(device=str(port))]
+            provider = lambda: [
+                SimpleNamespace(
+                    device=str(port), vid=0x1A86, hwid="USB VID:PID=1A86:7523"
+                )
+            ]
             self.assertEqual(
                 discover_linux_serial_ports(root, list_ports_provider=provider),
                 [str(port)],
+            )
+
+    def test_ignores_legacy_ttys_reported_by_pyserial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy_port = root / "ttyS31"
+            usb_port = root / "ttyUSB0"
+            legacy_port.touch()
+            usb_port.touch()
+            provider = lambda: [
+                SimpleNamespace(device=str(legacy_port), vid=None, hwid="PNP0501"),
+                SimpleNamespace(
+                    device=str(usb_port),
+                    vid=0x1A86,
+                    hwid="USB VID:PID=1A86:7523",
+                ),
+            ]
+            self.assertEqual(
+                discover_linux_serial_ports(root, list_ports_provider=provider),
+                [str(usb_port)],
             )
 
     def test_detects_ch340_at_usb_layer_without_tty_node(self):

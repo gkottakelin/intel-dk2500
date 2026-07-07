@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ DEFAULT_TERMINAL_CONFIG = (
     / "terminal.json"
 )
 ARM_JOINTS = ("J1", "J2", "J3", "J4")
+DEFAULT_TCP_SPEED_CM_S = 1.5
+MIN_TCP_SPEED_CM_S = 1.0
+MAX_TCP_SPEED_CM_S = 5.0
+MAX_TCP_SEGMENT_CM = 3.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -33,6 +38,10 @@ class ArmControlConfig:
     serial_port: str | None = None
     terminal_config_path: Path = DEFAULT_TERMINAL_CONFIG
     max_distance_cm: float = 10.0
+    default_speed_cm_s: float = DEFAULT_TCP_SPEED_CM_S
+    min_speed_cm_s: float = MIN_TCP_SPEED_CM_S
+    max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
+    max_segment_cm: float = MAX_TCP_SEGMENT_CM
     max_motor_duration_s: float = 2.0
 
     def validate(self) -> None:
@@ -40,6 +49,10 @@ class ArmControlConfig:
             raise ArmControlError(f"机械臂模式必须是dry-run或hardware，收到: {self.mode}")
         if self.max_distance_cm <= 0:
             raise ArmControlError("max_distance_cm必须大于0")
+        if not 0 < self.min_speed_cm_s <= self.default_speed_cm_s <= self.max_speed_cm_s:
+            raise ArmControlError("TCP速度配置必须满足0 < 最小值 <= 默认值 <= 最大值")
+        if self.max_segment_cm <= 0:
+            raise ArmControlError("max_segment_cm必须大于0")
         if self.max_motor_duration_s <= 0:
             raise ArmControlError("max_motor_duration_s必须大于0")
 
@@ -74,7 +87,46 @@ def choose_arm_serial_port(initial_port: str | None = None) -> str | None:
     try:
         return terminal.choose_serial_port_dialog(root, initial_port)
     finally:
-        root.destroy()
+        try:
+            root.destroy()
+        except Exception:
+            # Closing the child dialog can already destroy the Tcl application.
+            pass
+
+
+COMPACT_DIRECTION_NAMES = {
+    "前": "forward",
+    "后": "backward",
+    "左": "left",
+    "右": "right",
+    "上": "up",
+    "下": "down",
+}
+COMPACT_DIRECTION_LABELS = {value: key for key, value in COMPACT_DIRECTION_NAMES.items()}
+
+
+def parse_compact_arm_command(command: str) -> tuple[str, float]:
+    """Parse compact MCP commands such as ``前5`` or ``上2.5cm``."""
+
+    match = re.fullmatch(
+        r"\s*(前|后|左|右|上|下)\s*(\d+(?:\.\d+)?)\s*(?:厘米|cm)?\s*",
+        str(command),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        raise ArmControlError("机械臂移动命令格式错误，应为前5、后2或上1.5cm")
+    distance = float(match.group(2))
+    if distance <= 0:
+        raise ArmControlError("移动距离必须大于0")
+    return COMPACT_DIRECTION_NAMES[match.group(1)], distance
+
+
+def format_compact_arm_command(direction: str, distance_cm: float) -> str:
+    try:
+        label = COMPACT_DIRECTION_LABELS[direction]
+    except KeyError as exc:
+        raise ArmControlError(f"不支持的TCP方向: {direction}") from exc
+    return f"{label}{distance_cm:g}"
 
 
 class JetArmToolController:
@@ -184,34 +236,51 @@ class JetArmToolController:
             refreshed[joint_name] = value
         self.runtime.positions.update(refreshed)
 
-    async def move_tcp(self, direction: str, distance_cm: object) -> dict[str, Any]:
-        """Move TCP in the robot-base frame through bounded incremental IK steps."""
+    def _validate_speed(self, speed_cm_s: object | None) -> float:
+        value = self.config.default_speed_cm_s if speed_cm_s is None else speed_cm_s
+        if isinstance(value, bool):
+            raise ArmControlError("speed_cm_s必须是数字")
+        try:
+            speed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ArmControlError("speed_cm_s必须是数字") from exc
+        if not math.isfinite(speed):
+            raise ArmControlError("speed_cm_s必须是有限数字")
+        if not self.config.min_speed_cm_s <= speed <= self.config.max_speed_cm_s:
+            raise ArmControlError(
+                f"speed_cm_s必须在{self.config.min_speed_cm_s:g}到"
+                f"{self.config.max_speed_cm_s:g}之间"
+            )
+        return speed
 
-        distance = self._validate_positive_number(
-            distance_cm, "distance_cm", self.config.max_distance_cm
-        )
+    async def _move_tcp_segment(
+        self, direction: str, distance_cm: float, speed_cm_s: float
+    ) -> dict[str, Any]:
+        """Execute one physical Cartesian segment no longer than max_segment_cm."""
+
         self._refresh_hardware_positions()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
-        speed_m_s = self._set_cartesian_direction(direction)
-        if speed_m_s <= 0:
-            self._stop_cartesian()
-            raise ArmControlError("配置的TCP速度必须大于0")
+        requested_speed_m_s = speed_cm_s / 100.0
+        planner_speed_m_s = self._set_cartesian_direction(direction)
 
-        total_time_s = (distance / 100.0) / speed_m_s
-        remaining_s = total_time_s
+        planner_time_s = (distance_cm / 100.0) / planner_speed_m_s
+        remaining_s = planner_time_s
         steps = 0
         try:
             while remaining_s > 1e-9:
-                dt = min(self.settings.tick_s, remaining_s)
-                if not self.runtime.step_cartesian(dt):
+                planner_dt = min(self.settings.tick_s, remaining_s)
+                execution_dt = planner_dt * planner_speed_m_s / requested_speed_m_s
+                if not self.runtime.step_cartesian(
+                    planner_dt, run_time_s=execution_dt
+                ):
                     raise ArmControlError(
                         f"向{direction}运动在第{steps + 1}步无法继续，"
                         "可能已到关节限位或当前姿态不可达"
                     )
                 steps += 1
-                remaining_s -= dt
+                remaining_s -= planner_dt
                 if self.config.mode == "hardware":
-                    await self.sleep(dt)
+                    await self.sleep(execution_dt)
         finally:
             self._stop_cartesian()
 
@@ -233,7 +302,8 @@ class JetArmToolController:
             "status": "ok",
             "mode": self.config.mode,
             "direction": direction,
-            "requested_distance_cm": distance,
+            "requested_distance_cm": distance_cm,
+            "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
             "estimated_delta_cm": {
                 "forward_x": round(float(delta_cm[0]), 3),
@@ -243,6 +313,57 @@ class JetArmToolController:
             "steps": steps,
             "joint_positions": dict(self.runtime.positions),
         }
+
+    async def move_tcp(
+        self,
+        direction: str,
+        distance_cm: object,
+        speed_cm_s: object | None = None,
+    ) -> dict[str, Any]:
+        """Move TCP with bounded 3 cm physical segments and an explicit speed."""
+
+        distance = self._validate_positive_number(
+            distance_cm, "distance_cm", self.config.max_distance_cm
+        )
+        speed = self._validate_speed(speed_cm_s)
+        remaining = distance
+        segment_results: list[dict[str, Any]] = []
+        while remaining > 1e-9:
+            segment_distance = min(self.config.max_segment_cm, remaining)
+            result = await self._move_tcp_segment(direction, segment_distance, speed)
+            segment_results.append(result)
+            remaining -= segment_distance
+
+        return {
+            "status": "ok",
+            "mode": self.config.mode,
+            "command": format_compact_arm_command(direction, distance),
+            "direction": direction,
+            "requested_distance_cm": distance,
+            "speed_cm_s": speed,
+            "segment_limit_cm": self.config.max_segment_cm,
+            "segments": [
+                {
+                    "index": index,
+                    "distance_cm": item["requested_distance_cm"],
+                    "estimated_distance_cm": item["estimated_distance_cm"],
+                    "steps": item["steps"],
+                }
+                for index, item in enumerate(segment_results, 1)
+            ],
+            "segment_count": len(segment_results),
+            "steps": sum(int(item["steps"]) for item in segment_results),
+            "estimated_distance_cm": round(
+                sum(item["estimated_distance_cm"] for item in segment_results), 3
+            ),
+            "joint_positions": dict(self.runtime.positions),
+        }
+
+    async def execute_compact_command(
+        self, command: str, speed_cm_s: object | None = None
+    ) -> dict[str, Any]:
+        direction, distance_cm = parse_compact_arm_command(command)
+        return await self.move_tcp(direction, distance_cm, speed_cm_s)
 
     async def rotate_wrist(
         self, direction: str, duration_s: object
@@ -358,7 +479,9 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
 
     async def move(arguments: Mapping[str, Any]) -> object:
         return await controller.move_tcp(
-            str(arguments.get("direction", "")), arguments.get("distance_cm")
+            str(arguments.get("direction", "")),
+            arguments.get("distance_cm"),
+            arguments.get("speed_cm_s"),
         )
 
     async def wrist(arguments: Mapping[str, Any]) -> object:
@@ -406,6 +529,12 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                             "type": "number",
                             "exclusiveMinimum": 0,
                             "maximum": controller.config.max_distance_cm,
+                        },
+                        "speed_cm_s": {
+                            "type": "number",
+                            "minimum": controller.config.min_speed_cm_s,
+                            "maximum": controller.config.max_speed_cm_s,
+                            "default": controller.config.default_speed_cm_s,
                         },
                     },
                     "required": ["direction", "distance_cm"],
@@ -491,6 +620,11 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
 def looks_like_arm_command(text: str) -> bool:
     """Conservatively identify commands that must produce a real arm tool call."""
 
+    try:
+        parse_compact_arm_command(text)
+        return True
+    except ArmControlError:
+        pass
     normalized = text.strip().lower().replace(" ", "")
     phrases = (
         "向前",
@@ -528,12 +662,55 @@ def looks_like_arm_command(text: str) -> bool:
     return any(phrase in normalized for phrase in phrases)
 
 
+def required_mcp_tool_for_command(text: str) -> str | None:
+    """Map explicit natural-language actions to the MCP tool that must run."""
+
+    try:
+        parse_compact_arm_command(text)
+        return "move_jetarm"
+    except ArmControlError:
+        pass
+    normalized = text.strip().lower().replace(" ", "")
+    if any(
+        phrase in normalized
+        for phrase in (
+            "向前",
+            "前进",
+            "向后",
+            "后退",
+            "向左",
+            "向右",
+            "向上",
+            "向下",
+            "上升",
+            "下降",
+            "抬高",
+            "降低",
+            "moveforward",
+            "movebackward",
+        )
+    ):
+        return "move_jetarm"
+    if any(phrase in normalized for phrase in ("夹爪", "夹紧", "抓紧", "松开", "张开", "gripper")):
+        return "control_jetarm_gripper"
+    if any(phrase in normalized for phrase in ("顺时针", "逆时针")):
+        return "rotate_jetarm_wrist"
+    if any(phrase in normalized for phrase in ("回到home", "回home", "回零", "gohome")):
+        return "move_jetarm_home"
+    if any(phrase in normalized for phrase in ("机械臂停止", "停止机械臂", "stoparm")):
+        return "stop_jetarm"
+    if any(phrase in normalized for phrase in ("机械臂状态",)):
+        return "get_jetarm_state"
+    return None
+
+
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用机械臂工具，禁止自行追加动作。
 2. “前/后/左/右/上/下”使用机械臂基座坐标系；距离必须保持用户给出的厘米数。
-3. 用户没有给出距离时先询问，不得猜测。单次距离超过工具上限时必须拒绝并解释。
-4. 每个动作完成后读取工具结果；只有status=ok时才能声称动作完成。
-5. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
-6. 当前没有相机反馈，不能声称看见物体或完成视觉闭环夹取。
+3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
+4. 控制器会把长距离自动拆为不超过3cm的物理分段，禁止模型自行改变总距离。
+5. 每个动作完成后读取工具结果；只有status=ok时才能声称动作完成。
+6. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
+7. 当前只配置RGB相机；未调用图像工具时不能声称看见物体或完成视觉闭环夹取。
 """.strip()

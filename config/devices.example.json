@@ -1,0 +1,7 @@
+{
+  "arm_mode": "hardware",
+  "arm_port": "/dev/ttyUSB0",
+  "arm_terminal_config": "ubuntu22_04_operation_terminal/config/terminal.json",
+  "rgb_camera": "/dev/video0",
+  "rgb_camera_name": "Orbbec USB 2.0 Camera"
+}

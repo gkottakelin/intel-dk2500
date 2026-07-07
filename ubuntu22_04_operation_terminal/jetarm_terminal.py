@@ -416,14 +416,15 @@ class ManualServoRuntime:
         self.last_step_at = now
         self.step_cartesian(dt)
 
-    def step_cartesian(self, dt: float) -> bool:
+    def step_cartesian(self, dt: float, *, run_time_s: Optional[float] = None) -> bool:
         velocity = self.cartesian_velocity()
         if float(np.linalg.norm(velocity)) < 1e-9:
             return False
         target_positions = self._solve_next_positions(velocity * dt)
         if target_positions == self.positions:
             return False
-        run_time_ms = max(1, int(round(dt * 1000)))
+        execution_time_s = dt if run_time_s is None else run_time_s
+        run_time_ms = max(1, int(round(execution_time_s * 1000)))
         for joint_name in ARM_JOINTS:
             target = target_positions[joint_name]
             if target != self.positions[joint_name]:
@@ -474,6 +475,24 @@ def _pyserial_list_ports() -> list[Any]:
     return list(list_ports.comports())
 
 
+def _is_supported_pyserial_port(port: Any) -> bool:
+    """Exclude legacy ttyS ports while retaining real USB serial adapters."""
+
+    device = str(getattr(port, "device", "") or "").strip()
+    if not device:
+        return False
+    device_name = Path(device).name
+    if any(Path(device_name).match(pattern) for pattern in LINUX_SERIAL_PATTERNS):
+        return True
+
+    # PySerial exposes VID/PID and an HWID containing USB for USB adapters.
+    # This also supports less common USB serial drivers with nonstandard names.
+    if getattr(port, "vid", None) is not None:
+        return True
+    hwid = str(getattr(port, "hwid", "") or "").upper()
+    return "USB" in hwid
+
+
 def discover_linux_serial_ports(
     device_root: str | Path = "/dev",
     *,
@@ -499,6 +518,8 @@ def discover_linux_serial_ports(
         provider = _pyserial_list_ports
     if provider is not None:
         for port in provider():
+            if not _is_supported_pyserial_port(port):
+                continue
             device = str(getattr(port, "device", "") or "").strip()
             if device:
                 candidates.append(Path(device))

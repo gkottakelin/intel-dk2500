@@ -11,7 +11,10 @@ try:
         JetArmToolController,
         build_arm_tool_registry,
         choose_arm_serial_port,
+        format_compact_arm_command,
         looks_like_arm_command,
+        parse_compact_arm_command,
+        required_mcp_tool_for_command,
     )
     from project.src.jetarm_agent.config import AgentSettings
     from project.src.jetarm_agent.openai_compatible import (
@@ -26,7 +29,10 @@ except ModuleNotFoundError:
         JetArmToolController,
         build_arm_tool_registry,
         choose_arm_serial_port,
+        format_compact_arm_command,
         looks_like_arm_command,
+        parse_compact_arm_command,
+        required_mcp_tool_for_command,
     )
     from src.jetarm_agent.config import AgentSettings
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
@@ -60,6 +66,13 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["requested_distance_cm"], 5)
+        self.assertEqual(result["command"], "前5")
+        self.assertEqual(result["speed_cm_s"], 1.5)
+        self.assertEqual(result["segment_count"], 2)
+        self.assertEqual(
+            [segment["distance_cm"] for segment in result["segments"]],
+            [3, 2],
+        )
         self.assertGreater(result["estimated_distance_cm"], 4)
         self.assertEqual(result["steps"], 13)
         self.assertTrue(self.controller.controller.move_calls)
@@ -69,6 +82,23 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 for servo_id, _target, _run_time in self.controller.controller.move_calls
             )
         )
+
+    async def test_compact_command_and_speed_bounds(self):
+        self.assertEqual(parse_compact_arm_command("前5厘米"), ("forward", 5.0))
+        self.assertEqual(format_compact_arm_command("up", 1.5), "上1.5")
+        result = await self.controller.execute_compact_command("右2", 2.0)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["speed_cm_s"], 2.0)
+        with self.assertRaisesRegex(ArmControlError, "1到5"):
+            await self.controller.execute_compact_command("前1", 0.9)
+        with self.assertRaisesRegex(ArmControlError, "1到5"):
+            await self.controller.execute_compact_command("前1", 5.1)
+
+    async def test_default_speed_changes_servo_execution_time(self):
+        await self.controller.execute_compact_command("前1")
+        run_times = [item[2] for item in self.controller.controller.move_calls]
+        self.assertTrue(run_times)
+        self.assertGreater(max(run_times), 80)
 
     async def test_rejects_distance_above_safety_limit(self):
         with self.assertRaisesRegex(ArmControlError, "不能超过10"):
@@ -122,11 +152,18 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             move_schema["function"]["parameters"]["properties"]["distance_cm"]["maximum"],
             10,
         )
+        speed_schema = move_schema["function"]["parameters"]["properties"]["speed_cm_s"]
+        self.assertEqual(speed_schema["minimum"], 1)
+        self.assertEqual(speed_schema["maximum"], 5)
+        self.assertEqual(speed_schema["default"], 1.5)
 
     async def test_arm_command_detection_does_not_require_model_guessing(self):
         self.assertTrue(looks_like_arm_command("向前移动5厘米"))
+        self.assertTrue(looks_like_arm_command("前5"))
         self.assertTrue(looks_like_arm_command("夹紧夹爪"))
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
+        self.assertEqual(required_mcp_tool_for_command("向前移动5厘米"), "move_jetarm")
+        self.assertEqual(required_mcp_tool_for_command("前5"), "move_jetarm")
 
     async def test_serial_chooser_reuses_ubuntu_terminal_dialog(self):
         class FakeRoot:

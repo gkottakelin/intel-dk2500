@@ -21,6 +21,7 @@ data/rgbd_samples/*
 .env
 .env.*
 !.env.example
+config/devices.json
 
 # OS/editor noise
 .DS_Store

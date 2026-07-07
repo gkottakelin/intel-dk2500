@@ -17,9 +17,9 @@
 
 ## AI对话与机械臂工具终端（第一至三阶段）
 
-当前已接入OpenAI-compatible文本API、多轮命令行对话和白名单本地工具调用。
-机械臂工具默认关闭；可在`dry-run`中验证AI调用，也可显式启用真实Ubuntu串口。
-当前仍不会读取相机，距离控制是运动学估计加舵机位置反馈，不是视觉闭环。
+当前已接入OpenAI-compatible文本API、多轮命令行对话和本地stdio MCP工具调用。
+机械臂可在`dry-run`中验证，也可通过设备配置程序启用真实Ubuntu串口。
+当前只配置单路RGB接口，尚未把图像返回AI；距离控制是运动学估计，不是视觉闭环。
 
 Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
@@ -101,26 +101,36 @@ python3 -m src.jetarm_agent --tool-test
 自动化测试使用假AI客户端，不访问网络、不等待3秒，也不消耗API额度：
 
 ```bash
-python3 -m unittest tests.test_ai_agent tests.test_ai_arm_control
+python3 -m unittest tests.test_ai_agent tests.test_ai_arm_control tests.test_ai_mcp
 ```
 
 ### AI自然语言控制机械臂
 
-机械臂工具复用`ubuntu22_04_operation_terminal`中的串口协议、J1-J4运动学、限位、
-Home、J5和J6控制。先在模拟模式验证：
+实现参考`IliaLarchenko/robot_MCP`的分层方式：AI终端作为MCP Client，自动启动本地
+stdio MCP Server；MCP Server再调用JetArm控制器。控制器继续复用
+`ubuntu22_04_operation_terminal`中的串口协议、J1-J4运动学、限位、Home、J5和J6。
+
+激活`.venv-ai`后，先运行启动前设备配置程序：
 
 ```bash
-python3 -m src.jetarm_agent --arm-mode dry-run
+source .venv-ai/bin/activate
+python3 -m src.jetarm_agent.device_config
 ```
 
-如果仍使用不带参数的`python3 -m src.jetarm_agent`，机械臂工具默认关闭。也可以在
-`.env`中持久设置模拟模式：
+窗口中配置机械臂模式、串口和单路RGB相机`/dev/video*`接口，结果保存在本机专用的
+`config/devices.json`，该文件已被Git忽略。无GUI的模拟配置方式：
 
-```dotenv
-JETARM_ARM_MODE=dry-run
+```bash
+python3 -m src.jetarm_agent.device_config --no-gui --arm-mode dry-run
 ```
 
-进入对话后可以输入：
+配置完成后启动Agent：
+
+```bash
+python3 -m src.jetarm_agent
+```
+
+Agent会自动启动本地stdio MCP Server，并显示五步工作流。进入对话后可输入：
 
 ```text
 向前移动5厘米
@@ -134,34 +144,34 @@ J5顺时针旋转0.5秒
 停止机械臂
 ```
 
-模拟结果会以`[arm-tool]`开头输出，不会打开串口。确认方向、舵机ID和Home位姿均
-正确后，再明确启用硬件：
+以“向前5厘米”为例，实际链路为：
+
+```text
+向前5厘米
+→ Agent生成MCP命令 move_jetarm(command="前5", speed_cm_s=1.5)
+→ 控制器拆分为 前3 + 前2
+→ 全部分段执行结束
+→ MCP返回status=ok
+→ Agent读取结果并总结
+```
+
+完整规范位于`workflows/jetarm_mcp_workflow.md`，对话中输入`/workflow`可以显示。
+
+控制约束：
+
+- 未指定速度时固定使用`1.5 cm/s`。
+- 用户指定速度必须在`1–5 cm/s`。
+- 单个物理运动分段最多`3 cm`；总距离默认最多`10 cm`。
+- 只有MCP返回`status=ok`后Agent才能报告完成。
+- 当前相机配置只保存一路RGB V4L2接口，不启动深度流。
+
+也可以用命令行直接覆盖设备配置：
 
 ```bash
-python3 ubuntu22_04_operation_terminal/jetarm_terminal.py --list-ports
-
 python3 -m src.jetarm_agent \
   --arm-mode hardware \
   --arm-port /dev/serial/by-id/usb-你的设备名称
 ```
-
-硬件模式未指定`--arm-port`且`.env`没有`JETARM_ARM_PORT`时，会在进入Agent对话前
-弹出与原Ubuntu操作终端相同的“COM口设置”窗口。窗口支持自动发现、刷新、手动输入
-设备路径和权限校验；点击取消则不启动Agent：
-
-```bash
-python3 -m src.jetarm_agent --arm-mode hardware
-```
-
-需要以后直接运行时，可在`.env`中改为：
-
-```dotenv
-JETARM_ARM_MODE=hardware
-JETARM_ARM_PORT=/dev/serial/by-id/usb-你的设备名称
-```
-
-如果希望每次启动都弹窗选择串口，只设置`JETARM_ARM_MODE=hardware`，不要在`.env`
-中填写`JETARM_ARM_PORT`。
 
 硬件模式启动时读取J1-J4当前位置，不会自动回Home。退出程序时会停止J5/J6并
 关闭串口。
@@ -172,19 +182,14 @@ JETARM_ARM_PORT=/dev/serial/by-id/usb-你的设备名称
 - `/arm-stop`：立即停止笛卡尔速度、J5和J6。
 - `/arm-home`：发送配置中的六关节Home位姿。
 
-安全限制：
-
-- 基座坐标定义为`+X前、+Y左、+Z上`。
-- TCP按约`0.4 cm`小步规划，默认单次最多`10 cm`。
-- J5及J6的单次定时动作最多`2 s`，完成后自动停止。
-- `grip_lock`会持续抓紧，必须通过“松开/停止”解除。
-- 当前没有RGB反馈、碰撞检测和目标物闭环，运行前必须清空工作空间并准备断电。
+当前只完成RGB接口配置，尚未把RGB帧作为MCP图像结果返回，因此不能声称已经看到
+目标。运行真实机械臂前必须清空工作空间并准备断电。
 
 默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
 配置文件。API Key只从`MOONSHOT_API_KEY`读取，不写入JSON或源码。
 
 交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、
-`/arm-status`、`/arm-stop`、`/arm-home`、`/exit`。
+`/workflow`、`/arm-status`、`/arm-stop`、`/arm-home`、`/exit`。
 
 home 位置：
 

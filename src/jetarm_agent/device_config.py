@@ -1,0 +1,259 @@
+"""Preflight configuration for the JetArm serial port and one RGB camera."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Optional
+
+from .arm_control import DEFAULT_TERMINAL_CONFIG, _load_terminal_module
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DEVICE_CONFIG_PATH = PROJECT_ROOT / "config" / "devices.json"
+
+
+@dataclass(frozen=True)
+class RGBCameraDevice:
+    path: str
+    name: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.path} — {self.name or 'RGB camera'}"
+
+
+@dataclass(frozen=True)
+class RuntimeDeviceConfig:
+    arm_mode: str = "off"
+    arm_port: str = ""
+    arm_terminal_config: str = str(DEFAULT_TERMINAL_CONFIG)
+    rgb_camera: str = ""
+    rgb_camera_name: str = ""
+
+    def validate(self) -> None:
+        if self.arm_mode not in {"off", "dry-run", "hardware"}:
+            raise ValueError("arm_mode必须是off、dry-run或hardware")
+        if self.arm_mode == "hardware" and not self.arm_port.strip():
+            raise ValueError("hardware模式必须配置机械臂串口")
+        if not self.arm_terminal_config.strip():
+            raise ValueError("arm_terminal_config不能为空")
+
+    @classmethod
+    def load(
+        cls, path: str | Path = DEFAULT_DEVICE_CONFIG_PATH, *, required: bool = True
+    ) -> "RuntimeDeviceConfig":
+        config_path = Path(path)
+        if not config_path.is_file():
+            if required:
+                raise FileNotFoundError(f"设备配置不存在: {config_path}")
+            return cls()
+        with config_path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        config = cls(
+            arm_mode=str(payload.get("arm_mode", "off")),
+            arm_port=str(payload.get("arm_port", "")),
+            arm_terminal_config=str(
+                payload.get("arm_terminal_config", DEFAULT_TERMINAL_CONFIG)
+            ),
+            rgb_camera=str(payload.get("rgb_camera", "")),
+            rgb_camera_name=str(payload.get("rgb_camera_name", "")),
+        )
+        config.validate()
+        return config
+
+    def save(self, path: str | Path = DEFAULT_DEVICE_CONFIG_PATH) -> Path:
+        self.validate()
+        config_path = Path(path)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(asdict(self), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return config_path
+
+
+def discover_rgb_cameras(
+    device_root: str | Path = "/dev",
+    sys_root: str | Path = "/sys/class/video4linux",
+) -> list[RGBCameraDevice]:
+    """Enumerate Linux V4L2 interfaces without starting a depth stream."""
+
+    devices = Path(device_root)
+    sys_devices = Path(sys_root)
+    result: list[RGBCameraDevice] = []
+    for path in sorted(devices.glob("video*")):
+        name_path = sys_devices / path.name / "name"
+        try:
+            name = name_path.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError, UnicodeError):
+            name = "V4L2 camera"
+        result.append(RGBCameraDevice(str(path), name))
+    return result
+
+
+def validate_device_interfaces(config: RuntimeDeviceConfig) -> list[str]:
+    """Return preflight errors without opening either interface permanently."""
+
+    errors: list[str] = []
+    if config.arm_mode == "hardware":
+        arm_path = Path(config.arm_port)
+        if not arm_path.exists():
+            errors.append(f"机械臂串口不存在: {config.arm_port}")
+        elif not os.access(arm_path, os.R_OK | os.W_OK):
+            errors.append(f"机械臂串口不可读写: {config.arm_port}")
+    if config.rgb_camera:
+        camera_path = Path(config.rgb_camera)
+        if not camera_path.exists():
+            errors.append(f"RGB相机接口不存在: {config.rgb_camera}")
+        elif not os.access(camera_path, os.R_OK):
+            errors.append(f"RGB相机接口不可读: {config.rgb_camera}")
+    return errors
+
+
+def configure_devices_dialog(
+    initial: RuntimeDeviceConfig,
+) -> RuntimeDeviceConfig | None:
+    terminal = _load_terminal_module()
+    if terminal.tk is None or terminal.ttk is None:
+        raise RuntimeError("缺少Tkinter，请安装python3-tk或使用--no-gui")
+    tk = terminal.tk
+    ttk = terminal.ttk
+    root = tk.Tk()
+    root.title("JetArm Agent 启动前设备配置")
+    root.resizable(False, False)
+    result: dict[str, RuntimeDeviceConfig | None] = {"config": None}
+
+    body = ttk.Frame(root, padding=18)
+    body.grid(row=0, column=0, sticky="nsew")
+    body.columnconfigure(1, weight=1)
+    ttk.Label(body, text="机械臂与RGB相机接口", font=("Noto Sans CJK SC", 13, "bold")).grid(
+        row=0, column=0, columnspan=3, sticky="w", pady=(0, 14)
+    )
+
+    mode_value = tk.StringVar(value=initial.arm_mode)
+    port_value = tk.StringVar(value=initial.arm_port)
+    camera_value = tk.StringVar(value=initial.rgb_camera)
+    status_value = tk.StringVar(value="")
+
+    ttk.Label(body, text="机械臂模式").grid(row=1, column=0, sticky="w", padx=(0, 10))
+    ttk.Combobox(
+        body,
+        textvariable=mode_value,
+        values=("hardware", "dry-run", "off"),
+        state="readonly",
+        width=16,
+    ).grid(row=1, column=1, sticky="ew", pady=4)
+
+    ttk.Label(body, text="机械臂串口").grid(row=2, column=0, sticky="w", padx=(0, 10))
+    port_box = ttk.Combobox(body, textvariable=port_value, width=62, state="normal")
+    port_box.grid(row=2, column=1, sticky="ew", pady=4)
+
+    ttk.Label(body, text="RGB相机接口").grid(row=3, column=0, sticky="w", padx=(0, 10))
+    camera_box = ttk.Combobox(body, textvariable=camera_value, width=62, state="normal")
+    camera_box.grid(row=3, column=1, sticky="ew", pady=4)
+    camera_by_label: dict[str, RGBCameraDevice] = {}
+
+    def refresh() -> None:
+        nonlocal camera_by_label
+        ports = terminal.discover_linux_serial_ports()
+        port_box.configure(values=ports)
+        if not port_value.get() and ports:
+            port_value.set(ports[0])
+        cameras = discover_rgb_cameras()
+        camera_by_label = {camera.label: camera for camera in cameras}
+        camera_box.configure(values=list(camera_by_label))
+        selected = next(
+            (camera.label for camera in cameras if camera.path == camera_value.get()),
+            "",
+        )
+        if selected:
+            camera_value.set(selected)
+        elif not camera_value.get() and cameras:
+            camera_value.set(cameras[0].label)
+        status_value.set(f"发现 {len(ports)} 个机械臂候选串口、{len(cameras)} 个V4L2接口")
+
+    ttk.Button(body, text="刷新", command=refresh).grid(
+        row=2, column=2, rowspan=2, sticky="nsew", padx=(10, 0), pady=4
+    )
+    ttk.Label(
+        body, textvariable=status_value, foreground="#526172", wraplength=650
+    ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 12))
+
+    def save() -> None:
+        camera_text = camera_value.get().strip()
+        camera = camera_by_label.get(camera_text)
+        config = RuntimeDeviceConfig(
+            arm_mode=mode_value.get().strip(),
+            arm_port=port_value.get().strip(),
+            arm_terminal_config=initial.arm_terminal_config,
+            rgb_camera=camera.path if camera else camera_text.split(" — ", 1)[0],
+            rgb_camera_name=camera.name if camera else "",
+        )
+        try:
+            config.validate()
+        except ValueError as exc:
+            if terminal.messagebox is not None:
+                terminal.messagebox.showerror("设备配置", str(exc), parent=root)
+            return
+        result["config"] = config
+        root.destroy()
+
+    buttons = ttk.Frame(body)
+    buttons.grid(row=5, column=0, columnspan=3, sticky="e")
+    ttk.Button(buttons, text="取消", command=root.destroy).pack(side="left", padx=(0, 8))
+    ttk.Button(buttons, text="保存配置", command=save).pack(side="left")
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    refresh()
+    root.mainloop()
+    return result["config"]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="配置JetArm Agent机械臂与RGB相机接口")
+    parser.add_argument("--config", default=str(DEFAULT_DEVICE_CONFIG_PATH))
+    parser.add_argument("--no-gui", action="store_true")
+    parser.add_argument("--arm-mode", choices=("off", "dry-run", "hardware"))
+    parser.add_argument("--arm-port")
+    parser.add_argument("--camera", help="RGB V4L2接口，如/dev/video0")
+    parser.add_argument("--camera-name", default="")
+    parser.add_argument("--arm-config", default=str(DEFAULT_TERMINAL_CONFIG))
+    return parser
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    path = Path(args.config)
+    initial = RuntimeDeviceConfig.load(path, required=False)
+    if args.no_gui:
+        config = RuntimeDeviceConfig(
+            arm_mode=args.arm_mode or initial.arm_mode,
+            arm_port=args.arm_port if args.arm_port is not None else initial.arm_port,
+            arm_terminal_config=args.arm_config or initial.arm_terminal_config,
+            rgb_camera=args.camera if args.camera is not None else initial.rgb_camera,
+            rgb_camera_name=args.camera_name or initial.rgb_camera_name,
+        )
+    else:
+        config = configure_devices_dialog(initial)
+        if config is None:
+            print("已取消设备配置。")
+            return 0
+    saved = config.save(path)
+    errors = validate_device_interfaces(config)
+    print(f"设备配置已保存: {saved}")
+    print(json.dumps(asdict(config), ensure_ascii=False, indent=2))
+    if errors:
+        print("接口检查未通过:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+    print("接口检查: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
