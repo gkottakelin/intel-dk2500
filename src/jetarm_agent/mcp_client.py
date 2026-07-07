@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .device_config import DEFAULT_DEVICE_CONFIG_PATH, PROJECT_ROOT
-from .tooling import ToolDefinition, ToolRegistry
+from .tooling import ToolDefinition, ToolExecutionPayload, ToolImage, ToolRegistry
 
 
 class MCPClientError(RuntimeError):
@@ -117,16 +117,26 @@ class MCPRobotBridge:
         if self.session is None:
             raise MCPClientError("MCP客户端尚未连接")
         result = await self.session.call_tool(name, arguments)
+        images = tuple(
+            ToolImage(data=str(item.data), mime_type=str(item.mimeType))
+            for item in getattr(result, "content", [])
+            if getattr(item, "data", None) is not None
+            and getattr(item, "mimeType", None) is not None
+        )
         if getattr(result, "isError", False):
             texts = [
                 str(item.text)
                 for item in getattr(result, "content", [])
                 if getattr(item, "text", None) is not None
             ]
-            return {"status": "error", "error": "\n".join(texts) or "MCP工具失败"}
+            value: object = {
+                "status": "error",
+                "error": "\n".join(texts) or "MCP工具失败",
+            }
+            return ToolExecutionPayload(value, images) if images else value
         structured = getattr(result, "structuredContent", None)
         if structured is not None:
-            return structured
+            return ToolExecutionPayload(structured, images) if images else structured
 
         texts = [
             str(item.text)
@@ -135,7 +145,9 @@ class MCPRobotBridge:
         ]
         if len(texts) == 1:
             try:
-                return json.loads(texts[0])
+                value = json.loads(texts[0])
             except json.JSONDecodeError:
-                return {"status": "ok", "message": texts[0]}
-        return {"status": "ok", "content": texts}
+                value = {"status": "ok", "message": texts[0]}
+        else:
+            value = {"status": "ok", "content": texts}
+        return ToolExecutionPayload(value, images) if images else value

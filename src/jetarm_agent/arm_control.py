@@ -665,6 +665,9 @@ def looks_like_arm_command(text: str) -> bool:
 def required_mcp_tool_for_command(text: str) -> str | None:
     """Map explicit natural-language actions to the MCP tool that must run."""
 
+    if looks_like_camera_command(text):
+        return "get_rgb_camera_frame"
+
     try:
         parse_compact_arm_command(text)
         return "move_jetarm"
@@ -704,6 +707,29 @@ def required_mcp_tool_for_command(text: str) -> str | None:
     return None
 
 
+def looks_like_camera_command(text: str) -> bool:
+    """Return whether the user explicitly requests the current RGB view."""
+
+    normalized = text.strip().lower().replace(" ", "")
+    camera_terms = ("相机", "摄像头", "摄像机", "rgb", "画面", "图像")
+    request_terms = (
+        "看看",
+        "看一下",
+        "查看",
+        "读取",
+        "拍",
+        "获取",
+        "描述",
+        "识别",
+        "分析",
+        "有什么",
+        "看到了什么",
+    )
+    return any(term in normalized for term in camera_terms) and any(
+        term in normalized for term in request_terms
+    )
+
+
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用机械臂工具，禁止自行追加动作。
@@ -712,5 +738,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 4. 控制器会把长距离自动拆为不超过3cm的物理分段，禁止模型自行改变总距离。
 5. 每个动作完成后读取工具结果；只有status=ok时才能声称动作完成。
 6. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
-7. 当前只配置RGB相机；未调用图像工具时不能声称看见物体或完成视觉闭环夹取。
+7. 当前只使用单路RGB相机，不得请求或声称使用深度流。
+8. 用户要求查看、描述、识别或分析相机画面时，必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
+9. 移动、状态、Home、腕部和夹爪工具可能附带动作后的最新RGB图像，应结合工具JSON和图像总结，但不得基于图像自行追加动作。
 """.strip()

@@ -16,6 +16,7 @@ from .arm_control import (
     DEFAULT_TERMINAL_CONFIG,
     choose_arm_serial_port,
     looks_like_arm_command,
+    looks_like_camera_command,
     required_mcp_tool_for_command,
 )
 from .config import AgentSettings, ConfigurationError, DEFAULT_CONFIG_PATH
@@ -81,7 +82,7 @@ def _load_env_file(path: Optional[str]) -> None:
         load_dotenv()
 
 
-def _print_help(*, arm_enabled: bool = False) -> None:
+def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> None:
     print("可用命令:")
     print("  /help     显示帮助")
     print("  /clear    清空当前对话上下文")
@@ -93,6 +94,8 @@ def _print_help(*, arm_enabled: bool = False) -> None:
         print("  /arm-home   直接回到home位姿")
         print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
         print("  /workflow   显示JetArm MCP工作流规范")
+    if camera_enabled:
+        print("  /camera     采集当前RGB画面并让AI描述")
     print("  /exit     退出")
 
 
@@ -104,7 +107,22 @@ def _print_history(session: object) -> None:
     labels = {"user": "你", "assistant": "AI", "tool": "工具"}
     for index, message in enumerate(history, 1):
         label = labels.get(message.get("role"), str(message.get("role", "?")))
-        print(f"{index:02d} {label}: {message.get('content', '')}")
+        content = message.get("content", "")
+        if isinstance(content, list):
+            text_parts = [
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            image_count = sum(
+                1
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "image_url"
+            )
+            content = " ".join(filter(None, text_parts))
+            if image_count:
+                content = f"{content} [RGB图像×{image_count}]".strip()
+        print(f"{index:02d} {label}: {content}")
 
 
 async def _send(session: ChatSession, text: str) -> str:
@@ -122,7 +140,7 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
     result = await session.ask(
         text,
-        require_any_tool=looks_like_arm_command(text),
+        require_any_tool=required_tool is not None,
         required_tool_name=required_tool,
         required_tool_retries=1,
     )
@@ -131,6 +149,8 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         print(f"{prefix}: {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         prefix = "[工作流 4/5] MCP结果" if is_arm_command else "[MCP结果]"
         print(f"{prefix}: {call.name} {json.dumps(call.result, ensure_ascii=False)}")
+        if call.images:
+            print(f"[MCP图像]: {len(call.images)}张RGB JPEG已传给Agent")
     if is_arm_command:
         print("[工作流 5/5] Agent读取MCP结果并生成总结报告")
     print(f"AI: {result.text}")
@@ -237,7 +257,7 @@ async def run(args: argparse.Namespace) -> int:
     bridge: MCPRobotBridge | None = None
     try:
         async with AsyncExitStack() as stack:
-            if arm_mode != "off":
+            if arm_mode != "off" or bool(effective_devices.rgb_camera):
                 bridge = await stack.enter_async_context(
                     MCPRobotBridge(
                         device_config=device_path,
@@ -259,10 +279,15 @@ async def run(args: argparse.Namespace) -> int:
                     ),
                     max_rounds=8,
                 )
-                print(f"机械臂MCP: {arm_mode} ({arm_port or '模拟控制器'})")
+                print(f"机械臂MCP: {arm_mode} ({arm_port or '未启用'})")
+                print(f"可用MCP工具: {', '.join(registry.names())}")
                 _print_workflow_summary()
 
             if args.once:
+                if looks_like_arm_command(args.once) and arm_mode == "off":
+                    raise ConfigurationError("检测到机械臂指令，但设备配置中的arm_mode为off")
+                if looks_like_camera_command(args.once) and not effective_devices.rgb_camera:
+                    raise ConfigurationError("检测到视觉指令，但未配置RGB相机")
                 if arm_session is not None:
                     await _send_with_tools(arm_session, args.once)
                 elif looks_like_arm_command(args.once):
@@ -271,7 +296,10 @@ async def run(args: argparse.Namespace) -> int:
                     await _send(chat_session, args.once)
                 return 0
 
-            _print_help(arm_enabled=bridge is not None)
+            _print_help(
+                arm_enabled=bridge is not None and arm_mode != "off",
+                camera_enabled=bool(effective_devices.rgb_camera),
+            )
             while True:
                 try:
                     text = input("\n你: ").strip()
@@ -284,7 +312,10 @@ async def run(args: argparse.Namespace) -> int:
                 if command in {"/exit", "/quit", "exit", "quit"}:
                     return 0
                 if command == "/help":
-                    _print_help(arm_enabled=bridge is not None)
+                    _print_help(
+                        arm_enabled=bridge is not None and arm_mode != "off",
+                        camera_enabled=bool(effective_devices.rgb_camera),
+                    )
                     continue
                 if command == "/clear":
                     chat_session.clear()
@@ -317,8 +348,14 @@ async def run(args: argparse.Namespace) -> int:
                 if command == "/workflow":
                     print(_workflow_text())
                     continue
+                if command == "/camera":
+                    if not effective_devices.rgb_camera or arm_session is None:
+                        print("错误: 未配置RGB相机或相机MCP未启动。", file=sys.stderr)
+                        continue
+                    text = "请读取当前RGB相机画面，并只根据实际画面简要描述你看到的内容。"
+                    command = text.lower()
                 if command in {"/arm-status", "/arm-home", "/arm-stop"}:
-                    if bridge is None:
+                    if bridge is None or arm_mode == "off":
                         print("错误: 机械臂MCP未启用。", file=sys.stderr)
                         continue
                     tool_name = {
@@ -335,6 +372,12 @@ async def run(args: argparse.Namespace) -> int:
                         "请先运行 python3 -m src.jetarm_agent.device_config。",
                         file=sys.stderr,
                     )
+                    continue
+                if arm_mode == "off" and looks_like_arm_command(text):
+                    print("错误: 机械臂MCP未启用，请先把arm_mode配置为hardware。", file=sys.stderr)
+                    continue
+                if looks_like_camera_command(text) and not effective_devices.rgb_camera:
+                    print("错误: 未配置RGB相机，请先运行设备配置程序。", file=sys.stderr)
                     continue
                 try:
                     if arm_session is not None:

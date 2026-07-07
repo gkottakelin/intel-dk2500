@@ -8,7 +8,12 @@ from typing import Any
 
 from .config import AgentSettings
 from .openai_compatible import OpenAICompatibleClient, ToolModelResponse
-from .tooling import ToolExecutionError, ToolRegistry
+from .tooling import (
+    ToolExecutionError,
+    ToolExecutionPayload,
+    ToolImage,
+    ToolRegistry,
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +22,7 @@ class ExecutedToolCall:
     name: str
     arguments: dict[str, Any]
     result: object
+    images: tuple[ToolImage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,14 +124,18 @@ class ToolCallingSession:
                 self._trim_history()
                 return ToolAgentResult(answer, tuple(executed))
 
+            latest_images: tuple[ToolImage, ...] = ()
             for tool_call in response.tool_calls:
-                arguments, result = await self._execute(tool_call.name, tool_call.arguments)
+                arguments, result, images = await self._execute(
+                    tool_call.name, tool_call.arguments
+                )
                 executed.append(
                     ExecutedToolCall(
                         call_id=tool_call.call_id,
                         name=tool_call.name,
                         arguments=arguments,
                         result=result,
+                        images=images,
                     )
                 )
                 turn.append(
@@ -136,6 +146,24 @@ class ToolCallingSession:
                         "content": json.dumps(result, ensure_ascii=False),
                     }
                 )
+                if images:
+                    latest_images = images
+
+            if latest_images:
+                self._remove_images(self.history)
+                self._remove_images(turn)
+                turn.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "这是JetArm单路RGB相机刚刚返回的最新画面。",
+                            },
+                            *(image.openai_content_part() for image in latest_images),
+                        ],
+                    }
+                )
 
             tool_choice = "auto" if allow_additional_tools else "none"
 
@@ -143,18 +171,42 @@ class ToolCallingSession:
 
     async def _execute(
         self, name: str, raw_arguments: str
-    ) -> tuple[dict[str, Any], object]:
+    ) -> tuple[dict[str, Any], object, tuple[ToolImage, ...]]:
         try:
             parsed = json.loads(raw_arguments or "{}")
             if not isinstance(parsed, dict):
                 raise ToolExecutionError("工具参数必须是JSON对象")
-            result = await self.registry.execute(name, parsed)
-            return parsed, result
+            raw_result = await self.registry.execute(name, parsed)
+            if isinstance(raw_result, ToolExecutionPayload):
+                return parsed, raw_result.value, raw_result.images
+            return parsed, raw_result, ()
         except (json.JSONDecodeError, ToolExecutionError, ValueError) as exc:
             arguments = parsed if "parsed" in locals() and isinstance(parsed, dict) else {}
-            return arguments, {"status": "error", "error": str(exc)}
+            return arguments, {"status": "error", "error": str(exc)}, ()
         except Exception as exc:
-            return {}, {"status": "error", "error": f"工具执行异常: {exc}"}
+            return {}, {"status": "error", "error": f"工具执行异常: {exc}"}, ()
+
+    @staticmethod
+    def _remove_images(messages: list[dict[str, Any]]) -> None:
+        """Keep text/tool history while removing older base64 camera frames."""
+
+        retained: list[dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                retained.append(message)
+                continue
+            filtered = [
+                part
+                for part in content
+                if not (
+                    isinstance(part, dict)
+                    and part.get("type") in {"image", "image_url"}
+                )
+            ]
+            if filtered:
+                retained.append({**message, "content": filtered})
+        messages[:] = retained
 
     def _trim_history(self) -> None:
         limit = self.settings.max_history_messages

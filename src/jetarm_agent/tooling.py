@@ -15,6 +15,31 @@ class ToolExecutionError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ToolImage:
+    """Base64 image returned by a local or MCP tool."""
+
+    data: str
+    mime_type: str
+
+    def openai_content_part(self) -> dict[str, Any]:
+        return {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{self.mime_type};base64,{self.data}",
+                "detail": "low",
+            },
+        }
+
+
+@dataclass(frozen=True)
+class ToolExecutionPayload:
+    """JSON-compatible tool result plus optional visual observations."""
+
+    value: object
+    images: tuple[ToolImage, ...] = ()
+
+
+@dataclass(frozen=True)
 class ToolDefinition:
     name: str
     description: str
@@ -49,6 +74,9 @@ class ToolRegistry:
 
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.api_schema() for tool in self._tools.values()]
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._tools)
 
     async def execute(self, name: str, arguments: Mapping[str, Any]) -> object:
         tool = self._tools.get(name)

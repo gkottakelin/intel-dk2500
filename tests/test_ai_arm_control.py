@@ -13,6 +13,7 @@ try:
         choose_arm_serial_port,
         format_compact_arm_command,
         looks_like_arm_command,
+        looks_like_camera_command,
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         choose_arm_serial_port,
         format_compact_arm_command,
         looks_like_arm_command,
+        looks_like_camera_command,
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
@@ -164,6 +166,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
         self.assertEqual(required_mcp_tool_for_command("向前移动5厘米"), "move_jetarm")
         self.assertEqual(required_mcp_tool_for_command("前5"), "move_jetarm")
+        self.assertTrue(looks_like_camera_command("查看摄像头画面"))
+        self.assertEqual(
+            required_mcp_tool_for_command("描述当前RGB图像"),
+            "get_rgb_camera_frame",
+        )
 
     async def test_serial_chooser_reuses_ubuntu_terminal_dialog(self):
         class FakeRoot:

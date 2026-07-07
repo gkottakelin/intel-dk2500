@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from .device_config import (
     RuntimeDeviceConfig,
     validate_device_interfaces,
 )
+from .rgb_camera import RGBJpegFrame, capture_rgb_jpeg
 
 
 DEFAULT_WORKFLOW_PATH = PROJECT_ROOT / "workflows" / "jetarm_mcp_workflow.md"
@@ -30,11 +32,13 @@ class JetArmMCPService:
         devices: RuntimeDeviceConfig,
         *,
         controller_factory: Callable[[ArmControlConfig], JetArmToolController] = JetArmToolController,
+        camera_capture: Callable[[str], RGBJpegFrame] = capture_rgb_jpeg,
         workflow_path: str | Path = DEFAULT_WORKFLOW_PATH,
         max_distance_cm: float = 10.0,
     ) -> None:
         self.devices = devices
         self.controller_factory = controller_factory
+        self.camera_capture = camera_capture
         self.workflow_path = Path(workflow_path)
         self.max_distance_cm = max_distance_cm
         self._controller: JetArmToolController | None = None
@@ -68,6 +72,13 @@ class JetArmMCPService:
             return self.workflow_path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return "JetArm MCP工作流文件缺失。"
+
+    async def capture_rgb(self) -> RGBJpegFrame:
+        camera = self.devices.rgb_camera.strip()
+        if not camera:
+            raise RuntimeError("未配置RGB相机接口，请先运行设备配置程序")
+        LOGGER.info("Capturing RGB frame from %s", camera)
+        return await asyncio.to_thread(self.camera_capture, camera)
 
     def device_status(self) -> dict[str, Any]:
         errors = validate_device_interfaces(self.devices)
@@ -122,13 +133,40 @@ class JetArmMCPService:
 
 def create_mcp_server(service: JetArmMCPService) -> Any:
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import FastMCP, Image
     except ImportError as exc:
         raise RuntimeError(
             "缺少MCP SDK，请执行: python -m pip install -r requirements-ai.txt"
         ) from exc
 
     mcp = FastMCP("JetArm robot controller", json_response=True)
+
+    async def with_rgb_image(
+        result: dict[str, Any], *, camera_required: bool = False
+    ) -> Any:
+        try:
+            frame = await service.capture_rgb()
+        except Exception as exc:
+            LOGGER.error("RGB capture failed: %s", exc)
+            if camera_required:
+                return {
+                    "status": "error",
+                    "mcp": "get_rgb_camera_frame",
+                    "error": str(exc),
+                }
+            if service.devices.rgb_camera:
+                result["camera"] = {"status": "error", "error": str(exc)}
+            return result
+
+        result["camera"] = {
+            "status": "ok",
+            "device": service.devices.rgb_camera,
+            "name": service.devices.rgb_camera_name or None,
+            "width": frame.width,
+            "height": frame.height,
+            "mime_type": frame.mime_type,
+        }
+        return [result, Image(data=frame.data, format="jpeg")]
 
     @mcp.tool(description="读取JetArm工作流规范；首次控制机械臂前必须读取。")
     def get_initial_instructions() -> str:
@@ -140,35 +178,47 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
+            "从已配置的单路V4L2 RGB相机采集最新彩色画面并返回JPEG。"
+            "用户要求查看、描述、识别或分析相机画面时调用；不启动深度流。"
+        )
+    )
+    async def get_rgb_camera_frame() -> Any:
+        return await with_rgb_image(
+            {"status": "ok", "mcp": "get_rgb_camera_frame"},
+            camera_required=True,
+        )
+
+    @mcp.tool(
+        description=(
             "按紧凑中文命令移动JetArm末端。command格式为前5、后2、左1.5、右3、上2或下1；"
             "数字单位为厘米。未指定速度时使用1.5cm/s；允许1到5cm/s。控制器自动拆分为"
             "每段不超过3cm，并在全部分段执行完成后返回status=ok。"
         )
     )
-    async def move_jetarm(command: str, speed_cm_s: float = 1.5) -> dict[str, Any]:
-        return await service.move(command, speed_cm_s)
+    async def move_jetarm(command: str, speed_cm_s: float = 1.5) -> Any:
+        return await with_rgb_image(await service.move(command, speed_cm_s))
 
     @mcp.tool(description="读取JetArm关节位置和估算TCP坐标。")
-    async def get_jetarm_state() -> dict[str, Any]:
-        return await service.state()
+    async def get_jetarm_state() -> Any:
+        return await with_rgb_image(await service.state())
 
     @mcp.tool(description="让JetArm返回配置的home位姿。")
-    async def move_jetarm_home() -> dict[str, Any]:
-        return await service.home()
+    async def move_jetarm_home() -> Any:
+        return await with_rgb_image(await service.home())
 
     @mcp.tool(description="立即停止JetArm笛卡尔运动、J5和J6。")
     async def stop_jetarm() -> dict[str, Any]:
         return await service.stop()
 
     @mcp.tool(description="按clockwise或counterclockwise旋转J5，最长2秒。")
-    async def rotate_jetarm_wrist(direction: str, duration_s: float) -> dict[str, Any]:
-        return await service.wrist(direction, duration_s)
+    async def rotate_jetarm_wrist(direction: str, duration_s: float) -> Any:
+        return await with_rgb_image(await service.wrist(direction, duration_s))
 
     @mcp.tool(description="控制J6夹爪：open、close、grip_lock、release_lock或stop。")
     async def control_jetarm_gripper(
         action: str, duration_s: float = 0.5
-    ) -> dict[str, Any]:
-        return await service.gripper(action, duration_s)
+    ) -> Any:
+        return await with_rgb_image(await service.gripper(action, duration_s))
 
     return mcp
 

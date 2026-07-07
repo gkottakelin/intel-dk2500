@@ -17,9 +17,9 @@
 
 ## AI对话与机械臂工具终端（第一至三阶段）
 
-当前已接入OpenAI-compatible文本API、多轮命令行对话和本地stdio MCP工具调用。
+当前已接入OpenAI-compatible多模态API、多轮命令行对话和本地stdio MCP工具调用。
 机械臂可在`dry-run`中验证，也可通过设备配置程序启用真实Ubuntu串口。
-当前只配置单路RGB接口，尚未把图像返回AI；距离控制是运动学估计，不是视觉闭环。
+单路RGB接口可通过MCP返回JPEG给Agent；距离控制仍是运动学估计，不是视觉闭环。
 
 Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
@@ -101,7 +101,7 @@ python3 -m src.jetarm_agent --tool-test
 自动化测试使用假AI客户端，不访问网络、不等待3秒，也不消耗API额度：
 
 ```bash
-python3 -m unittest tests.test_ai_agent tests.test_ai_arm_control tests.test_ai_mcp
+python3 -m unittest tests.test_ai_agent tests.test_ai_arm_control tests.test_ai_camera tests.test_ai_mcp
 ```
 
 ### AI自然语言控制机械臂
@@ -142,6 +142,8 @@ J5顺时针旋转0.5秒
 松开夹爪
 回到home
 停止机械臂
+查看摄像头画面
+描述当前RGB图像
 ```
 
 以“向前5厘米”为例，实际链路为：
@@ -165,6 +167,19 @@ J5顺时针旋转0.5秒
 - 只有MCP返回`status=ok`后Agent才能报告完成。
 - 当前相机配置只保存一路RGB V4L2接口，不启动深度流。
 
+RGB图像链路参考`IliaLarchenko/robot_MCP`：V4L2采集最新彩色帧，MCP返回JSON文本和
+JPEG图像内容块，Agent把JPEG转换为Kimi支持的Base64 `image_url`，模型读取图像后生成
+描述或后续工具调用。程序只保留最近一次MCP图像，避免对话历史持续累积Base64数据。
+
+相机测试命令：
+
+```text
+/camera
+```
+
+也可直接输入“查看摄像头画面”。移动、状态、Home、腕部和夹爪工具在相机已配置时会
+附带动作后的最新RGB画面；取帧失败会单独报告，不会把已经成功的机械臂动作改成失败。
+
 也可以用命令行直接覆盖设备配置：
 
 ```bash
@@ -182,13 +197,13 @@ python3 -m src.jetarm_agent \
 - `/arm-stop`：立即停止笛卡尔速度、J5和J6。
 - `/arm-home`：发送配置中的六关节Home位姿。
 
-当前只完成RGB接口配置，尚未把RGB帧作为MCP图像结果返回，因此不能声称已经看到
+只有`get_rgb_camera_frame`或带图像的机械臂工具实际返回JPEG后，Agent才能声称看到
 目标。运行真实机械臂前必须清空工作空间并准备断电。
 
 默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
 配置文件。API Key只从`MOONSHOT_API_KEY`读取，不写入JSON或源码。
 
-交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、
+交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、`/camera`、
 `/workflow`、`/arm-status`、`/arm-stop`、`/arm-home`、`/exit`。
 
 home 位置：
