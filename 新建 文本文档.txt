@@ -1,0 +1,18 @@
+source .venv-ai/bin/activate
+python -m pip install -r requirements-ai.txt
+
+export ALL_PROXY="socks5://127.0.0.1:7897"
+export all_proxy="$ALL_PROXY"
+export JETARM_API_MODEL="gemini-3.5-flash"
+
+python3 -m src.jetarm_agent
+
+AQ.Ab8RN6J
+
+8wmEhX-ARO
+
+EGt9H3gLsQCo
+
+bTA6-mcL_Ew-S
+
+nLpp6oBg

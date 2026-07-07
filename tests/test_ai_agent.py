@@ -1,8 +1,11 @@
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
 from project.src.jetarm_agent.openai_compatible import APIClientError, OpenAICompatibleClient
@@ -94,6 +97,27 @@ class AgentSettingsTest(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             settings.resolve_api_key({})
         self.assertEqual(settings.resolve_api_key({"TEST_API_KEY": "secret"}), "secret")
+
+
+class OpenAICompatibleClientTest(unittest.TestCase):
+    def test_socks_proxy_initialization_error_has_actionable_message(self):
+        class BrokenAsyncOpenAI:
+            def __init__(self, **kwargs):
+                raise ValueError(
+                    "Unknown scheme for proxy URL URL('socks://127.0.0.1:7897/')"
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = AgentSettings.from_sources(
+                write_config(directory),
+                environ={"TEST_API_KEY": "secret"},
+            )
+            fake_openai = SimpleNamespace(AsyncOpenAI=BrokenAsyncOpenAI)
+            with patch.dict(os.environ, {"TEST_API_KEY": "secret"}), patch.dict(
+                sys.modules, {"openai": fake_openai}
+            ):
+                with self.assertRaisesRegex(APIClientError, "SOCKS.*requirements-ai.txt"):
+                    OpenAICompatibleClient(settings)
 
 
 class ChatSessionTest(unittest.IsolatedAsyncioTestCase):

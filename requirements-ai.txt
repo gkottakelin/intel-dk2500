@@ -1,4 +1,6 @@
 # Ubuntu 22.04 / Python 3.10 compatible dependencies for the text-only AI terminal.
 # Keep this file independent from Windows camera and visualization packages.
 openai>=1.68,<3
+# Support ALL_PROXY/HTTPS_PROXY values such as socks://127.0.0.1:7897.
+httpx[socks]>=0.27,<1
 python-dotenv>=1.0,<2

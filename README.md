@@ -40,6 +40,29 @@ export JETARM_API_MODEL="支持的模型名"
 python3 -m src.jetarm_agent
 ```
 
+使用Gemini的OpenAI兼容接口时：
+
+```bash
+export JETARM_API_KEY="你的Gemini API Key"
+export JETARM_API_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export JETARM_API_MODEL="gemini-3.5-flash"
+python3 -m src.jetarm_agent
+```
+
+如果出现`Unknown scheme for proxy URL ... socks://...`，说明代理协议写法不受
+`httpx`支持。若该端口是SOCKS代理，将`socks://`改为`socks5://`，并在激活
+`.venv-ai`后安装SOCKS支持：
+
+```bash
+export ALL_PROXY="socks5://127.0.0.1:7897"
+export all_proxy="$ALL_PROXY"
+python -m pip install -r requirements-ai.txt
+```
+
+若代理软件提供的是HTTP或混合端口，则应使用`http://127.0.0.1:端口`。还需确认
+对应端口正在监听。若不需要代理，可在当前终端执行
+`unset ALL_PROXY all_proxy HTTP_PROXY HTTPS_PROXY http_proxy https_proxy`后再启动。
+
 后续重新打开终端时，需要先执行：
 
 ```bash

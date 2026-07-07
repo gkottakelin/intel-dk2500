@@ -30,7 +30,7 @@ def _load_env_file(path: Optional[str]) -> None:
     except ImportError:
         if path:
             raise ConfigurationError(
-                "使用--env-file需要python-dotenv，请先安装requirements.txt"
+                "使用--env-file需要python-dotenv，请先安装requirements-ai.txt"
             )
         return
     if path:

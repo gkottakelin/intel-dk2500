@@ -27,14 +27,24 @@ class OpenAICompatibleClient:
             from openai import AsyncOpenAI
         except ImportError as exc:
             raise APIClientError(
-                "缺少openai依赖，请先执行: pip install -r requirements.txt"
+                "缺少openai依赖，请先执行: python -m pip install -r requirements-ai.txt"
             ) from exc
 
-        self._client = AsyncOpenAI(
-            api_key=settings.resolve_api_key(),
-            base_url=settings.base_url,
-            timeout=settings.timeout_s,
-        )
+        try:
+            self._client = AsyncOpenAI(
+                api_key=settings.resolve_api_key(),
+                base_url=settings.base_url,
+                timeout=settings.timeout_s,
+            )
+        except Exception as exc:
+            detail = str(exc)
+            if "proxy URL" in detail and "socks" in detail.lower():
+                raise APIClientError(
+                    "SOCKS代理配置无效：请把代理地址的socks://改为socks5://，"
+                    "并执行 python -m pip install -r requirements-ai.txt；"
+                    f"原始错误: {detail}"
+                ) from exc
+            raise APIClientError(f"API客户端初始化失败: {detail}") from exc
 
     async def stream_chat(self, messages: Sequence[dict[str, str]]) -> AsyncIterator[str]:
         """Yield text deltas from one chat-completions request."""
