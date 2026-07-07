@@ -11,6 +11,7 @@ from typing import Optional
 
 from .config import AgentSettings, ConfigurationError, DEFAULT_CONFIG_PATH
 from .openai_compatible import APIClientError, OpenAICompatibleClient
+from .roundtrip_test import run_counter_roundtrip_test
 from .session import ChatSession
 
 
@@ -19,7 +20,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="AI JSON配置文件")
     parser.add_argument("--base-url", default=None, help="覆盖API base URL")
     parser.add_argument("--model", default=None, help="覆盖模型名称")
-    parser.add_argument("--once", default=None, help="发送一条消息后退出")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--once", default=None, help="发送一条消息后退出")
+    mode.add_argument(
+        "--tool-test",
+        action="store_true",
+        help="运行程序->AI->计数工具->AI贯通测试",
+    )
     parser.add_argument("--env-file", default=None, help="可选.env文件路径")
     return parser
 
@@ -48,6 +55,7 @@ def _print_help() -> None:
     print("  /clear    清空当前对话上下文")
     print("  /history  显示当前上下文")
     print("  /config   显示非敏感API配置")
+    print("  /tool-test 运行AI调用本地代码的3秒贯通测试")
     print("  /exit     退出")
 
 
@@ -67,6 +75,20 @@ async def _send(session: ChatSession, text: str) -> str:
     return answer
 
 
+async def _run_tool_test(
+    settings: AgentSettings, client: OpenAICompatibleClient
+) -> None:
+    result = await run_counter_roundtrip_test(
+        settings,
+        client,
+        on_status=lambda status: print(f"[tool-test] {status}"),
+    )
+    print(
+        f"[tool-test] 通过：工具调用{result.tool_call_count}次，"
+        f"计数器={result.counter}"
+    )
+
+
 async def run(args: argparse.Namespace) -> int:
     _load_env_file(args.env_file)
     settings = AgentSettings.from_sources(
@@ -80,6 +102,10 @@ async def run(args: argparse.Namespace) -> int:
     print("JetArm AI 对话终端")
     print(f"API: {settings.base_url}")
     print(f"模型: {settings.model}")
+
+    if args.tool_test:
+        await _run_tool_test(settings, client)
+        return 0
 
     if args.once:
         await _send(session, args.once)
@@ -110,6 +136,12 @@ async def run(args: argparse.Namespace) -> int:
         if command == "/config":
             print(json.dumps(settings.public_summary(), ensure_ascii=False, indent=2))
             continue
+        if command == "/tool-test":
+            try:
+                await _run_tool_test(settings, client)
+            except (APIClientError, RuntimeError, ValueError) as exc:
+                print(f"错误: {exc}", file=sys.stderr)
+            continue
         try:
             await _send(session, text)
         except (APIClientError, RuntimeError, ValueError) as exc:
@@ -123,7 +155,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     except KeyboardInterrupt:
         print("\n已退出。")
         return 130
-    except (ConfigurationError, APIClientError) as exc:
+    except (ConfigurationError, APIClientError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
