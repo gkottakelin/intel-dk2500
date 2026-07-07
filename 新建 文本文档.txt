@@ -7,6 +7,15 @@ export JETARM_API_MODEL="gemini-3.5-flash"
 
 python3 -m src.jetarm_agent
 
+source .venv-ai/bin/activate
+
+export JETARM_API_KEY="新的Gemini API Key"
+python3 -m src.jetarm_agent \
+  --base-url "https://generativelanguage.googleapis.com/v1beta/openai/" \
+  --model "gemini-3.5-flash"
+
+
+
 AQ.Ab8RN6J
 
 8wmEhX-ARO
