@@ -1,0 +1,15 @@
+{
+  "api": {
+    "provider": "openai_compatible",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key_env": "JETARM_API_KEY",
+    "timeout_s": 60
+  },
+  "conversation": {
+    "temperature": 0.2,
+    "max_tokens": 2048,
+    "max_history_messages": 40,
+    "system_prompt": "你是JetArm机械臂项目的AI助手。当前阶段只进行普通文本对话，不要声称已经看到相机画面，也不要声称已经控制机械臂。回答应准确、简洁；如果缺少执行任务所需的信息，应明确说明。"
+  }
+}

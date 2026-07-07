@@ -15,6 +15,31 @@
 
 当前方案只读取 RGB 彩色图。
 
+## AI对话终端（第一阶段）
+
+当前已先接入OpenAI-compatible文本API和多轮命令行对话。这个阶段不会读取
+相机，也不会控制机械臂。
+
+安装依赖后，在项目根目录配置API：
+
+```bash
+export JETARM_API_KEY="你的API Key"
+export JETARM_API_BASE_URL="https://你的服务地址/v1"
+export JETARM_API_MODEL="支持的模型名"
+python3 -m src.jetarm_agent
+```
+
+也可以只发送一条消息：
+
+```bash
+python3 -m src.jetarm_agent --once "你好，请介绍一下你自己"
+```
+
+默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
+配置文件。API Key只从环境变量读取，不写入项目文件。
+
+交互命令：`/help`、`/clear`、`/history`、`/config`、`/exit`。
+
 home 位置：
 
 ```text
