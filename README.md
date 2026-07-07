@@ -20,13 +20,31 @@
 当前已先接入OpenAI-compatible文本API和多轮命令行对话。这个阶段不会读取
 相机，也不会控制机械臂。
 
-安装依赖后，在项目根目录配置API：
+Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
+包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
+
+```bash
+sudo apt install -y python3-venv
+python3 -m venv .venv-ai
+source .venv-ai/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-ai.txt
+```
+
+然后配置API并启动：
 
 ```bash
 export JETARM_API_KEY="你的API Key"
 export JETARM_API_BASE_URL="https://你的服务地址/v1"
 export JETARM_API_MODEL="支持的模型名"
 python3 -m src.jetarm_agent
+```
+
+后续重新打开终端时，需要先执行：
+
+```bash
+cd ~/Desktop/workspace/intel-dk2500
+source .venv-ai/bin/activate
 ```
 
 也可以只发送一条消息：

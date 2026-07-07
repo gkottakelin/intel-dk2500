@@ -6,9 +6,8 @@ opencv-python==4.13.0.92
 pyserial>=3.5
 pygame==2.6.1
 
-# AI terminal: OpenAI-compatible API and optional .env loading.
-openai>=1.68,<3
-python-dotenv>=1.0,<2
+# AI terminal dependencies are shared with Ubuntu through this smaller file.
+-r requirements-ai.txt
 
 # Used for the pyorbbecsdk2 diagnostic path. The current Gemini Pro Plus
 # Windows route mainly uses bundled OpenNI samples plus UVC/OpenCV.

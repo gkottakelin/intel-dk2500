@@ -1,0 +1,4 @@
+# Ubuntu 22.04 / Python 3.10 compatible dependencies for the text-only AI terminal.
+# Keep this file independent from Windows camera and visualization packages.
+openai>=1.68,<3
+python-dotenv>=1.0,<2
