@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import atexit
 import asyncio
+import base64
+import json
 import logging
 import sys
 from pathlib import Path
@@ -133,13 +135,37 @@ class JetArmMCPService:
 
 def create_mcp_server(service: JetArmMCPService) -> Any:
     try:
-        from mcp.server.fastmcp import FastMCP, Image
+        from mcp.server.fastmcp import FastMCP
+        from mcp.types import CallToolResult, ImageContent, TextContent
     except ImportError as exc:
         raise RuntimeError(
             "缺少MCP SDK，请执行: python -m pip install -r requirements-ai.txt"
         ) from exc
 
     mcp = FastMCP("JetArm robot controller", json_response=True)
+
+    def content_result(
+        result: dict[str, Any], frame: RGBJpegFrame | None = None
+    ) -> CallToolResult:
+        content: list[Any] = [
+            TextContent(
+                type="text",
+                text=json.dumps(result, ensure_ascii=False),
+            )
+        ]
+        if frame is not None:
+            content.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(frame.data).decode("ascii"),
+                    mimeType=frame.mime_type,
+                )
+            )
+        return CallToolResult(
+            content=content,
+            structuredContent=result,
+            isError=result.get("status") == "error",
+        )
 
     async def with_rgb_image(
         result: dict[str, Any], *, camera_required: bool = False
@@ -149,14 +175,16 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         except Exception as exc:
             LOGGER.error("RGB capture failed: %s", exc)
             if camera_required:
-                return {
-                    "status": "error",
-                    "mcp": "get_rgb_camera_frame",
-                    "error": str(exc),
-                }
+                return content_result(
+                    {
+                        "status": "error",
+                        "mcp": "get_rgb_camera_frame",
+                        "error": str(exc),
+                    }
+                )
             if service.devices.rgb_camera:
                 result["camera"] = {"status": "error", "error": str(exc)}
-            return result
+            return content_result(result)
 
         result["camera"] = {
             "status": "ok",
@@ -166,7 +194,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "height": frame.height,
             "mime_type": frame.mime_type,
         }
-        return [result, Image(data=frame.data, format="jpeg")]
+        return content_result(result, frame)
 
     @mcp.tool(description="读取JetArm工作流规范；首次控制机械臂前必须读取。")
     def get_initial_instructions() -> str:

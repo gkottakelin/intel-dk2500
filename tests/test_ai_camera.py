@@ -1,5 +1,8 @@
+import os
+import sys
 import unittest
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -104,12 +107,54 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         server = create_mcp_server(service)
 
-        content = await server.call_tool("get_rgb_camera_frame", {})
+        response = await server.call_tool("get_rgb_camera_frame", {})
+        content = response.content
 
         self.assertTrue(any(isinstance(item, TextContent) for item in content))
         image = next(item for item in content if isinstance(item, ImageContent))
         self.assertEqual(image.mimeType, "image/jpeg")
         self.assertEqual(image.data, "anBlZw==")
+        serialized = response.model_dump_json(by_alias=True)
+        self.assertIn('"type":"image"', serialized)
+        self.assertNotIn("Unable to serialize", serialized)
+
+    async def test_rgb_image_serializes_over_real_stdio_transport(self):
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            from mcp.types import ImageContent
+        except ImportError:
+            self.skipTest("MCP SDK is not installed in this test environment")
+
+        child_code = "\n".join(
+            (
+                "from project.src.jetarm_agent.device_config import RuntimeDeviceConfig",
+                "from project.src.jetarm_agent.mcp_server import JetArmMCPService, create_mcp_server",
+                "from project.src.jetarm_agent.rgb_camera import RGBJpegFrame",
+                "service = JetArmMCPService(",
+                "    RuntimeDeviceConfig(arm_mode='off', rgb_camera='stdio-test'),",
+                "    camera_capture=lambda _key: RGBJpegFrame(b'jpeg', 1, 1),",
+                ")",
+                "create_mcp_server(service).run(transport='stdio')",
+            )
+        )
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", child_code],
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env=dict(os.environ),
+        )
+
+        async with stdio_client(parameters) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                response = await session.call_tool("get_rgb_camera_frame", {})
+
+        image = next(
+            item for item in response.content if isinstance(item, ImageContent)
+        )
+        self.assertEqual(image.data, "anBlZw==")
+        self.assertEqual(response.structuredContent["status"], "ok")
 
     async def test_mcp_image_is_forwarded_to_the_next_kimi_request(self):
         class FakeMCPSession:
