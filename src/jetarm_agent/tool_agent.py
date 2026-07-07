@@ -64,6 +64,7 @@ class ToolCallingSession:
         require_any_tool: bool = False,
         required_tool_name: str | None = None,
         required_tool_retries: int = 1,
+        preselected_tool_arguments: dict[str, Any] | None = None,
     ) -> ToolAgentResult:
         user_text = text.strip()
         if not user_text:
@@ -73,6 +74,50 @@ class ToolCallingSession:
         executed: list[ExecutedToolCall] = []
         tool_choice = first_tool_choice
         retry_count = 0
+
+        if preselected_tool_arguments is not None:
+            if required_tool_name is None:
+                raise ValueError("预选工具必须同时提供required_tool_name")
+            call_id = f"local-{required_tool_name}-{len(self.history)}"
+            raw_arguments = json.dumps(preselected_tool_arguments, ensure_ascii=False)
+            turn.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": required_tool_name,
+                                "arguments": raw_arguments,
+                            },
+                        }
+                    ],
+                }
+            )
+            arguments, result, images = await self._execute(
+                required_tool_name, raw_arguments
+            )
+            executed.append(
+                ExecutedToolCall(
+                    call_id=call_id,
+                    name=required_tool_name,
+                    arguments=arguments,
+                    result=result,
+                    images=images,
+                )
+            )
+            turn.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": required_tool_name,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+            if images:
+                self._append_latest_images(turn, images)
 
         for _ in range(self.max_rounds):
             messages = [
@@ -88,18 +133,10 @@ class ToolCallingSession:
             turn.append(response.assistant_message())
 
             if not response.tool_calls:
-                successful_calls = [
-                    call
-                    for call in executed
-                    if not (
-                        isinstance(call.result, dict)
-                        and call.result.get("status") == "error"
-                    )
-                ]
                 required_name_executed = required_tool_name is None or any(
-                    call.name == required_tool_name for call in successful_calls
+                    call.name == required_tool_name for call in executed
                 )
-                any_tool_executed = not require_any_tool or bool(successful_calls)
+                any_tool_executed = not require_any_tool or bool(executed)
                 if not required_name_executed or not any_tool_executed:
                     if retry_count >= required_tool_retries:
                         required = required_tool_name or "任一已注册工具"
@@ -150,20 +187,7 @@ class ToolCallingSession:
                     latest_images = images
 
             if latest_images:
-                self._remove_images(self.history)
-                self._remove_images(turn)
-                turn.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "这是JetArm单路RGB相机刚刚返回的最新画面。",
-                            },
-                            *(image.openai_content_part() for image in latest_images),
-                        ],
-                    }
-                )
+                self._append_latest_images(turn, latest_images)
 
             tool_choice = "auto" if allow_additional_tools else "none"
 
@@ -207,6 +231,24 @@ class ToolCallingSession:
             if filtered:
                 retained.append({**message, "content": filtered})
         messages[:] = retained
+
+    def _append_latest_images(
+        self, turn: list[dict[str, Any]], images: tuple[ToolImage, ...]
+    ) -> None:
+        self._remove_images(self.history)
+        self._remove_images(turn)
+        turn.append(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "这是JetArm单路RGB相机刚刚返回的最新画面。",
+                    },
+                    *(image.openai_content_part() for image in images),
+                ],
+            }
+        )
 
     def _trim_history(self) -> None:
         limit = self.settings.max_history_messages

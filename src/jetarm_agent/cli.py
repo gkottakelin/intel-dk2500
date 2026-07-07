@@ -135,6 +135,7 @@ async def _send(session: ChatSession, text: str) -> str:
 async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     required_tool = required_mcp_tool_for_command(text)
     is_arm_command = looks_like_arm_command(text)
+    camera_request = required_tool == "get_rgb_camera_frame"
     if is_arm_command:
         print(f"[工作流 1/5] 接收自然语言: {text}")
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
@@ -143,6 +144,9 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         require_any_tool=required_tool is not None,
         required_tool_name=required_tool,
         required_tool_retries=1,
+        preselected_tool_arguments={} if camera_request else None,
+        first_tool_choice="none" if camera_request else "auto",
+        allow_additional_tools=not camera_request,
     )
     for call in result.tool_calls:
         prefix = "[工作流 3/5] MCP调用" if is_arm_command else "[MCP调用]"

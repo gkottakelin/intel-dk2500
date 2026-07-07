@@ -1,4 +1,3 @@
-import json
 import unittest
 from types import SimpleNamespace
 
@@ -9,10 +8,7 @@ try:
     from project.src.jetarm_agent.device_config import RuntimeDeviceConfig
     from project.src.jetarm_agent.mcp_client import MCPRobotBridge
     from project.src.jetarm_agent.mcp_server import JetArmMCPService, create_mcp_server
-    from project.src.jetarm_agent.openai_compatible import (
-        FunctionToolCall,
-        ToolModelResponse,
-    )
+    from project.src.jetarm_agent.openai_compatible import ToolModelResponse
     from project.src.jetarm_agent.rgb_camera import RGBJpegFrame, capture_rgb_jpeg
     from project.src.jetarm_agent.tool_agent import ToolCallingSession
 except ModuleNotFoundError:
@@ -20,7 +16,7 @@ except ModuleNotFoundError:
     from src.jetarm_agent.device_config import RuntimeDeviceConfig
     from src.jetarm_agent.mcp_client import MCPRobotBridge
     from src.jetarm_agent.mcp_server import JetArmMCPService, create_mcp_server
-    from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
+    from src.jetarm_agent.openai_compatible import ToolModelResponse
     from src.jetarm_agent.rgb_camera import RGBJpegFrame, capture_rgb_jpeg
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
@@ -141,16 +137,6 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.requests = []
                 self.responses = [
-                    ToolModelResponse(
-                        content="",
-                        tool_calls=(
-                            FunctionToolCall(
-                                call_id="camera-1",
-                                name="get_rgb_camera_frame",
-                                arguments=json.dumps({}),
-                            ),
-                        ),
-                    ),
                     ToolModelResponse(content="画面中有一个机械臂。", tool_calls=()),
                 ]
 
@@ -180,15 +166,20 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
 
         result = await session.ask(
             "查看相机画面",
+            first_tool_choice="none",
+            allow_additional_tools=False,
             require_any_tool=True,
             required_tool_name="get_rgb_camera_frame",
+            preselected_tool_arguments={},
         )
 
         self.assertEqual(result.text, "画面中有一个机械臂。")
         self.assertEqual(len(result.tool_calls[0].images), 1)
-        second_messages = model.requests[1]["messages"]
-        self.assertEqual(second_messages[-2]["role"], "tool")
-        image_message = second_messages[-1]
+        request = model.requests[0]
+        self.assertEqual(request["tool_choice"], "none")
+        messages = request["messages"]
+        self.assertEqual(messages[-2]["role"], "tool")
+        image_message = messages[-1]
         self.assertEqual(image_message["role"], "user")
         self.assertEqual(image_message["content"][1]["type"], "image_url")
         self.assertEqual(
