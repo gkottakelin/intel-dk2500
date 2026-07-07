@@ -149,8 +149,11 @@ async def run(args: argparse.Namespace) -> int:
     print(f"模型: {settings.model}")
 
     if args.tool_test:
-        await _run_tool_test(settings, client)
-        return 0
+        try:
+            await _run_tool_test(settings, client)
+            return 0
+        finally:
+            await client.close()
 
     arm_mode = args.arm_mode or os.getenv("JETARM_ARM_MODE", "off").strip()
     arm_port = args.arm_port or os.getenv("JETARM_ARM_PORT") or None
@@ -260,6 +263,7 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         if arm_controller is not None:
             arm_controller.close()
+        await client.close()
 
 
 def main(argv: Optional[list[str]] = None) -> int:

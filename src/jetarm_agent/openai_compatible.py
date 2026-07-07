@@ -55,26 +55,36 @@ class OpenAICompatibleClient:
 
         try:
             from openai import AsyncOpenAI
+            import httpx
         except ImportError as exc:
             raise APIClientError(
-                "缺少openai依赖，请先执行: python -m pip install -r requirements-ai.txt"
+                "缺少openai/httpx依赖，请先执行: "
+                "python -m pip install -r requirements-ai.txt"
             ) from exc
 
         try:
+            # Git may need a shell proxy, while Kimi should connect directly.
+            # Never inherit HTTP_PROXY/HTTPS_PROXY/ALL_PROXY in the Agent.
+            self._http_client = httpx.AsyncClient(
+                trust_env=False,
+                timeout=settings.timeout_s,
+            )
             self._client = AsyncOpenAI(
                 api_key=settings.resolve_api_key(),
                 base_url=settings.base_url,
                 timeout=settings.timeout_s,
+                http_client=self._http_client,
             )
         except Exception as exc:
             detail = str(exc)
-            if "proxy URL" in detail and "socks" in detail.lower():
-                raise APIClientError(
-                    "SOCKS代理配置无效：请把代理地址的socks://改为socks5://，"
-                    "并执行 python -m pip install -r requirements-ai.txt；"
-                    f"原始错误: {detail}"
-                ) from exc
             raise APIClientError(f"API客户端初始化失败: {detail}") from exc
+
+    async def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if callable(close):
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
 
     def _generation_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}

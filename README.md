@@ -50,19 +50,23 @@ python3 -m src.jetarm_agent
 RGB图像理解与机械臂工具链。程序已按Kimi官方兼容要求禁用思考模式、不发送自定义
 `temperature`，工具调用只使用`tool_choice=auto/none`。
 
-如果出现`Unknown scheme for proxy URL ... socks://...`，说明代理协议写法不受
-`httpx`支持。若该端口是SOCKS代理，将`socks://`改为`socks5://`，并在激活
-`.venv-ai`后安装SOCKS支持：
+### Git与Agent代理隔离
+
+Agent的HTTP客户端固定使用`trust_env=False`，不会读取终端中的`HTTP_PROXY`、
+`HTTPS_PROXY`或`ALL_PROXY`。因此Git可以单独使用代理，不需要为运行Agent修改或
+清除系统环境变量。
+
+在项目目录中为当前Git仓库配置本地SOCKS代理：
 
 ```bash
-export ALL_PROXY="socks5://127.0.0.1:7897"
-export all_proxy="$ALL_PROXY"
-python -m pip install -r requirements-ai.txt
+git config --local http.proxy "socks5h://127.0.0.1:7897"
+git config --local http.version HTTP/1.1
+git pull
 ```
 
-若代理软件提供的是HTTP或混合端口，则应使用`http://127.0.0.1:端口`。还需确认
-对应端口正在监听。若不需要代理，可在当前终端执行
-`unset ALL_PROXY all_proxy HTTP_PROXY HTTPS_PROXY http_proxy https_proxy`后再启动。
+若7897是HTTP/混合端口，将代理值改为`http://127.0.0.1:7897`。该设置只写入
+当前仓库的`.git/config`，不会传给Agent。取消时执行
+`git config --local --unset http.proxy`。
 
 后续重新打开终端时，需要先执行：
 

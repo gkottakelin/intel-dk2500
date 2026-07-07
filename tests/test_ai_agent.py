@@ -155,24 +155,30 @@ class AgentSettingsTest(unittest.TestCase):
 
 
 class OpenAICompatibleClientTest(unittest.TestCase):
-    def test_socks_proxy_initialization_error_has_actionable_message(self):
-        class BrokenAsyncOpenAI:
+    def test_agent_http_client_ignores_environment_proxies(self):
+        class FakeAsyncHttpClient:
             def __init__(self, **kwargs):
-                raise ValueError(
-                    "Unknown scheme for proxy URL URL('socks://127.0.0.1:7897/')"
-                )
+                self.kwargs = kwargs
+
+        class CapturingAsyncOpenAI:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
 
         with tempfile.TemporaryDirectory() as directory:
             settings = AgentSettings.from_sources(
                 write_config(directory),
                 environ={"TEST_API_KEY": "secret"},
             )
-            fake_openai = SimpleNamespace(AsyncOpenAI=BrokenAsyncOpenAI)
+            fake_openai = SimpleNamespace(AsyncOpenAI=CapturingAsyncOpenAI)
+            fake_httpx = SimpleNamespace(AsyncClient=FakeAsyncHttpClient)
             with patch.dict(os.environ, {"TEST_API_KEY": "secret"}), patch.dict(
-                sys.modules, {"openai": fake_openai}
+                sys.modules, {"openai": fake_openai, "httpx": fake_httpx}
             ):
-                with self.assertRaisesRegex(APIClientError, "SOCKS.*requirements-ai.txt"):
-                    OpenAICompatibleClient(settings)
+                client = OpenAICompatibleClient(settings)
+
+        http_client = client._client.kwargs["http_client"]
+        self.assertFalse(http_client.kwargs["trust_env"])
+        self.assertEqual(http_client.kwargs["timeout"], 30)
 
 
 class ChatSessionTest(unittest.IsolatedAsyncioTestCase):
