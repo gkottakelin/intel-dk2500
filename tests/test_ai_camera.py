@@ -107,6 +107,12 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         server = create_mcp_server(service)
 
+        tools = await server.list_tools()
+        camera_tool = next(
+            tool for tool in tools if tool.name == "get_rgb_camera_frame"
+        )
+        self.assertIsNone(camera_tool.outputSchema)
+
         response = await server.call_tool("get_rgb_camera_frame", {})
         content = response.content
 

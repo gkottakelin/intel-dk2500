@@ -208,7 +208,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         description=(
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
             "用户要求查看、描述、识别或分析相机画面时调用；不启动深度流。"
-        )
+        ),
+        structured_output=False,
     )
     async def get_rgb_camera_frame() -> Any:
         return await with_rgb_image(
@@ -221,16 +222,23 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "按紧凑中文命令移动JetArm末端。command格式为前5、后2、左1.5、右3、上2或下1；"
             "数字单位为厘米。未指定速度时使用1.5cm/s；允许1到5cm/s。控制器自动拆分为"
             "每段不超过3cm，并在全部分段执行完成后返回status=ok。"
-        )
+        ),
+        structured_output=False,
     )
     async def move_jetarm(command: str, speed_cm_s: float = 1.5) -> Any:
         return await with_rgb_image(await service.move(command, speed_cm_s))
 
-    @mcp.tool(description="读取JetArm关节位置和估算TCP坐标。")
+    @mcp.tool(
+        description="读取JetArm关节位置和估算TCP坐标。",
+        structured_output=False,
+    )
     async def get_jetarm_state() -> Any:
         return await with_rgb_image(await service.state())
 
-    @mcp.tool(description="让JetArm返回配置的home位姿。")
+    @mcp.tool(
+        description="让JetArm返回配置的home位姿。",
+        structured_output=False,
+    )
     async def move_jetarm_home() -> Any:
         return await with_rgb_image(await service.home())
 
@@ -238,11 +246,17 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     async def stop_jetarm() -> dict[str, Any]:
         return await service.stop()
 
-    @mcp.tool(description="按clockwise或counterclockwise旋转J5，最长2秒。")
+    @mcp.tool(
+        description="按clockwise或counterclockwise旋转J5，最长2秒。",
+        structured_output=False,
+    )
     async def rotate_jetarm_wrist(direction: str, duration_s: float) -> Any:
         return await with_rgb_image(await service.wrist(direction, duration_s))
 
-    @mcp.tool(description="控制J6夹爪：open、close、grip_lock、release_lock或stop。")
+    @mcp.tool(
+        description="控制J6夹爪：open、close、grip_lock、release_lock或stop。",
+        structured_output=False,
+    )
     async def control_jetarm_gripper(
         action: str, duration_s: float = 0.5
     ) -> Any:
