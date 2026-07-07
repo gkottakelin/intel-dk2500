@@ -16,6 +16,7 @@ from .arm_control import (
     ArmControlConfig,
     JetArmToolController,
     build_arm_tool_registry,
+    choose_arm_serial_port,
     looks_like_arm_command,
 )
 from .config import AgentSettings, ConfigurationError, DEFAULT_CONFIG_PATH
@@ -136,6 +137,27 @@ async def _run_tool_test(
 
 async def run(args: argparse.Namespace) -> int:
     _load_env_file(args.env_file)
+    arm_mode = args.arm_mode or os.getenv("JETARM_ARM_MODE", "off").strip()
+    arm_port = args.arm_port or os.getenv("JETARM_ARM_PORT") or None
+    arm_config_path = Path(
+        args.arm_config
+        or os.getenv("JETARM_ARM_CONFIG", "")
+        or DEFAULT_TERMINAL_CONFIG
+    )
+    max_distance_cm = (
+        args.arm_max_distance_cm
+        if args.arm_max_distance_cm is not None
+        else float(os.getenv("JETARM_ARM_MAX_DISTANCE_CM", "10"))
+    )
+
+    if arm_mode == "hardware" and arm_port is None:
+        print("正在打开机械臂串口选择窗口...")
+        arm_port = choose_arm_serial_port()
+        if arm_port is None:
+            print("已取消串口选择，Agent未启动。")
+            return 0
+        print(f"已选择机械臂串口: {arm_port}")
+
     settings = AgentSettings.from_sources(
         args.config,
         base_url=args.base_url,
@@ -154,19 +176,6 @@ async def run(args: argparse.Namespace) -> int:
             return 0
         finally:
             await client.close()
-
-    arm_mode = args.arm_mode or os.getenv("JETARM_ARM_MODE", "off").strip()
-    arm_port = args.arm_port or os.getenv("JETARM_ARM_PORT") or None
-    arm_config_path = Path(
-        args.arm_config
-        or os.getenv("JETARM_ARM_CONFIG", "")
-        or DEFAULT_TERMINAL_CONFIG
-    )
-    max_distance_cm = (
-        args.arm_max_distance_cm
-        if args.arm_max_distance_cm is not None
-        else float(os.getenv("JETARM_ARM_MAX_DISTANCE_CM", "10"))
-    )
 
     arm_controller: JetArmToolController | None = None
     arm_session: ToolCallingSession | None = None

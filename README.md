@@ -25,7 +25,7 @@ Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
 
 ```bash
-sudo apt install -y python3-venv
+sudo apt install -y python3-venv python3-tk
 python3 -m venv .venv-ai
 source .venv-ai/bin/activate
 python -m pip install --upgrade pip
@@ -145,6 +145,14 @@ python3 -m src.jetarm_agent \
   --arm-port /dev/serial/by-id/usb-你的设备名称
 ```
 
+硬件模式未指定`--arm-port`且`.env`没有`JETARM_ARM_PORT`时，会在进入Agent对话前
+弹出与原Ubuntu操作终端相同的“COM口设置”窗口。窗口支持自动发现、刷新、手动输入
+设备路径和权限校验；点击取消则不启动Agent：
+
+```bash
+python3 -m src.jetarm_agent --arm-mode hardware
+```
+
 需要以后直接运行时，可在`.env`中改为：
 
 ```dotenv
@@ -152,8 +160,11 @@ JETARM_ARM_MODE=hardware
 JETARM_ARM_PORT=/dev/serial/by-id/usb-你的设备名称
 ```
 
-若只有一个`ttyUSB/ttyACM`设备，也可以省略`--arm-port`自动选择。硬件模式启动时
-读取J1-J4当前位置，不会自动回Home。退出程序时会停止J5/J6并关闭串口。
+如果希望每次启动都弹窗选择串口，只设置`JETARM_ARM_MODE=hardware`，不要在`.env`
+中填写`JETARM_ARM_PORT`。
+
+硬件模式启动时读取J1-J4当前位置，不会自动回Home。退出程序时会停止J5/J6并
+关闭串口。
 
 直接终端命令：
 

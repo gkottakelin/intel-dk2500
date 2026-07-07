@@ -1,6 +1,8 @@
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     from project.src.jetarm_agent.arm_control import (
@@ -8,6 +10,7 @@ try:
         ArmControlError,
         JetArmToolController,
         build_arm_tool_registry,
+        choose_arm_serial_port,
         looks_like_arm_command,
     )
     from project.src.jetarm_agent.config import AgentSettings
@@ -22,6 +25,7 @@ except ModuleNotFoundError:
         ArmControlError,
         JetArmToolController,
         build_arm_tool_registry,
+        choose_arm_serial_port,
         looks_like_arm_command,
     )
     from src.jetarm_agent.config import AgentSettings
@@ -123,6 +127,38 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(looks_like_arm_command("向前移动5厘米"))
         self.assertTrue(looks_like_arm_command("夹紧夹爪"))
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
+
+    async def test_serial_chooser_reuses_ubuntu_terminal_dialog(self):
+        class FakeRoot:
+            def __init__(self):
+                self.withdrawn = False
+                self.destroyed = False
+
+            def withdraw(self):
+                self.withdrawn = True
+
+            def destroy(self):
+                self.destroyed = True
+
+        root = FakeRoot()
+        calls = []
+
+        def choose(fake_root, initial_port):
+            calls.append((fake_root, initial_port))
+            return "/dev/ttyUSB0"
+
+        terminal = SimpleNamespace(
+            tk=SimpleNamespace(Tk=lambda: root),
+            choose_serial_port_dialog=choose,
+        )
+        patch_target = f"{choose_arm_serial_port.__module__}._load_terminal_module"
+        with patch(patch_target, return_value=terminal):
+            selected = choose_arm_serial_port()
+
+        self.assertEqual(selected, "/dev/ttyUSB0")
+        self.assertEqual(calls, [(root, None)])
+        self.assertTrue(root.withdrawn)
+        self.assertTrue(root.destroyed)
 
     async def test_ai_tool_call_executes_distance_planner_and_returns_result(self):
         fake = FakeToolModelClient(

@@ -5,6 +5,7 @@ from .arm_control import (
     ArmControlError,
     JetArmToolController,
     build_arm_tool_registry,
+    choose_arm_serial_port,
 )
 from .config import AgentSettings, ConfigurationError
 from .openai_compatible import APIClientError, OpenAICompatibleClient
@@ -30,5 +31,6 @@ __all__ = [
     "ToolRegistry",
     "JetArmToolController",
     "build_arm_tool_registry",
+    "choose_arm_serial_port",
     "run_counter_roundtrip_test",
 ]

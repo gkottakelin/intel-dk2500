@@ -44,6 +44,39 @@ class ArmControlConfig:
             raise ArmControlError("max_motor_duration_s必须大于0")
 
 
+def _load_terminal_module() -> Any:
+    import_error: Exception | None = None
+    for module_name in (
+        "ubuntu22_04_operation_terminal.jetarm_terminal",
+        "project.ubuntu22_04_operation_terminal.jetarm_terminal",
+    ):
+        try:
+            return importlib.import_module(module_name)
+        except (ImportError, ModuleNotFoundError) as exc:
+            import_error = exc
+    raise ArmControlError(
+        "机械臂工具依赖加载失败，请执行: "
+        "python -m pip install -r requirements-ai.txt"
+    ) from import_error
+
+
+def choose_arm_serial_port(initial_port: str | None = None) -> str | None:
+    """Open the standalone Ubuntu terminal's modal serial-port chooser."""
+
+    terminal = _load_terminal_module()
+    if terminal.tk is None:
+        raise ArmControlError("缺少Tkinter，请执行: sudo apt install python3-tk")
+    try:
+        root = terminal.tk.Tk()
+    except Exception as exc:
+        raise ArmControlError(f"无法打开串口选择窗口: {exc}") from exc
+    root.withdraw()
+    try:
+        return terminal.choose_serial_port_dialog(root, initial_port)
+    finally:
+        root.destroy()
+
+
 class JetArmToolController:
     """Distance-based wrapper around ``ubuntu22_04_operation_terminal``."""
 
@@ -60,22 +93,7 @@ class JetArmToolController:
         self.logger = logger or (lambda _message: None)
         self.closed = False
 
-        terminal = None
-        import_error: Exception | None = None
-        for module_name in (
-            "ubuntu22_04_operation_terminal.jetarm_terminal",
-            "project.ubuntu22_04_operation_terminal.jetarm_terminal",
-        ):
-            try:
-                terminal = importlib.import_module(module_name)
-                break
-            except (ImportError, ModuleNotFoundError) as exc:
-                import_error = exc
-        if terminal is None:
-            raise ArmControlError(
-                "机械臂工具依赖加载失败，请执行: "
-                "python -m pip install -r requirements-ai.txt"
-            ) from import_error
+        terminal = _load_terminal_module()
 
         self.terminal = terminal
         self.settings = terminal.TerminalSettings.from_file(
