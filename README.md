@@ -31,23 +31,23 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements-ai.txt
 ```
 
-然后配置API并启动：
+默认已按Kimi中国区官方配置使用`https://api.moonshot.cn/v1`和`kimi-k2.6`。
+只需在项目根目录创建`.env`保存新申请的Key：
+
+```dotenv
+MOONSHOT_API_KEY=你的Kimi_API_Key
+JETARM_API_BASE_URL=https://api.moonshot.cn/v1
+JETARM_API_MODEL=kimi-k2.6
+```
 
 ```bash
-export JETARM_API_KEY="你的API Key"
-export JETARM_API_BASE_URL="https://你的服务地址/v1"
-export JETARM_API_MODEL="支持的模型名"
+chmod 600 .env
 python3 -m src.jetarm_agent
 ```
 
-使用Gemini的OpenAI兼容接口时：
-
-```bash
-export JETARM_API_KEY="你的Gemini API Key"
-export JETARM_API_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
-export JETARM_API_MODEL="gemini-3.5-flash"
-python3 -m src.jetarm_agent
-```
+`.env.example`可作为模板。Kimi K2.6同时支持文本、图片、视频和工具调用，适合后续
+RGB图像理解与机械臂工具链。程序已按Kimi官方兼容要求禁用思考模式、不发送自定义
+`temperature`，工具调用只使用`tool_choice=auto/none`。
 
 如果出现`Unknown scheme for proxy URL ... socks://...`，说明代理协议写法不受
 `httpx`支持。若该端口是SOCKS代理，将`socks://`改为`socks5://`，并在激活
@@ -78,9 +78,10 @@ python3 -m src.jetarm_agent --once "你好，请介绍一下你自己"
 
 ### AI调用本地代码贯通测试
 
-该测试严格执行以下链路：程序等待3秒并向AI发送`ok`，AI返回结构化函数调用，
+该测试执行以下链路：程序等待3秒并向AI发送`ok`，AI返回结构化函数调用，
 本地白名单工具将计数器从0加到1，程序把`{"status":"ok","count":1}`回传AI，
-AI再生成最终回复。测试会产生两次API请求，但不会访问相机或机械臂。
+AI再生成最终回复。通常产生两次API请求；如果Kimi首次只回复文字，程序会按官方
+兼容建议追加一次工具调用提示。测试不会访问相机或机械臂。
 
 ```bash
 python3 -m src.jetarm_agent --tool-test
@@ -99,7 +100,7 @@ python3 -m unittest tests.test_ai_agent
 ```
 
 默认配置位于`config/ai_agent.json`。配置优先级为命令行参数、环境变量、JSON
-配置文件。API Key只从环境变量读取，不写入项目文件。
+配置文件。API Key只从`MOONSHOT_API_KEY`读取，不写入JSON或源码。
 
 交互命令：`/help`、`/clear`、`/history`、`/config`、`/tool-test`、`/exit`。
 

@@ -76,15 +76,23 @@ class OpenAICompatibleClient:
                 ) from exc
             raise APIClientError(f"API客户端初始化失败: {detail}") from exc
 
+    def _generation_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {}
+        if self.settings.temperature is not None:
+            options["temperature"] = self.settings.temperature
+        if self.settings.extra_body:
+            options["extra_body"] = dict(self.settings.extra_body)
+        return options
+
     async def stream_chat(self, messages: Sequence[dict[str, str]]) -> AsyncIterator[str]:
         """Yield text deltas from one chat-completions request."""
 
         request = {
             "model": self.settings.model,
             "messages": list(messages),
-            "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_tokens,
             "stream": True,
+            **self._generation_options(),
         }
         try:
             stream = await self._client.chat.completions.create(**request)
@@ -111,11 +119,11 @@ class OpenAICompatibleClient:
         request = {
             "model": self.settings.model,
             "messages": list(messages),
-            "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_tokens,
             "tools": list(tools),
             "tool_choice": tool_choice,
             "stream": False,
+            **self._generation_options(),
         }
         try:
             response = await self._client.chat.completions.create(**request)

@@ -135,6 +135,17 @@ class AgentSettingsTest(unittest.TestCase):
             settings.resolve_api_key({})
         self.assertEqual(settings.resolve_api_key({"TEST_API_KEY": "secret"}), "secret")
 
+    def test_kimi_can_omit_temperature_and_send_extra_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_config(directory, extra_body={"thinking": {"type": "disabled"}})
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["conversation"]["temperature"] = None
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            settings = AgentSettings.from_sources(path, environ={})
+
+        self.assertIsNone(settings.temperature)
+        self.assertEqual(settings.extra_body, {"thinking": {"type": "disabled"}})
+
 
 class OpenAICompatibleClientTest(unittest.TestCase):
     def test_socks_proxy_initialization_error_has_actionable_message(self):
@@ -206,7 +217,16 @@ class ToolCallingRoundTripTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.settings = AgentSettings.from_sources(write_config(temporary.name), environ={})
+        path = write_config(
+            temporary.name,
+            base_url="https://api.moonshot.cn/v1",
+            model="kimi-k2.6",
+            extra_body={"thinking": {"type": "disabled"}},
+        )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["conversation"]["temperature"] = None
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        self.settings = AgentSettings.from_sources(path, environ={})
 
     async def test_program_ai_tool_ai_roundtrip(self):
         fake = FakeOpenAIClient(
@@ -238,9 +258,10 @@ class ToolCallingRoundTripTest(unittest.IsolatedAsyncioTestCase):
 
         first_request, second_request = fake.completions.requests
         self.assertEqual(first_request["messages"][-1], {"role": "user", "content": "ok"})
+        self.assertEqual(first_request["tool_choice"], "auto")
+        self.assertNotIn("temperature", first_request)
         self.assertEqual(
-            first_request["tool_choice"]["function"]["name"],
-            TestCounter.TOOL_NAME,
+            first_request["extra_body"], {"thinking": {"type": "disabled"}}
         )
         self.assertEqual(second_request["tool_choice"], "none")
         tool_message = second_request["messages"][-1]
@@ -248,6 +269,32 @@ class ToolCallingRoundTripTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_message["tool_call_id"], "call-test-1")
         self.assertEqual(json.loads(tool_message["content"]), {"status": "ok", "count": 1})
         self.assertTrue(any("程序 -> AI: ok" in status for status in statuses))
+
+    async def test_roundtrip_reprompts_when_kimi_first_returns_text(self):
+        fake = FakeOpenAIClient(
+            [
+                text_response("ok"),
+                tool_call_response(),
+                text_response("计数器为1。"),
+            ]
+        )
+        client = OpenAICompatibleClient(self.settings, client=fake)
+
+        async def no_sleep(_seconds):
+            return None
+
+        result = await run_counter_roundtrip_test(
+            self.settings,
+            client,
+            delay_s=0,
+            sleep=no_sleep,
+        )
+
+        self.assertEqual(result.counter, 1)
+        self.assertEqual(len(fake.completions.requests), 3)
+        retry_message = fake.completions.requests[1]["messages"][-1]
+        self.assertEqual(retry_message["role"], "user")
+        self.assertIn(TestCounter.TOOL_NAME, retry_message["content"])
 
     async def test_registry_rejects_unregistered_code(self):
         registry = ToolRegistry([TestCounter().definition()])

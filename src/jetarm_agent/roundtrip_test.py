@@ -57,14 +57,12 @@ async def run_counter_roundtrip_test(
     if on_status is not None:
         on_status("程序 -> AI: ok")
 
-    required_counter_call = {
-        "type": "function",
-        "function": {"name": TestCounter.TOOL_NAME},
-    }
     result: ToolAgentResult = await session.ask(
         "ok",
-        first_tool_choice=required_counter_call,
+        first_tool_choice="auto",
         allow_additional_tools=False,
+        required_tool_name=TestCounter.TOOL_NAME,
+        required_tool_retries=1,
     )
 
     if counter.value != 1:

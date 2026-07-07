@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "ai_agent.json"
@@ -23,7 +23,8 @@ class AgentSettings:
     model: str
     api_key_env: str
     timeout_s: float
-    temperature: float
+    extra_body: dict[str, Any]
+    temperature: Optional[float]
     max_tokens: int
     max_history_messages: int
     system_prompt: str
@@ -55,6 +56,10 @@ class AgentSettings:
         env = environ if environ is not None else os.environ
         api = payload.get("api", {})
         conversation = payload.get("conversation", {})
+        raw_extra_body = api.get("extra_body", {})
+        if not isinstance(raw_extra_body, dict):
+            raise ConfigurationError("api.extra_body必须是JSON对象")
+        raw_temperature = conversation.get("temperature", 0.2)
 
         resolved_base_url = (
             base_url
@@ -73,7 +78,10 @@ class AgentSettings:
             model=resolved_model,
             api_key_env=str(api.get("api_key_env", "JETARM_API_KEY")).strip(),
             timeout_s=float(api.get("timeout_s", 60)),
-            temperature=float(conversation.get("temperature", 0.2)),
+            extra_body=dict(raw_extra_body),
+            temperature=(
+                None if raw_temperature is None else float(raw_temperature)
+            ),
             max_tokens=int(conversation.get("max_tokens", 2048)),
             max_history_messages=int(conversation.get("max_history_messages", 40)),
             system_prompt=str(conversation.get("system_prompt", "")).strip(),
@@ -94,7 +102,7 @@ class AgentSettings:
             raise ConfigurationError("api_key_env不能为空")
         if self.timeout_s <= 0:
             raise ConfigurationError("timeout_s必须大于0")
-        if not 0 <= self.temperature <= 2:
+        if self.temperature is not None and not 0 <= self.temperature <= 2:
             raise ConfigurationError("temperature必须在0..2之间")
         if self.max_tokens <= 0:
             raise ConfigurationError("max_tokens必须大于0")
@@ -121,6 +129,7 @@ class AgentSettings:
             "model": self.model,
             "api_key_env": self.api_key_env,
             "timeout_s": self.timeout_s,
+            "extra_body": self.extra_body,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "max_history_messages": self.max_history_messages,

@@ -52,6 +52,8 @@ class ToolCallingSession:
         *,
         first_tool_choice: object = "auto",
         allow_additional_tools: bool = True,
+        required_tool_name: str | None = None,
+        required_tool_retries: int = 1,
     ) -> ToolAgentResult:
         user_text = text.strip()
         if not user_text:
@@ -60,6 +62,7 @@ class ToolCallingSession:
         turn: list[dict[str, Any]] = [{"role": "user", "content": user_text}]
         executed: list[ExecutedToolCall] = []
         tool_choice = first_tool_choice
+        retry_count = 0
 
         for _ in range(self.max_rounds):
             messages = [
@@ -75,6 +78,31 @@ class ToolCallingSession:
             turn.append(response.assistant_message())
 
             if not response.tool_calls:
+                required_executed = required_tool_name is None or any(
+                    call.name == required_tool_name
+                    and not (
+                        isinstance(call.result, dict)
+                        and call.result.get("status") == "error"
+                    )
+                    for call in executed
+                )
+                if not required_executed:
+                    if retry_count >= required_tool_retries:
+                        raise RuntimeError(
+                            f"AI没有调用必需工具: {required_tool_name}"
+                        )
+                    retry_count += 1
+                    turn.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"本次测试必须调用工具{required_tool_name}，"
+                                "请现在返回tool_calls，不要只回复文字。"
+                            ),
+                        }
+                    )
+                    tool_choice = "auto"
+                    continue
                 answer = response.content.strip()
                 if not answer:
                     raise RuntimeError("API返回了空回复且没有工具调用")
