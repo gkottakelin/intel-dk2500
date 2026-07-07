@@ -145,7 +145,8 @@ def choose_camera_dialog(
     dialog = tk.Toplevel(root)
     dialog.title("Gemini 相机设置")
     dialog.resizable(False, False)
-    dialog.transient(root)
+    if root.winfo_viewable():
+        dialog.transient(root)
 
     body = ttk.Frame(dialog, padding=18)
     body.grid(row=0, column=0, sticky="nsew")
