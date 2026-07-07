@@ -1,0 +1,24 @@
+{
+  "device": {
+    "serial_number": ""
+  },
+  "stream": {
+    "frame_timeout_ms": 1000
+  },
+  "depth": {
+    "min_mm": 300.0,
+    "max_mm": 3000.0,
+    "click_window": 7
+  },
+  "display": {
+    "mirror_color": false,
+    "mirror_depth": false
+  },
+  "capture": {
+    "save_dir": "data/rgbd_samples"
+  },
+  "sdk": {
+    "library": "sdk/x64/libOrbbecSDK.so.1.5.7",
+    "config": "sdk/OrbbecSDKConfig.xml"
+  }
+}

@@ -1,0 +1,3 @@
+# setup.sh uses Ubuntu apt packages by default. These are optional pip equivalents.
+numpy>=1.21,<3
+opencv-python>=4.5,<5

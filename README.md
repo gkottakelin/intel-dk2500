@@ -34,6 +34,7 @@ J1=500, J2=550, J3=550, J4=900, J5=500, J6=360
 | `launch/` | 后续 ROS2 启动文件 |
 | `scripts/` | 环境配置、设备检查、调试脚本 |
 | `data/` | RGB 样本、标定数据、实验数据 |
+| `ubuntu22_04_gemini_camera/` | 可独立复制的 Ubuntu Gemini RGB-D 查看器、USB 权限规则和 Linux SDK |
 
 ## 当前关键文件
 
@@ -52,6 +53,7 @@ J1=500, J2=550, J3=550, J4=900, J5=500, J6=360
 | `项目规划/资料并入索引.md` | 当前资料入口索引 |
 | `ros2_ws/src/jetarm_description/README.md` | ROS2 机械臂描述、J6 夹爪映射和 RViz 显示说明 |
 | `src/bus_servo.py` | 基于总线舵机协议的 Python 串口控制接口，默认 `115200bps` |
+| `ubuntu22_04_gemini_camera/README.md` | Gemini 在 Ubuntu 22.04 下的安装、设备选择、RGB-D 查看和排障说明 |
 | `tests/test_bus_servo.py` | 舵机协议帧、校验和状态解析单元测试 |
 | `tests/test_urdf_description.py` | ROS2 机械臂描述、J6 夹爪和 launch 参数测试 |
 
