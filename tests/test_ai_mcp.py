@@ -20,7 +20,11 @@ try:
         FunctionToolCall,
         ToolModelResponse,
     )
-    from project.src.jetarm_agent.tool_agent import ToolCallingSession
+    from project.src.jetarm_agent.tool_agent import (
+        MAX_VISUAL_CLOSED_LOOP_ROUNDS,
+        ToolCallingSession,
+    )
+    from project.src.jetarm_agent.tooling import ToolRegistry
 except ModuleNotFoundError:
     from src.jetarm_agent.config import AgentSettings
     from src.jetarm_agent.device_config import (
@@ -31,7 +35,11 @@ except ModuleNotFoundError:
     from src.jetarm_agent.mcp_client import MCPRobotBridge
     from src.jetarm_agent.mcp_server import DEFAULT_WORKFLOW_PATH, JetArmMCPService
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
-    from src.jetarm_agent.tool_agent import ToolCallingSession
+    from src.jetarm_agent.tool_agent import (
+        MAX_VISUAL_CLOSED_LOOP_ROUNDS,
+        ToolCallingSession,
+    )
+    from src.jetarm_agent.tooling import ToolRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +118,15 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["requested_distance_cm"], 1.9)
         self.assertEqual(result["motion_command_count"], 1)
         self.assertNotIn("segments", result)
+
+    async def test_visual_closed_loop_limit_is_two_hundred_rounds(self):
+        settings = AgentSettings.from_sources(
+            PROJECT_ROOT / "config" / "ai_agent.json", environ={}
+        )
+        session = ToolCallingSession(settings, FakeModelClient([]), ToolRegistry())
+
+        self.assertEqual(MAX_VISUAL_CLOSED_LOOP_ROUNDS, 200)
+        self.assertEqual(session.max_rounds, 200)
 
     async def test_mcp_service_rejects_long_command_instead_of_splitting(self):
         with self.assertRaisesRegex(Exception, "单次"):

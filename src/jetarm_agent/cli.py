@@ -27,7 +27,7 @@ from .mcp_server import DEFAULT_WORKFLOW_PATH
 from .openai_compatible import APIClientError, OpenAICompatibleClient
 from .roundtrip_test import run_counter_roundtrip_test
 from .session import ChatSession
-from .tool_agent import ToolCallingSession
+from .tool_agent import MAX_VISUAL_CLOSED_LOOP_ROUNDS, ToolCallingSession
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -302,7 +302,7 @@ async def run(args: argparse.Namespace) -> int:
                         f"{settings.system_prompt}\n\n{ARM_TOOL_SYSTEM_PROMPT}"
                         f"\n\n以下是必须遵守的JetArm MCP工作流：\n{workflow}"
                     ),
-                    max_rounds=8,
+                    max_rounds=MAX_VISUAL_CLOSED_LOOP_ROUNDS,
                 )
                 print(f"机械臂MCP: {arm_mode} ({arm_port or '未启用'})")
                 print(f"可用MCP工具: {', '.join(registry.names())}")

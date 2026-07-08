@@ -17,6 +17,7 @@ from .tooling import (
 
 SEQUENTIAL_MOTION_TOOLS = frozenset({"move_jetarm", "move_jetarm_tcp"})
 RGB_CAMERA_TOOL = "get_rgb_camera_frame"
+MAX_VISUAL_CLOSED_LOOP_ROUNDS = 200
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class ToolCallingSession:
         registry: ToolRegistry,
         *,
         system_prompt: str | None = None,
-        max_rounds: int = 8,
+        max_rounds: int = MAX_VISUAL_CLOSED_LOOP_ROUNDS,
     ) -> None:
         if max_rounds < 1:
             raise ValueError("max_rounds必须大于0")
