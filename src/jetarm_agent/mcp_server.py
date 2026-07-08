@@ -85,6 +85,19 @@ class JetArmMCPService:
         LOGGER.info("Capturing RGB frame from %s", camera)
         return await asyncio.to_thread(self.camera_capture, camera)
 
+    async def observation_arm_pose(self) -> dict[str, Any]:
+        """Read the pose paired with a camera observation without forcing arm use."""
+
+        if self.devices.arm_mode == "off":
+            return {
+                "status": "unavailable",
+                "reason": "机械臂模式为off，无法读取抓取点坐标和相机姿态",
+            }
+        try:
+            return {"status": "ok", **(await self.controller().pose())}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
     def device_status(self) -> dict[str, Any]:
         errors = validate_device_interfaces(self.devices)
         return {
@@ -197,6 +210,13 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "height": frame.height,
             "mime_type": frame.mime_type,
         }
+        # One MCP result carries both the pixels and the pose used to interpret
+        # them.  Movement is blocked when an enabled arm cannot provide pose.
+        arm_pose = await service.observation_arm_pose()
+        result["arm_pose"] = arm_pose
+        if camera_required and arm_pose.get("status") == "error":
+            result["status"] = "error"
+            result["error"] = "RGB图像已采集，但机械臂姿态读取失败，禁止据此移动"
         return content_result(result, frame)
 
     @mcp.tool(description="读取JetArm工作流规范；首次控制机械臂前必须读取。")
@@ -210,7 +230,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     @mcp.tool(
         description=(
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
-            "每次机械臂移动前必须调用，并把图像传给Agent后才能决定本次移动；不启动深度流。"
+            "同一结果还返回抓取点基座坐标、关节位置、相机视线与竖直方向夹角及相机视角上方向。"
+            "每次机械臂移动前必须调用，并把图像和姿态一起传给Agent后才能决定本次移动；不启动深度流。"
         ),
         structured_output=False,
     )
@@ -224,7 +245,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         description=(
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
             "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
-            "允许1到5cm/s。调用前必须把最新RGB图像传给Agent，每次只调用一条；"
+            "允许1到5cm/s。前后左右使用基座坐标，上下使用当前相机视角（Home时视角上为基座+Z）。"
+            "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
             "收到status=ok后必须重新取图，再由Agent决定下一条。控制器不会自动切分。"
         ),
         structured_output=False,
@@ -233,7 +255,10 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         return content_result(await service.move(command, speed_cm_s))
 
     @mcp.tool(
-        description="读取JetArm关节位置和估算TCP坐标。",
+        description=(
+            "读取JetArm关节位置、抓取点坐标、相机姿态，以及关节限位、Home、"
+            "几何尺寸、控制速度和坐标系等机械臂参数。"
+        ),
         structured_output=False,
     )
     async def get_jetarm_state() -> Any:

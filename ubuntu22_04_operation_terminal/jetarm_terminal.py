@@ -316,7 +316,7 @@ class ManualServoRuntime:
         self.logger = logger or (lambda _message: None)
         self.monotonic = monotonic
         self.positions: dict[str, int] = {}
-        self.vertical_direction = 0
+        self.vertical_direction = 0.0
         self.joystick_x = 0.0
         self.joystick_y = 0.0
         self.j6_grip_locked = False
@@ -335,8 +335,16 @@ class ManualServoRuntime:
         self.last_step_at = self.monotonic()
         self.logger("J1-J4 当前位置已载入，终端就绪")
 
-    def set_vertical_direction(self, direction: int) -> None:
-        self.vertical_direction = max(-1, min(1, int(direction)))
+    def set_vertical_direction(self, direction: float) -> None:
+        """Set normalized base-Z velocity input.
+
+        The standalone terminal still passes -1/0/1.  A float is accepted so
+        the AI adapter can combine vertical and horizontal components for a
+        camera-relative Cartesian direction without changing terminal UI
+        semantics.
+        """
+
+        self.vertical_direction = max(-1.0, min(1.0, float(direction)))
 
     def set_joystick(self, x: float, y: float) -> None:
         self.joystick_x, self.joystick_y = clamp_unit_circle(x, y)

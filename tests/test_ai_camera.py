@@ -25,6 +25,9 @@ except ModuleNotFoundError:
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 class FakeCV2:
     IMWRITE_JPEG_QUALITY = 1
 
@@ -95,6 +98,33 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ["4-1.2-11"])
         self.assertEqual(frame.data, b"jpeg")
 
+    async def test_camera_observation_pose_contains_grasp_point_and_home_angle(self):
+        service = JetArmMCPService(
+            RuntimeDeviceConfig(
+                arm_mode="dry-run",
+                arm_terminal_config=str(
+                    PROJECT_ROOT
+                    / "ubuntu22_04_operation_terminal"
+                    / "config"
+                    / "terminal.json"
+                ),
+                rgb_camera="test-camera",
+            ),
+            camera_capture=lambda _device: RGBJpegFrame(b"jpeg", 640, 480),
+        )
+        self.addAsyncCleanup(self._close_service, service)
+
+        pose = await service.observation_arm_pose()
+
+        self.assertEqual(pose["status"], "ok")
+        self.assertIn("grasp_point_base_cm", pose)
+        self.assertEqual(
+            pose["camera"]["line_of_sight_angle_from_vertical_deg"], 0.0
+        )
+
+    async def _close_service(self, service):
+        service.close()
+
     async def test_fastmcp_returns_json_and_jpeg_content_blocks(self):
         try:
             from mcp.types import ImageContent, TextContent
@@ -120,6 +150,9 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         image = next(item for item in content if isinstance(item, ImageContent))
         self.assertEqual(image.mimeType, "image/jpeg")
         self.assertEqual(image.data, "anBlZw==")
+        self.assertEqual(
+            response.structuredContent["arm_pose"]["status"], "unavailable"
+        )
         serialized = response.model_dump_json(by_alias=True)
         self.assertIn('"type":"image"', serialized)
         self.assertNotIn("Unable to serialize", serialized)

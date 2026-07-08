@@ -359,7 +359,10 @@ class ToolCallingSession:
                 "content": [
                     {
                         "type": "text",
-                        "text": "这是JetArm单路RGB相机刚刚返回的最新画面。",
+                        "text": (
+                            "这是JetArm单路RGB相机刚刚返回的最新画面；"
+                            "与它对应的抓取点坐标和相机姿态位于紧邻的工具结果arm_pose中。"
+                        ),
                     },
                     *(image.openai_content_part() for image in images),
                 ],

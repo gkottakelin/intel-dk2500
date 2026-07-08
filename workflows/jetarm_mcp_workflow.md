@@ -14,7 +14,9 @@ description: 将明确的自然语言机械臂指令转换为JetArm MCP调用，
 
 1. 读取用户原始指令，不补充用户没有要求的动作。
 2. 提取方向、总距离和可选速度。距离缺失时必须询问，禁止猜测。
-3. 调用 `get_rgb_camera_frame` 采集当前RGB图像，并把真实JPEG传给Agent。未收到图像时禁止移动。
+3. 调用 `get_rgb_camera_frame` 采集当前RGB图像。一次返回必须同时包含真实JPEG和
+   `arm_pose`：J1-J4位置、抓取点基座坐标、相机视线相对竖直方向夹角及相机视角上方向。
+   图像或机械臂姿态缺失时均禁止移动。
 4. 未指定速度时使用 `1.5 cm/s`；用户指定速度必须在 `1–5 cm/s`。
 5. Agent只根据刚收到的最新图像决定当前一步，调用一次 `move_jetarm(command, speed_cm_s)`；
    当前命令距离必须严格小于 `2 cm`，推荐最大 `1.9 cm`。禁止一次生成并下发后续动作序列。
@@ -28,6 +30,10 @@ description: 将明确的自然语言机械臂指令转换为JetArm MCP调用，
 8. 最终总结必须以 MCP 的实际返回值为依据，不得虚构位置、视觉结果或完成状态。
 9. `get_rgb_camera_frame` 是每次移动前的强制工具，不只用于用户明确要求查看画面时。
 10. 每张图像只允许驱动紧随其后的一条移动命令。机械臂移动后必须重新取图，禁止沿用旧图。
+11. `前/后/左/右` 使用基座坐标系；`上/下` 使用当前相机视角。Home姿态标定为相机视角
+    夹角 `0°`，此时视角上等于基座 `+Z`。控制器根据当前J1-J4反馈完成视角到基座坐标的转换。
+12. Agent需要关节限位、Home位置、连杆尺寸、控制速度或坐标定义时，调用
+    `get_jetarm_state` 并读取 `arm_parameters`，不得猜测。
 
 ## 示例
 
@@ -35,12 +41,12 @@ description: 将明确的自然语言机械臂指令转换为JetArm MCP调用，
 
 ```text
 MCP调用1：get_rgb_camera_frame()
-MCP返回1：status=ok + RGB图像1
+MCP返回1：status=ok + RGB图像1 + 对应arm_pose
 Agent读取图像1：决定本次向下1.9cm
 MCP调用2：move_jetarm(command="下1.9", speed_cm_s=1.5)
 MCP返回2：status=ok
 MCP调用3：get_rgb_camera_frame()
-MCP返回3：status=ok + RGB图像2
+MCP返回3：status=ok + RGB图像2 + 更新后的arm_pose
 Agent读取图像2：重新判断目标位置，只决定下一条小于2cm的动作
 ```
 

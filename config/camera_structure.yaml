@@ -2,17 +2,25 @@
 # This file is intentionally separate from joint_servo_map.yaml.
 
 metadata:
-  version: 0.1
-  status: placeholder
+  version: 0.2
+  status: orientation_model_partial
   camera_model: Gemini Pro Plus
   notes:
-    - Fill this after the arm-only debugging stage is stable.
+    - Camera line-of-sight pitch is currently derived from J2-J4 feedback.
+    - Home is the measured zero-angle reference for the line of sight versus vertical.
+    - Intrinsics and full hand-eye extrinsics still require calibration.
     - Keep camera mounting, intrinsics, extrinsics, and hand-eye calibration here.
 
 camera_mount:
-  type: null  # eye_to_hand or eye_in_hand
-  mounted_on: null
-  description: null
+  type: eye_in_hand
+  mounted_on: J5_J6_near_gripper
+  description: Camera moves with the wrist/gripper and can see the gripper.
+  orientation_model:
+    home_line_of_sight_angle_from_vertical_deg: 0.0
+    signed_pitch_formula: current_pitch_J2_J3_J4_minus_home_pitch_J2_J3_J4
+    signed_pitch_positive_direction: toward_arm_radial_forward
+    camera_view_up_at_home: base_link_positive_z
+    agent_up_down_frame: camera_view
 
 frames:
   color_frame: camera_color_optical_frame

@@ -125,11 +125,40 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 478, "J3": 641, "J4": 890})
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
+        self.assertEqual(
+            state["arm_pose"]["camera"][
+                "line_of_sight_angle_from_vertical_deg"
+            ],
+            0.0,
+        )
+        self.assertEqual(
+            state["arm_pose"]["grasp_point_base_cm"], state["tcp_cm"]
+        )
+        self.assertEqual(
+            state["arm_parameters"]["agent_direction_frames"]["up_down"],
+            "camera_view",
+        )
+        self.assertEqual(
+            state["arm_parameters"]["joints"]["J2"]["servo_id"], 2
+        )
         home_servo_ids = {
             servo_id
             for servo_id, _target, _run_time in self.controller.controller.move_calls
         }
         self.assertEqual(home_servo_ids, {1, 2, 3, 4, 5})
+
+    async def test_camera_relative_up_rotates_with_current_pose(self):
+        self.controller.runtime.positions["J4"] -= 100
+
+        pose = await self.controller.pose()
+        result = await self.controller.move_tcp("up", 1.9)
+
+        self.assertGreater(
+            pose["camera"]["line_of_sight_angle_from_vertical_deg"], 20
+        )
+        self.assertEqual(result["direction_reference"], "camera_view")
+        self.assertNotEqual(result["direction_unit_base"]["forward_x"], 0.0)
+        self.assertLess(result["direction_unit_base"]["up_z"], 1.0)
 
     async def test_tool_registry_exposes_only_bounded_arm_functions(self):
         schemas = build_arm_tool_registry(self.controller).schemas()
@@ -167,6 +196,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
         self.assertEqual(required_mcp_tool_for_command("向前移动5厘米"), "move_jetarm")
         self.assertEqual(required_mcp_tool_for_command("前5"), "move_jetarm")
+        self.assertEqual(
+            required_mcp_tool_for_command("读取机械臂参数和关节限位"),
+            "get_jetarm_state",
+        )
         self.assertTrue(looks_like_camera_command("查看摄像头画面"))
         self.assertEqual(
             required_mcp_tool_for_command("描述当前RGB图像"),

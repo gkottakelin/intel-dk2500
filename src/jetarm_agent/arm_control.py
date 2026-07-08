@@ -195,28 +195,75 @@ class JetArmToolController:
             raise ArmControlError(f"{name}单次不能超过{maximum:g}")
         return number
 
-    def _set_cartesian_direction(self, direction: str) -> float:
+    def _camera_signed_tilt_rad(self) -> float:
+        """Return camera pitch relative to Home, normalized to [-pi, pi]."""
+
+        model = self.runtime.model
+        current_pitch = sum(
+            model.position_to_model_angle(name, self.runtime.positions[name])
+            for name in ("J2", "J3", "J4")
+        )
+        home_pitch = sum(
+            model.position_to_model_angle(name, self.settings.home[name])
+            for name in ("J2", "J3", "J4")
+        )
+        difference = current_pitch - home_pitch
+        return math.atan2(math.sin(difference), math.cos(difference))
+
+    def _direction_unit_base(self, direction: str) -> tuple[float, float, float]:
+        base_directions = {
+            "forward": (1.0, 0.0, 0.0),
+            "backward": (-1.0, 0.0, 0.0),
+            "left": (0.0, 1.0, 0.0),
+            "right": (0.0, -1.0, 0.0),
+        }
+        if direction in base_directions:
+            return base_directions[direction]
+        if direction not in {"up", "down"}:
+            raise ArmControlError(f"不支持的TCP方向: {direction}")
+
+        # The eye-in-hand camera pitches with J2-J4.  Home is the zero-angle
+        # calibration pose, so image-view up is base +Z at Home and rotates in
+        # the arm's radial plane as the camera tilts.
+        yaw = self.runtime.model.position_to_model_angle(
+            "J1", self.runtime.positions["J1"]
+        )
+        tilt = self._camera_signed_tilt_rad()
+        sign = 1.0 if direction == "up" else -1.0
+        radial = math.sin(tilt)
+        return (
+            sign * radial * math.cos(yaw),
+            sign * radial * math.sin(yaw),
+            sign * math.cos(tilt),
+        )
+
+    def _set_cartesian_direction(
+        self, direction: str
+    ) -> tuple[float, tuple[float, float, float]]:
         self.runtime.set_vertical_direction(0)
         self.runtime.center_joystick()
-        if direction == "forward":
-            self.runtime.set_joystick(0.0, -1.0)
-            return self.settings.max_horizontal_speed_m_s
-        if direction == "backward":
-            self.runtime.set_joystick(0.0, 1.0)
-            return self.settings.max_horizontal_speed_m_s
-        if direction == "left":
-            self.runtime.set_joystick(-1.0, 0.0)
-            return self.settings.max_horizontal_speed_m_s
-        if direction == "right":
-            self.runtime.set_joystick(1.0, 0.0)
-            return self.settings.max_horizontal_speed_m_s
-        if direction == "up":
-            self.runtime.set_vertical_direction(1)
-            return self.settings.vertical_speed_m_s
-        if direction == "down":
-            self.runtime.set_vertical_direction(-1)
-            return self.settings.vertical_speed_m_s
-        raise ArmControlError(f"不支持的TCP方向: {direction}")
+        unit = self._direction_unit_base(direction)
+        horizontal_length = math.hypot(unit[0], unit[1])
+        speed_limits: list[float] = [
+            self.settings.max_horizontal_speed_m_s,
+            self.settings.vertical_speed_m_s,
+        ]
+        if horizontal_length > 1e-12:
+            speed_limits.append(
+                self.settings.max_horizontal_speed_m_s / horizontal_length
+            )
+        if abs(unit[2]) > 1e-12:
+            speed_limits.append(self.settings.vertical_speed_m_s / abs(unit[2]))
+        planner_speed_m_s = min(speed_limits)
+
+        self.runtime.set_joystick(
+            -unit[1] * planner_speed_m_s / self.settings.max_horizontal_speed_m_s,
+            -unit[0] * planner_speed_m_s / self.settings.max_horizontal_speed_m_s,
+        )
+        self.runtime.set_vertical_direction(
+            unit[2] * planner_speed_m_s / self.settings.vertical_speed_m_s
+        )
+        return planner_speed_m_s, unit
 
     def _stop_cartesian(self) -> None:
         self.runtime.set_vertical_direction(0)
@@ -263,7 +310,8 @@ class JetArmToolController:
         self._refresh_hardware_positions()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
         requested_speed_m_s = speed_cm_s / 100.0
-        planner_speed_m_s = self._set_cartesian_direction(direction)
+        planner_speed_m_s, direction_unit = self._set_cartesian_direction(direction)
+        camera_reference_before_move = self._camera_pose()
 
         planner_time_s = (distance_cm / 100.0) / planner_speed_m_s
         remaining_s = planner_time_s
@@ -291,15 +339,9 @@ class JetArmToolController:
             self._refresh_hardware_positions()
         end_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
         delta_cm = (end_tcp - start_tcp) * 100.0
-        axis = {
-            "forward": (0, 1.0),
-            "backward": (0, -1.0),
-            "left": (1, 1.0),
-            "right": (1, -1.0),
-            "up": (2, 1.0),
-            "down": (2, -1.0),
-        }[direction]
-        estimated_distance = float(delta_cm[axis[0]]) * axis[1]
+        estimated_distance = sum(
+            float(delta_cm[index]) * direction_unit[index] for index in range(3)
+        )
         return {
             "status": "ok",
             "mode": self.config.mode,
@@ -312,6 +354,15 @@ class JetArmToolController:
                 "left_y": round(float(delta_cm[1]), 3),
                 "up_z": round(float(delta_cm[2]), 3),
             },
+            "direction_reference": (
+                "camera_view" if direction in {"up", "down"} else "base"
+            ),
+            "direction_unit_base": {
+                "forward_x": round(direction_unit[0], 6),
+                "left_y": round(direction_unit[1], 6),
+                "up_z": round(direction_unit[2], 6),
+            },
+            "camera_pose_before_move": camera_reference_before_move,
             "steps": steps,
             "joint_positions": dict(self.runtime.positions),
         }
@@ -433,19 +484,96 @@ class JetArmToolController:
         self.runtime.stop_all()
         return {"status": "ok", "mode": self.config.mode, "action": "stop_all"}
 
+    def _camera_pose(self) -> dict[str, Any]:
+        tilt_rad = self._camera_signed_tilt_rad()
+        up = self._direction_unit_base("up")
+        return {
+            "mount": "eye_in_hand_near_j5_j6",
+            "home_line_of_sight_angle_from_vertical_deg": 0.0,
+            "line_of_sight_angle_from_vertical_deg": round(
+                abs(math.degrees(tilt_rad)), 3
+            ),
+            "signed_pitch_from_home_deg": round(math.degrees(tilt_rad), 3),
+            "signed_pitch_positive_direction": "toward_arm_radial_forward",
+            "view_up_unit_base": {
+                "forward_x": round(up[0], 6),
+                "left_y": round(up[1], 6),
+                "up_z": round(up[2], 6),
+            },
+        }
+
+    def _arm_pose(self) -> dict[str, Any]:
+        tcp_cm = self.runtime.model.tcp(self.runtime.positions) * 100.0
+        grasp_point = {
+            "forward_x": round(float(tcp_cm[0]), 3),
+            "left_y": round(float(tcp_cm[1]), 3),
+            "up_z": round(float(tcp_cm[2]), 3),
+        }
+        return {
+            "joint_positions": dict(self.runtime.positions),
+            "grasp_point_base_cm": grasp_point,
+            "camera": self._camera_pose(),
+        }
+
+    def arm_parameters(self) -> dict[str, Any]:
+        joints = {
+            name: {
+                "servo_id": self.settings.servo_id(name),
+                "position_min": int(values["position_min"]),
+                "position_max": int(values["position_max"]),
+                "angle_min_deg": float(values["angle_min_deg"]),
+                "angle_max_deg": float(values["angle_max_deg"]),
+                "direction_sign": float(values["direction_sign"]),
+                "home_position": self.settings.home.get(name),
+            }
+            for name, values in self.settings.joints.items()
+        }
+        return {
+            "coordinate_frame": {
+                "name": "base",
+                "x_positive": "arm_forward",
+                "y_positive": "arm_left",
+                "z_positive": "up",
+                "units": "cm",
+            },
+            "agent_direction_frames": {
+                "forward_backward_left_right": "base",
+                "up_down": "camera_view",
+            },
+            "home_joint_positions": dict(self.settings.home),
+            "joints": joints,
+            "geometry_m": dict(self.settings.geometry),
+            "control": {
+                "tick_s": self.settings.tick_s,
+                "vertical_speed_m_s": self.settings.vertical_speed_m_s,
+                "max_horizontal_speed_m_s": self.settings.max_horizontal_speed_m_s,
+                "default_agent_tcp_speed_cm_s": self.config.default_speed_cm_s,
+                "min_agent_tcp_speed_cm_s": self.config.min_speed_cm_s,
+                "max_agent_tcp_speed_cm_s": self.config.max_speed_cm_s,
+                "max_agent_move_command_cm_exclusive": self.config.max_distance_cm,
+            },
+            "camera_orientation_model": {
+                "mount": "eye_in_hand_near_j5_j6",
+                "home_angle_from_vertical_deg": 0.0,
+                "signed_pitch_formula": "pitch(J2+J3+J4)-home_pitch(J2+J3+J4)",
+            },
+        }
+
+    async def pose(self) -> dict[str, Any]:
+        self._refresh_hardware_positions()
+        return self._arm_pose()
+
     async def state(self) -> dict[str, Any]:
         self._refresh_hardware_positions()
-        tcp_cm = self.runtime.model.tcp(self.runtime.positions) * 100.0
+        arm_pose = self._arm_pose()
         return {
             "status": "ok",
             "mode": self.config.mode,
             "serial_port": self.serial_port,
-            "joint_positions": dict(self.runtime.positions),
-            "tcp_cm": {
-                "forward_x": round(float(tcp_cm[0]), 3),
-                "left_y": round(float(tcp_cm[1]), 3),
-                "up_z": round(float(tcp_cm[2]), 3),
-            },
+            "joint_positions": arm_pose["joint_positions"],
+            "tcp_cm": arm_pose["grasp_point_base_cm"],
+            "arm_pose": arm_pose,
+            "arm_parameters": self.arm_parameters(),
             "grip_locked": bool(self.runtime.j6_grip_locked),
         }
 
@@ -490,8 +618,10 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ToolDefinition(
                 name="move_jetarm_tcp",
                 description=(
-                    "Execute exactly one JetArm TCP movement in the robot-base coordinate "
-                    "frame. distance_cm must be strictly less than 2 cm. For a longer user "
+                    "Execute exactly one JetArm TCP movement. forward/backward/left/right "
+                    "use the robot-base frame; up/down use the current camera-view frame "
+                    "calibrated to base +Z at Home. distance_cm must be strictly less than "
+                    "2 cm. For a longer user "
                     "request, the Agent must use a fresh RGB frame to decide only the current "
                     "movement, wait for status=ok, then capture a new frame before deciding "
                     "the next call. The controller never splits a long command."
@@ -594,7 +724,10 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ),
             ToolDefinition(
                 name="get_jetarm_state",
-                description="Read current J1-J4 positions and estimated TCP coordinates.",
+                description=(
+                    "Read current joints, grasp-point coordinates, camera angle/pose, and "
+                    "the arm kinematic, joint, Home, control, and coordinate parameters."
+                ),
                 parameters={"type": "object", "properties": {}},
                 handler=state,
             ),
@@ -637,6 +770,13 @@ def looks_like_arm_command(text: str) -> bool:
         "机械臂停止",
         "停止机械臂",
         "机械臂状态",
+        "机械臂参数",
+        "关节限位",
+        "home位置",
+        "连杆尺寸",
+        "抓取点坐标",
+        "机械臂姿态",
+        "相机夹角",
         "movearm",
         "moveforward",
         "movebackward",
@@ -687,7 +827,19 @@ def required_mcp_tool_for_command(text: str) -> str | None:
         return "move_jetarm_home"
     if any(phrase in normalized for phrase in ("机械臂停止", "停止机械臂", "stoparm")):
         return "stop_jetarm"
-    if any(phrase in normalized for phrase in ("机械臂状态",)):
+    if any(
+        phrase in normalized
+        for phrase in (
+            "机械臂状态",
+            "机械臂参数",
+            "关节限位",
+            "home位置",
+            "连杆尺寸",
+            "抓取点坐标",
+            "机械臂姿态",
+            "相机夹角",
+        )
+    ):
         return "get_jetarm_state"
     return None
 
@@ -717,10 +869,10 @@ def looks_like_camera_command(text: str) -> bool:
 
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
-1. 只有用户明确要求移动或操作夹爪时才调用机械臂工具，禁止自行追加动作。
-2. “前/后/左/右/上/下”使用机械臂基座坐标系；距离必须保持用户给出的厘米数。
+1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
+2. “前/后/左/右”使用机械臂基座坐标系；“上/下”使用当前相机视角坐标，Home时相机视角的上等于基座+Z。距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
-4. 每次移动前必须调用get_rgb_camera_frame；只有最新RGB图像已传给Agent，才允许Agent决定本次动作。
+4. 每次移动前必须调用get_rgb_camera_frame；该工具会在同一个结果中返回最新RGB图像、抓取点基座坐标和相机视线相对竖直方向的夹角。只有图像和对应姿态都已传给Agent，才允许Agent决定本次动作。
 5. Agent每次只根据当前最新图像下发一条move_jetarm命令，距离必须严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
 6. 本条移动返回status=ok后，必须重新调用get_rgb_camera_frame，把动作后的新图像传给Agent，再决定是否及如何移动下一条。
 7. 控制器不会替Agent切分长距离。长距离目标必须通过“取图→单步移动→重新取图”的视觉闭环逐步完成。
@@ -729,4 +881,5 @@ ARM_TOOL_SYSTEM_PROMPT = """
 10. 当前只使用单路RGB相机，不得请求或声称使用深度流。
 11. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
 12. 每张RGB图像只授权紧随其后的一条移动命令；机械臂位置改变后旧图像立即失效，禁止基于旧图连续移动。
+13. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
 """.strip()
