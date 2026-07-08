@@ -15,6 +15,9 @@ from .tooling import (
     ToolRegistry,
 )
 
+SEQUENTIAL_MOTION_TOOLS = frozenset({"move_jetarm", "move_jetarm_tcp"})
+RGB_CAMERA_TOOL = "get_rgb_camera_frame"
+
 
 @dataclass(frozen=True)
 class ExecutedToolCall:
@@ -64,6 +67,7 @@ class ToolCallingSession:
         require_any_tool: bool = False,
         required_tool_name: str | None = None,
         required_tool_retries: int = 1,
+        preselected_tool_name: str | None = None,
         preselected_tool_arguments: dict[str, Any] | None = None,
     ) -> ToolAgentResult:
         user_text = text.strip()
@@ -74,11 +78,16 @@ class ToolCallingSession:
         executed: list[ExecutedToolCall] = []
         tool_choice = first_tool_choice
         retry_count = 0
+        camera_tool_available = RGB_CAMERA_TOOL in self.registry.names()
+        fresh_rgb_observation = False
 
         if preselected_tool_arguments is not None:
-            if required_tool_name is None:
-                raise ValueError("预选工具必须同时提供required_tool_name")
-            call_id = f"local-{required_tool_name}-{len(self.history)}"
+            selected_tool_name = preselected_tool_name or required_tool_name
+            if selected_tool_name is None:
+                raise ValueError(
+                    "预选工具必须提供preselected_tool_name或required_tool_name"
+                )
+            call_id = f"local-{selected_tool_name}-{len(self.history)}"
             raw_arguments = json.dumps(preselected_tool_arguments, ensure_ascii=False)
             turn.append(
                 {
@@ -89,7 +98,7 @@ class ToolCallingSession:
                             "id": call_id,
                             "type": "function",
                             "function": {
-                                "name": required_tool_name,
+                                "name": selected_tool_name,
                                 "arguments": raw_arguments,
                             },
                         }
@@ -97,12 +106,12 @@ class ToolCallingSession:
                 }
             )
             arguments, result, images = await self._execute(
-                required_tool_name, raw_arguments
+                selected_tool_name, raw_arguments
             )
             executed.append(
                 ExecutedToolCall(
                     call_id=call_id,
-                    name=required_tool_name,
+                    name=selected_tool_name,
                     arguments=arguments,
                     result=result,
                     images=images,
@@ -112,12 +121,14 @@ class ToolCallingSession:
                 {
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "name": required_tool_name,
+                    "name": selected_tool_name,
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
             if images:
                 self._append_latest_images(turn, images)
+            if selected_tool_name == RGB_CAMERA_TOOL:
+                fresh_rgb_observation = self._successful_rgb_result(result, images)
 
         for _ in range(self.max_rounds):
             messages = [
@@ -162,10 +173,61 @@ class ToolCallingSession:
                 return ToolAgentResult(answer, tuple(executed))
 
             latest_images: tuple[ToolImage, ...] = ()
+            motion_call_seen = False
+            successful_motion = False
+            rgb_was_visible_to_model = fresh_rgb_observation
             for tool_call in response.tool_calls:
-                arguments, result, images = await self._execute(
-                    tool_call.name, tool_call.arguments
-                )
+                if tool_call.name in SEQUENTIAL_MOTION_TOOLS and motion_call_seen:
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": (
+                            "同一轮只允许下发一条机械臂移动命令。"
+                            "请等待上一条返回status=ok后，再单独下发下一条。"
+                        ),
+                    }
+                    images = ()
+                elif (
+                    tool_call.name in SEQUENTIAL_MOTION_TOOLS
+                    and camera_tool_available
+                    and not rgb_was_visible_to_model
+                ):
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": (
+                            "视觉闭环禁止在没有最新RGB图像时移动。"
+                            "必须先调用get_rgb_camera_frame并把图像传给Agent，"
+                            "再根据该图像单独下发一条小于2cm的移动命令。"
+                        ),
+                    }
+                    images = ()
+                    motion_call_seen = True
+                else:
+                    if tool_call.name in SEQUENTIAL_MOTION_TOOLS:
+                        motion_call_seen = True
+                    arguments, result, images = await self._execute(
+                        tool_call.name, tool_call.arguments
+                    )
+                    if tool_call.name == RGB_CAMERA_TOOL:
+                        fresh_rgb_observation = self._successful_rgb_result(
+                            result, images
+                        )
+                    elif tool_call.name in SEQUENTIAL_MOTION_TOOLS:
+                        fresh_rgb_observation = False
+                        successful_motion = self._successful_result(result)
                 executed.append(
                     ExecutedToolCall(
                         call_id=tool_call.call_id,
@@ -189,9 +251,62 @@ class ToolCallingSession:
             if latest_images:
                 self._append_latest_images(turn, latest_images)
 
+            if successful_motion and camera_tool_available:
+                camera_call_id = f"auto-rgb-after-motion-{len(executed)}"
+                raw_arguments = "{}"
+                turn.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": camera_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": RGB_CAMERA_TOOL,
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ],
+                    }
+                )
+                arguments, result, images = await self._execute(
+                    RGB_CAMERA_TOOL, raw_arguments
+                )
+                executed.append(
+                    ExecutedToolCall(
+                        call_id=camera_call_id,
+                        name=RGB_CAMERA_TOOL,
+                        arguments=arguments,
+                        result=result,
+                        images=images,
+                    )
+                )
+                turn.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": camera_call_id,
+                        "name": RGB_CAMERA_TOOL,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+                fresh_rgb_observation = self._successful_rgb_result(result, images)
+                if images:
+                    self._append_latest_images(turn, images)
+
             tool_choice = "auto" if allow_additional_tools else "none"
 
         raise RuntimeError(f"工具调用超过最大轮数: {self.max_rounds}")
+
+    @staticmethod
+    def _successful_result(result: object) -> bool:
+        return isinstance(result, dict) and result.get("status") == "ok"
+
+    @classmethod
+    def _successful_rgb_result(
+        cls, result: object, images: tuple[ToolImage, ...]
+    ) -> bool:
+        return cls._successful_result(result) and bool(images)
 
     async def _execute(
         self, name: str, raw_arguments: str

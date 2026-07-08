@@ -63,20 +63,17 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.controller.close()
 
-    async def test_moves_forward_five_centimeters_in_small_steps(self):
-        result = await self.controller.move_tcp("forward", 5)
+    async def test_executes_one_agent_command_without_controller_splitting(self):
+        result = await self.controller.move_tcp("forward", 1.9)
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["requested_distance_cm"], 5)
-        self.assertEqual(result["command"], "前5")
+        self.assertEqual(result["requested_distance_cm"], 1.9)
+        self.assertEqual(result["command"], "前1.9")
         self.assertEqual(result["speed_cm_s"], 1.5)
-        self.assertEqual(result["segment_count"], 2)
-        self.assertEqual(
-            [segment["distance_cm"] for segment in result["segments"]],
-            [3, 2],
-        )
-        self.assertGreater(result["estimated_distance_cm"], 4)
-        self.assertEqual(result["steps"], 13)
+        self.assertEqual(result["command_limit_cm_exclusive"], 2)
+        self.assertEqual(result["motion_command_count"], 1)
+        self.assertNotIn("segments", result)
+        self.assertGreater(result["estimated_distance_cm"], 1)
         self.assertTrue(self.controller.controller.move_calls)
         self.assertTrue(
             all(
@@ -88,7 +85,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
     async def test_compact_command_and_speed_bounds(self):
         self.assertEqual(parse_compact_arm_command("前5厘米"), ("forward", 5.0))
         self.assertEqual(format_compact_arm_command("up", 1.5), "上1.5")
-        result = await self.controller.execute_compact_command("右2", 2.0)
+        result = await self.controller.execute_compact_command("右1.5", 2.0)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["speed_cm_s"], 2.0)
         with self.assertRaisesRegex(ArmControlError, "1到5"):
@@ -102,9 +99,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(run_times)
         self.assertGreater(max(run_times), 80)
 
-    async def test_rejects_distance_above_safety_limit(self):
-        with self.assertRaisesRegex(ArmControlError, "不能超过10"):
-            await self.controller.move_tcp("forward", 10.1)
+    async def test_rejects_two_centimeters_or_more_without_splitting(self):
+        with self.assertRaisesRegex(ArmControlError, "单次必须小于2"):
+            await self.controller.move_tcp("forward", 2)
+        with self.assertRaisesRegex(ArmControlError, "单次不能超过2"):
+            await self.controller.move_tcp("forward", 5)
         self.assertEqual(self.controller.controller.move_calls, [])
 
     async def test_wrist_and_gripper_motor_actions_always_stop(self):
@@ -151,8 +150,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             schema for schema in schemas if schema["function"]["name"] == "move_jetarm_tcp"
         )
         self.assertEqual(
-            move_schema["function"]["parameters"]["properties"]["distance_cm"]["maximum"],
-            10,
+            move_schema["function"]["parameters"]["properties"]["distance_cm"][
+                "exclusiveMaximum"
+            ],
+            2,
         )
         speed_schema = move_schema["function"]["parameters"]["properties"]["speed_cm_s"]
         self.assertEqual(speed_schema["minimum"], 1)
@@ -248,6 +249,120 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         tool_result_message = fake.requests[2]["messages"][-1]
         self.assertEqual(tool_result_message["role"], "tool")
         self.assertEqual(tool_result_message["tool_call_id"], "arm-call-1")
+
+    async def test_agent_executes_long_request_as_sequential_sub_two_cm_calls(self):
+        fake = FakeToolModelClient(
+            [
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="arm-call-1",
+                            name="move_jetarm_tcp",
+                            arguments=json.dumps(
+                                {"direction": "forward", "distance_cm": 1.9}
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="arm-call-2",
+                            name="move_jetarm_tcp",
+                            arguments=json.dumps(
+                                {"direction": "forward", "distance_cm": 1.9}
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="arm-call-3",
+                            name="move_jetarm_tcp",
+                            arguments=json.dumps(
+                                {"direction": "forward", "distance_cm": 1.2}
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="已按三条MCP命令向前移动5厘米。",
+                    tool_calls=(),
+                ),
+            ]
+        )
+        settings = AgentSettings.from_sources(
+            PROJECT_ROOT / "config" / "ai_agent.json", environ={}
+        )
+        session = ToolCallingSession(
+            settings,
+            fake,
+            build_arm_tool_registry(self.controller),
+        )
+
+        result = await session.ask(
+            "向前移动5厘米",
+            require_any_tool=True,
+            required_tool_name="move_jetarm_tcp",
+        )
+
+        self.assertEqual(
+            [call.arguments["distance_cm"] for call in result.tool_calls],
+            [1.9, 1.9, 1.2],
+        )
+        self.assertTrue(all(call.result["status"] == "ok" for call in result.tool_calls))
+        self.assertAlmostEqual(
+            sum(call.arguments["distance_cm"] for call in result.tool_calls),
+            5.0,
+        )
+
+    async def test_only_first_motion_call_in_same_model_round_is_executed(self):
+        fake = FakeToolModelClient(
+            [
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="arm-call-1",
+                            name="move_jetarm_tcp",
+                            arguments=json.dumps(
+                                {"direction": "forward", "distance_cm": 1.9}
+                            ),
+                        ),
+                        FunctionToolCall(
+                            call_id="arm-call-2",
+                            name="move_jetarm_tcp",
+                            arguments=json.dumps(
+                                {"direction": "forward", "distance_cm": 1.9}
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(content="已执行第一条，第二条未下发。", tool_calls=()),
+            ]
+        )
+        settings = AgentSettings.from_sources(
+            PROJECT_ROOT / "config" / "ai_agent.json", environ={}
+        )
+        session = ToolCallingSession(
+            settings,
+            fake,
+            build_arm_tool_registry(self.controller),
+        )
+
+        result = await session.ask(
+            "向前移动3.8厘米",
+            require_any_tool=True,
+            required_tool_name="move_jetarm_tcp",
+        )
+
+        self.assertEqual(result.tool_calls[0].result["status"], "ok")
+        self.assertEqual(result.tool_calls[1].result["status"], "error")
+        self.assertIn("同一轮只允许", result.tool_calls[1].result["error"])
 
 
 if __name__ == "__main__":

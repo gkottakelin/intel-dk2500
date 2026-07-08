@@ -19,7 +19,8 @@
 
 当前已接入OpenAI-compatible多模态API、多轮命令行对话和本地stdio MCP工具调用。
 机械臂可在`dry-run`中验证，也可通过设备配置程序启用真实Ubuntu串口。
-单路RGB接口可通过MCP返回JPEG给Agent；距离控制仍是运动学估计，不是视觉闭环。
+单路RGB接口通过MCP返回JPEG给Agent；移动采用“最新图像→单步动作→重新取图”的视觉闭环。
+其中厘米位移量仍由机械臂运动学估算，不等同于深度测距或视觉标定后的绝对距离。
 
 Ubuntu 22.04自带Python 3.10。不要安装根目录的`requirements.txt`，该文件还
 包含Windows/Python 3.12相机依赖。为AI终端建立独立环境：
@@ -150,11 +151,11 @@ J5顺时针旋转0.5秒
 
 ```text
 向前5厘米
-→ Agent生成MCP命令 move_jetarm(command="前5", speed_cm_s=1.5)
-→ 控制器拆分为 前3 + 前2
-→ 全部分段执行结束
-→ MCP返回status=ok
-→ Agent读取结果并总结
+→ MCP调用get_rgb_camera_frame并把最新RGB图像传给Agent
+→ Agent读取该图，只下达当前一条小于2cm的命令
+→ MCP返回status=ok，旧图失效
+→ MCP再次取图并传给Agent
+→ Agent读取新图后再决定下一条，循环直至完成或停止
 ```
 
 完整规范位于`workflows/jetarm_mcp_workflow.md`，对话中输入`/workflow`可以显示。
@@ -163,7 +164,11 @@ J5顺时针旋转0.5秒
 
 - 未指定速度时固定使用`1.5 cm/s`。
 - 用户指定速度必须在`1–5 cm/s`。
-- 单个物理运动分段最多`3 cm`；总距离默认最多`10 cm`。
+- Agent下发的每条MCP移动命令必须严格小于`2 cm`，推荐普通子命令使用`1.9 cm`。
+- Agent不能预先生成完整移动序列；每次只能根据最新RGB图像决定一条动作。
+- 每条移动命令返回`status=ok`后必须重新取图，新图进入Agent后才允许决定下一条。
+- 没有新RGB图像时，运行时会拒绝机械臂移动调用。
+- 单次用户请求的总距离最多`10 cm`。
 - 只有MCP返回`status=ok`后Agent才能报告完成。
 - 当前相机配置保存Orbbec USB设备的序列号/UID，不再保存容易混淆的`/dev/video*`节点。
 - 取图时生成仅启用Color的SDK配置，不启动或读取Depth流。
@@ -178,8 +183,8 @@ JPEG图像内容块，Agent把JPEG转换为Kimi支持的Base64 `image_url`，模
 /camera
 ```
 
-也可直接输入“查看摄像头画面”。移动、状态、Home、腕部和夹爪工具在相机已配置时会
-附带动作后的最新RGB画面；取帧失败会单独报告，不会把已经成功的机械臂动作改成失败。
+也可直接输入“查看摄像头画面”。视觉闭环移动会在首条动作前取图，并在每条动作成功后
+自动再次调用`get_rgb_camera_frame`。取帧失败时禁止继续移动，但不会改变已完成动作的回执。
 
 也可以用命令行直接覆盖设备配置：
 

@@ -14,6 +14,7 @@ from typing import Optional
 from .arm_control import (
     ARM_TOOL_SYSTEM_PROMPT,
     DEFAULT_TERMINAL_CONFIG,
+    MAX_AGENT_MOVE_COMMAND_CM,
     choose_arm_serial_port,
     looks_like_arm_command,
     looks_like_camera_command,
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-max-distance-cm",
         type=float,
         default=None,
-        help="AI单次TCP移动距离上限，默认10cm",
+        help="Agent单条TCP移动命令的排他上限，默认2cm且不能超过2cm",
     )
     return parser
 
@@ -136,6 +137,7 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     required_tool = required_mcp_tool_for_command(text)
     is_arm_command = looks_like_arm_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
+    movement_request = required_tool == "move_jetarm"
     if is_arm_command:
         print(f"[工作流 1/5] 接收自然语言: {text}")
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
@@ -144,7 +146,10 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         require_any_tool=required_tool is not None,
         required_tool_name=required_tool,
         required_tool_retries=1,
-        preselected_tool_arguments={} if camera_request else None,
+        preselected_tool_name=(
+            "get_rgb_camera_frame" if camera_request or movement_request else None
+        ),
+        preselected_tool_arguments={} if camera_request or movement_request else None,
         first_tool_choice="none" if camera_request else "auto",
         allow_additional_tools=not camera_request,
     )
@@ -184,11 +189,11 @@ def _workflow_text() -> str:
 
 def _print_workflow_summary() -> None:
     print("MCP执行工作流:")
-    print("  1. Agent解析自然语言和距离/速度")
-    print("  2. Agent调用本地JetArm MCP工具")
-    print("  3. 控制器把动作拆成每段不超过3cm")
-    print("  4. 全部分段完成后MCP返回status=ok")
-    print("  5. Agent读取结果并生成总结报告")
+    print("  1. MCP采集最新RGB图像并传给Agent")
+    print("  2. Agent读取图像，只决定一条严格小于2cm的移动命令")
+    print("  3. MCP执行该条移动命令并返回status")
+    print("  4. status=ok后重新采集RGB图像，再由Agent决定下一条")
+    print("  5. 达到目标后Agent根据图像与实际回执生成总结报告")
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -214,11 +219,27 @@ async def run(args: argparse.Namespace) -> int:
         or saved_devices.arm_terminal_config
         or DEFAULT_TERMINAL_CONFIG
     )
-    max_distance_cm = (
+    configured_max_distance_cm = (
         args.arm_max_distance_cm
         if args.arm_max_distance_cm is not None
-        else float(os.getenv("JETARM_ARM_MAX_DISTANCE_CM", "10"))
+        else float(
+            os.getenv(
+                "JETARM_ARM_MAX_DISTANCE_CM",
+                str(MAX_AGENT_MOVE_COMMAND_CM),
+            )
+        )
     )
+    if configured_max_distance_cm <= 0:
+        raise ConfigurationError("Agent单条移动命令上限必须大于0")
+    max_distance_cm = min(
+        configured_max_distance_cm,
+        MAX_AGENT_MOVE_COMMAND_CM,
+    )
+    if configured_max_distance_cm > MAX_AGENT_MOVE_COMMAND_CM:
+        print(
+            f"提示: 旧的机械臂距离上限{configured_max_distance_cm:g}cm已自动限制为"
+            f"{MAX_AGENT_MOVE_COMMAND_CM:g}cm；实际每条命令必须严格小于该值。"
+        )
 
     if arm_mode == "hardware" and arm_port is None:
         print("正在打开机械臂串口选择窗口...")
@@ -339,7 +360,10 @@ async def run(args: argparse.Namespace) -> int:
                         "rgb_camera": effective_devices.rgb_camera or None,
                         "max_distance_cm": max_distance_cm,
                         "default_speed_cm_s": 1.5,
-                        "max_segment_cm": 3.0,
+                        "distance_limit_rule": (
+                            f"每条move_jetarm命令严格小于{max_distance_cm:g}cm"
+                        ),
+                        "controller_auto_split": False,
                     }
                     print(json.dumps(summary, ensure_ascii=False, indent=2))
                     continue

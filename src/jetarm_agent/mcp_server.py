@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .arm_control import ArmControlConfig, JetArmToolController
+from .arm_control import (
+    MAX_AGENT_MOVE_COMMAND_CM,
+    ArmControlConfig,
+    JetArmToolController,
+)
 from .device_config import (
     DEFAULT_DEVICE_CONFIG_PATH,
     PROJECT_ROOT,
@@ -36,7 +40,7 @@ class JetArmMCPService:
         controller_factory: Callable[[ArmControlConfig], JetArmToolController] = JetArmToolController,
         camera_capture: Callable[[str], RGBJpegFrame] = capture_rgb_jpeg,
         workflow_path: str | Path = DEFAULT_WORKFLOW_PATH,
-        max_distance_cm: float = 10.0,
+        max_distance_cm: float = MAX_AGENT_MOVE_COMMAND_CM,
     ) -> None:
         self.devices = devices
         self.controller_factory = controller_factory
@@ -63,7 +67,6 @@ class JetArmMCPService:
                     default_speed_cm_s=1.5,
                     min_speed_cm_s=1.0,
                     max_speed_cm_s=5.0,
-                    max_segment_cm=3.0,
                 )
             )
             LOGGER.info("JetArm controller initialized")
@@ -207,7 +210,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     @mcp.tool(
         description=(
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
-            "用户要求查看、描述、识别或分析相机画面时调用；不启动深度流。"
+            "每次机械臂移动前必须调用，并把图像传给Agent后才能决定本次移动；不启动深度流。"
         ),
         structured_output=False,
     )
@@ -219,14 +222,15 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
-            "按紧凑中文命令移动JetArm末端。command格式为前5、后2、左1.5、右3、上2或下1；"
-            "数字单位为厘米。未指定速度时使用1.5cm/s；允许1到5cm/s。控制器自动拆分为"
-            "每段不超过3cm，并在全部分段执行完成后返回status=ok。"
+            "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
+            "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
+            "允许1到5cm/s。调用前必须把最新RGB图像传给Agent，每次只调用一条；"
+            "收到status=ok后必须重新取图，再由Agent决定下一条。控制器不会自动切分。"
         ),
         structured_output=False,
     )
     async def move_jetarm(command: str, speed_cm_s: float = 1.5) -> Any:
-        return await with_rgb_image(await service.move(command, speed_cm_s))
+        return content_result(await service.move(command, speed_cm_s))
 
     @mcp.tool(
         description="读取JetArm关节位置和估算TCP坐标。",
@@ -271,7 +275,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-mode", choices=("off", "dry-run", "hardware"))
     parser.add_argument("--arm-port")
     parser.add_argument("--arm-config")
-    parser.add_argument("--arm-max-distance-cm", type=float, default=10.0)
+    parser.add_argument(
+        "--arm-max-distance-cm",
+        type=float,
+        default=MAX_AGENT_MOVE_COMMAND_CM,
+        help="单条Agent移动命令的排他上限，不能超过2cm",
+    )
     return parser
 
 

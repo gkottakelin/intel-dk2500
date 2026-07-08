@@ -24,7 +24,7 @@ ARM_JOINTS = ("J1", "J2", "J3", "J4")
 DEFAULT_TCP_SPEED_CM_S = 1.5
 MIN_TCP_SPEED_CM_S = 1.0
 MAX_TCP_SPEED_CM_S = 5.0
-MAX_TCP_SEGMENT_CM = 3.0
+MAX_AGENT_MOVE_COMMAND_CM = 2.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -37,11 +37,10 @@ class ArmControlConfig:
     mode: str = "dry-run"
     serial_port: str | None = None
     terminal_config_path: Path = DEFAULT_TERMINAL_CONFIG
-    max_distance_cm: float = 10.0
+    max_distance_cm: float = MAX_AGENT_MOVE_COMMAND_CM
     default_speed_cm_s: float = DEFAULT_TCP_SPEED_CM_S
     min_speed_cm_s: float = MIN_TCP_SPEED_CM_S
     max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
-    max_segment_cm: float = MAX_TCP_SEGMENT_CM
     max_motor_duration_s: float = 2.0
 
     def validate(self) -> None:
@@ -49,10 +48,13 @@ class ArmControlConfig:
             raise ArmControlError(f"机械臂模式必须是dry-run或hardware，收到: {self.mode}")
         if self.max_distance_cm <= 0:
             raise ArmControlError("max_distance_cm必须大于0")
+        if self.max_distance_cm > MAX_AGENT_MOVE_COMMAND_CM:
+            raise ArmControlError(
+                f"max_distance_cm不能超过{MAX_AGENT_MOVE_COMMAND_CM:g}；"
+                f"Agent每条移动命令必须严格小于{MAX_AGENT_MOVE_COMMAND_CM:g}cm"
+            )
         if not 0 < self.min_speed_cm_s <= self.default_speed_cm_s <= self.max_speed_cm_s:
             raise ArmControlError("TCP速度配置必须满足0 < 最小值 <= 默认值 <= 最大值")
-        if self.max_segment_cm <= 0:
-            raise ArmControlError("max_segment_cm必须大于0")
         if self.max_motor_duration_s <= 0:
             raise ArmControlError("max_motor_duration_s必须大于0")
 
@@ -320,43 +322,23 @@ class JetArmToolController:
         distance_cm: object,
         speed_cm_s: object | None = None,
     ) -> dict[str, Any]:
-        """Move TCP with bounded 3 cm physical segments and an explicit speed."""
+        """Execute exactly one Agent-issued TCP movement command."""
 
         distance = self._validate_positive_number(
             distance_cm, "distance_cm", self.config.max_distance_cm
         )
+        if distance >= self.config.max_distance_cm:
+            raise ArmControlError(
+                f"distance_cm单次必须小于{self.config.max_distance_cm:g}；"
+                "长距离必须由Agent按最新RGB图像逐步执行，每次重新取图后只决定下一条命令"
+            )
         speed = self._validate_speed(speed_cm_s)
-        remaining = distance
-        segment_results: list[dict[str, Any]] = []
-        while remaining > 1e-9:
-            segment_distance = min(self.config.max_segment_cm, remaining)
-            result = await self._move_tcp_segment(direction, segment_distance, speed)
-            segment_results.append(result)
-            remaining -= segment_distance
-
+        result = await self._move_tcp_segment(direction, distance, speed)
         return {
-            "status": "ok",
-            "mode": self.config.mode,
+            **result,
             "command": format_compact_arm_command(direction, distance),
-            "direction": direction,
-            "requested_distance_cm": distance,
-            "speed_cm_s": speed,
-            "segment_limit_cm": self.config.max_segment_cm,
-            "segments": [
-                {
-                    "index": index,
-                    "distance_cm": item["requested_distance_cm"],
-                    "estimated_distance_cm": item["estimated_distance_cm"],
-                    "steps": item["steps"],
-                }
-                for index, item in enumerate(segment_results, 1)
-            ],
-            "segment_count": len(segment_results),
-            "steps": sum(int(item["steps"]) for item in segment_results),
-            "estimated_distance_cm": round(
-                sum(item["estimated_distance_cm"] for item in segment_results), 3
-            ),
-            "joint_positions": dict(self.runtime.positions),
+            "command_limit_cm_exclusive": self.config.max_distance_cm,
+            "motion_command_count": 1,
         }
 
     async def execute_compact_command(
@@ -508,8 +490,11 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ToolDefinition(
                 name="move_jetarm_tcp",
                 description=(
-                    "Move the JetArm TCP by an explicit distance in the robot-base "
-                    "coordinate frame. Use only when the user explicitly requests motion."
+                    "Execute exactly one JetArm TCP movement in the robot-base coordinate "
+                    "frame. distance_cm must be strictly less than 2 cm. For a longer user "
+                    "request, the Agent must use a fresh RGB frame to decide only the current "
+                    "movement, wait for status=ok, then capture a new frame before deciding "
+                    "the next call. The controller never splits a long command."
                 ),
                 parameters={
                     "type": "object",
@@ -528,7 +513,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                         "distance_cm": {
                             "type": "number",
                             "exclusiveMinimum": 0,
-                            "maximum": controller.config.max_distance_cm,
+                            "exclusiveMaximum": controller.config.max_distance_cm,
                         },
                         "speed_cm_s": {
                             "type": "number",
@@ -735,10 +720,13 @@ ARM_TOOL_SYSTEM_PROMPT = """
 1. 只有用户明确要求移动或操作夹爪时才调用机械臂工具，禁止自行追加动作。
 2. “前/后/左/右/上/下”使用机械臂基座坐标系；距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
-4. 控制器会把长距离自动拆为不超过3cm的物理分段，禁止模型自行改变总距离。
-5. 每个动作完成后读取工具结果；只有status=ok时才能声称动作完成。
-6. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
-7. 当前只使用单路RGB相机，不得请求或声称使用深度流。
-8. 用户要求查看、描述、识别或分析相机画面时，必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
-9. 移动、状态、Home、腕部和夹爪工具可能附带动作后的最新RGB图像，应结合工具JSON和图像总结，但不得基于图像自行追加动作。
+4. 每次移动前必须调用get_rgb_camera_frame；只有最新RGB图像已传给Agent，才允许Agent决定本次动作。
+5. Agent每次只根据当前最新图像下发一条move_jetarm命令，距离必须严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
+6. 本条移动返回status=ok后，必须重新调用get_rgb_camera_frame，把动作后的新图像传给Agent，再决定是否及如何移动下一条。
+7. 控制器不会替Agent切分长距离。长距离目标必须通过“取图→单步移动→重新取图”的视觉闭环逐步完成。
+8. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
+9. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
+10. 当前只使用单路RGB相机，不得请求或声称使用深度流。
+11. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
+12. 每张RGB图像只授权紧随其后的一条移动命令；机械臂位置改变后旧图像立即失效，禁止基于旧图连续移动。
 """.strip()

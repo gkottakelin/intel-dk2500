@@ -40,8 +40,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 class FakeModelClient:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.requests = []
 
     async def complete_with_tools(self, messages, tools, *, tool_choice="auto"):
+        self.requests.append(
+            {"messages": list(messages), "tools": list(tools), "tool_choice": tool_choice}
+        )
         return self.responses.pop(0)
 
 
@@ -97,22 +101,26 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.service.close()
 
-    async def test_mcp_service_executes_front_five_as_two_segments(self):
-        result = await self.service.move("前5")
+    async def test_mcp_service_executes_one_sub_two_cm_command(self):
+        result = await self.service.move("前1.9")
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["mcp"], "move_jetarm")
         self.assertEqual(result["speed_cm_s"], 1.5)
-        self.assertEqual(result["segment_count"], 2)
-        self.assertEqual(
-            [segment["distance_cm"] for segment in result["segments"]],
-            [3, 2],
-        )
+        self.assertEqual(result["requested_distance_cm"], 1.9)
+        self.assertEqual(result["motion_command_count"], 1)
+        self.assertNotIn("segments", result)
+
+    async def test_mcp_service_rejects_long_command_instead_of_splitting(self):
+        with self.assertRaisesRegex(Exception, "单次"):
+            await self.service.move("前5")
 
     async def test_markdown_workflow_is_loaded(self):
         instructions = self.service.initial_instructions()
         self.assertTrue(DEFAULT_WORKFLOW_PATH.is_file())
-        self.assertIn("前3 → 前2", instructions)
+        self.assertIn("get_rgb_camera_frame", instructions)
+        self.assertIn("动作后的图像传给Agent", instructions)
+        self.assertIn("控制程序只执行当前收到的一条命令", instructions)
         self.assertIn("status=ok", instructions)
 
     async def test_model_mcp_controller_model_roundtrip(self):
@@ -122,6 +130,11 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             async def list_tools(self):
                 return SimpleNamespace(
                     tools=[
+                        SimpleNamespace(
+                            name="get_rgb_camera_frame",
+                            description="capture RGB",
+                            inputSchema={"type": "object", "properties": {}},
+                        ),
                         SimpleNamespace(
                             name="move_jetarm",
                             description="move",
@@ -138,6 +151,17 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                 )
 
             async def call_tool(self, name, arguments):
+                if name == "get_rgb_camera_frame":
+                    return SimpleNamespace(
+                        structuredContent={
+                            "status": "ok",
+                            "mcp": "get_rgb_camera_frame",
+                        },
+                        content=[
+                            SimpleNamespace(data="anBlZw==", mimeType="image/jpeg")
+                        ],
+                        isError=False,
+                    )
                 result = await service.move(
                     arguments["command"], arguments.get("speed_cm_s", 1.5)
                 )
@@ -158,13 +182,42 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                             call_id="mcp-1",
                             name="move_jetarm",
                             arguments=json.dumps(
-                                {"command": "前5", "speed_cm_s": 1.5},
+                                {"command": "前1.9", "speed_cm_s": 1.5},
                                 ensure_ascii=False,
                             ),
                         ),
                     ),
                 ),
-                ToolModelResponse(content="已完成向前5厘米。", tool_calls=()),
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="mcp-2",
+                            name="move_jetarm",
+                            arguments=json.dumps(
+                                {"command": "前1.9", "speed_cm_s": 1.5},
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="mcp-3",
+                            name="move_jetarm",
+                            arguments=json.dumps(
+                                {"command": "前1.2", "speed_cm_s": 1.5},
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="已通过三条MCP命令完成向前5厘米。",
+                    tool_calls=(),
+                ),
             ]
         )
         session = ToolCallingSession(settings, model, registry)
@@ -173,11 +226,118 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             "向前5厘米",
             require_any_tool=True,
             required_tool_name="move_jetarm",
+            preselected_tool_name="get_rgb_camera_frame",
+            preselected_tool_arguments={},
         )
 
-        self.assertEqual(result.text, "已完成向前5厘米。")
-        self.assertEqual(result.tool_calls[0].result["status"], "ok")
-        self.assertEqual(result.tool_calls[0].result["segment_count"], 2)
+        self.assertEqual(result.text, "已通过三条MCP命令完成向前5厘米。")
+        self.assertEqual(
+            [
+                call.arguments["command"]
+                for call in result.tool_calls
+                if call.name == "move_jetarm"
+            ],
+            ["前1.9", "前1.9", "前1.2"],
+        )
+        self.assertEqual(
+            [call.name for call in result.tool_calls],
+            [
+                "get_rgb_camera_frame",
+                "move_jetarm",
+                "get_rgb_camera_frame",
+                "move_jetarm",
+                "get_rgb_camera_frame",
+                "move_jetarm",
+                "get_rgb_camera_frame",
+            ],
+        )
+        self.assertTrue(all(call.result["status"] == "ok" for call in result.tool_calls))
+        self.assertTrue(
+            all(
+                any(
+                    isinstance(message.get("content"), list)
+                    and any(
+                        isinstance(part, dict) and part.get("type") == "image_url"
+                        for part in message["content"]
+                    )
+                    for message in request["messages"]
+                )
+                for request in model.requests
+            )
+        )
+
+    async def test_agent_runtime_rejects_motion_without_rgb_visible_to_model(self):
+        class FakeMCPSession:
+            def __init__(self):
+                self.motion_calls = 0
+
+            async def list_tools(self):
+                return SimpleNamespace(
+                    tools=[
+                        SimpleNamespace(
+                            name="get_rgb_camera_frame",
+                            description="capture RGB",
+                            inputSchema={"type": "object", "properties": {}},
+                        ),
+                        SimpleNamespace(
+                            name="move_jetarm",
+                            description="move",
+                            inputSchema={
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                                "required": ["command"],
+                            },
+                        ),
+                    ]
+                )
+
+            async def call_tool(self, name, arguments):
+                if name == "move_jetarm":
+                    self.motion_calls += 1
+                return SimpleNamespace(
+                    structuredContent={"status": "ok"},
+                    content=[],
+                    isError=False,
+                )
+
+        mcp_session = FakeMCPSession()
+        bridge = MCPRobotBridge()
+        bridge.session = mcp_session
+        registry = await bridge.registry()
+        settings = AgentSettings.from_sources(
+            PROJECT_ROOT / "config" / "ai_agent.json", environ={}
+        )
+        model = FakeModelClient(
+            [
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="unsafe-move",
+                            name="move_jetarm",
+                            arguments=json.dumps(
+                                {"command": "下1.9"}, ensure_ascii=False
+                            ),
+                        ),
+                    ),
+                ),
+                ToolModelResponse(
+                    content="未取得最新RGB图像，未执行移动。",
+                    tool_calls=(),
+                ),
+            ]
+        )
+        session = ToolCallingSession(settings, model, registry)
+
+        result = await session.ask(
+            "向下移动1.9厘米",
+            require_any_tool=True,
+            required_tool_name="move_jetarm",
+        )
+
+        self.assertEqual(mcp_session.motion_calls, 0)
+        self.assertEqual(result.tool_calls[0].result["status"], "error")
+        self.assertIn("没有最新RGB图像", result.tool_calls[0].result["error"])
 
 
 if __name__ == "__main__":

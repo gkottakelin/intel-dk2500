@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .arm_control import MAX_AGENT_MOVE_COMMAND_CM
 from .device_config import DEFAULT_DEVICE_CONFIG_PATH, PROJECT_ROOT
 from .tooling import ToolDefinition, ToolExecutionPayload, ToolImage, ToolRegistry
 
@@ -24,7 +25,7 @@ class MCPRobotBridge:
         arm_mode: str | None = None,
         arm_port: str | None = None,
         arm_config: str | Path | None = None,
-        max_distance_cm: float = 10.0,
+        max_distance_cm: float = MAX_AGENT_MOVE_COMMAND_CM,
     ) -> None:
         self.device_config = Path(device_config)
         self.arm_mode = arm_mode
