@@ -16,12 +16,11 @@
     "local_search_step_units": 8
   },
   "home": {
-    "J1": 500,
-    "J2": 550,
-    "J3": 550,
-    "J4": 900,
-    "J5": 500,
-    "J6": 360
+    "J1": 485,
+    "J2": 478,
+    "J3": 641,
+    "J4": 890,
+    "J5": 500
   },
   "joints": {
     "J1": {
@@ -34,9 +33,9 @@
     },
     "J2": {
       "servo_id": 2,
-      "position_min": 500,
+      "position_min": 200,
       "position_max": 875,
-      "angle_min_deg": 0.0,
+      "angle_min_deg": -72.0,
       "angle_max_deg": 90.0,
       "direction_sign": 1.0
     },

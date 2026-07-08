@@ -36,12 +36,11 @@ except ImportError:
 
 
 DEFAULT_HOME_POSITIONS = {
-    "joint1_base_yaw": 500,
-    "joint2_shoulder_pitch": 550,
-    "joint3_elbow_pitch": 550,
-    "joint4_wrist_pitch": 900,
+    "joint1_base_yaw": 485,
+    "joint2_shoulder_pitch": 478,
+    "joint3_elbow_pitch": 641,
+    "joint4_wrist_pitch": 890,
     "joint5_wrist_roll": 500,
-    "joint6_gripper": 360,
 }
 
 
@@ -201,8 +200,12 @@ class ManualServoRuntime:
         self.logger("全部停止")
 
     def go_home(self) -> None:
-        self.stop_all()
+        self.vertical_direction = 0
+        self.set_joystick(0.0, 0.0)
+        self.controller.set_motor_speed(self.servo_ids[self.j5_joint], 0)
         for joint_name, target in self.config.home_positions.items():
+            if joint_name == self.j6_joint:
+                continue
             servo_id = self.servo_ids[joint_name]
             self.controller.move_servo(servo_id, int(target), self.config.home_run_time_ms)
             if joint_name in self.arm_position_joints:

@@ -597,7 +597,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ),
             ToolDefinition(
                 name="move_jetarm_home",
-                description="Stop J5/J6 and move all JetArm joints to the configured home pose.",
+                description="Move J1-J5 to the configured home pose and leave J6 unchanged.",
                 parameters={"type": "object", "properties": {}},
                 handler=home,
             ),

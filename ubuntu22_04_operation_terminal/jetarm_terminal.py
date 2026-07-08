@@ -393,8 +393,12 @@ class ManualServoRuntime:
         self.j6_grip_locked = False
 
     def go_home(self) -> None:
-        self.stop_all()
+        self.vertical_direction = 0
+        self.center_joystick()
+        self.controller.set_motor_speed(self.settings.servo_id("J5"), 0)
         for joint_name, target in self.settings.home.items():
+            if joint_name == "J6":
+                continue
             self.controller.move_servo(
                 self.settings.servo_id(joint_name), target, self.settings.home_run_time_ms
             )

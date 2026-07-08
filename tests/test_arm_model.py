@@ -39,8 +39,9 @@ class ArmModelTest(unittest.TestCase):
         self.assertLess(right.tcp_xyz[1], 0.0)
 
     def test_j2_position_increase_lowers_tcp_and_moves_forward(self):
-        home = self.model.forward_kinematics_from_positions({"J2": 500})
-        lowered = self.model.forward_kinematics_from_positions({"J2": 875})
+        neutral = {"J1": 500, "J3": 500, "J4": 500, "J5": 500}
+        home = self.model.forward_kinematics_from_positions({**neutral, "J2": 500})
+        lowered = self.model.forward_kinematics_from_positions({**neutral, "J2": 875})
 
         self.assertLess(lowered.tcp_xyz[2], home.tcp_xyz[2])
         self.assertGreater(lowered.tcp_xyz[0], home.tcp_xyz[0])
@@ -57,7 +58,9 @@ class ArmModelTest(unittest.TestCase):
             self.model.forward_kinematics_from_positions({"J6": -1})
 
     def test_allows_gripper_force_increase_range(self):
-        result = self.model.forward_kinematics_from_positions({"J6": 1000})
+        result = self.model.forward_kinematics_from_positions(
+            {"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500, "J6": 1000}
+        )
 
         assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.527))
         self.assertEqual(result.gripper_position, 1000)

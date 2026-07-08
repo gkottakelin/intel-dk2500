@@ -87,6 +87,19 @@ class UbuntuTerminalTest(unittest.TestCase):
         self.assertTrue(controller.move_calls)
         self.assertTrue(all(servo_id in (2, 3, 4) for servo_id, _target, _time in controller.move_calls))
 
+    def test_go_home_leaves_j6_unchanged(self):
+        runtime, controller = self.make_runtime()
+        runtime.toggle_grip_lock()
+        runtime.go_home()
+
+        self.assertTrue(runtime.j6_grip_locked)
+        self.assertEqual(controller.motor_calls[-2:], [(10, 300), (5, 0)])
+        self.assertEqual(
+            controller.move_calls[-5:],
+            [(1, 485, 1200), (2, 478, 1200), (3, 641, 1200), (4, 890, 1200), (5, 500, 1200)],
+        )
+        self.assertNotIn((10, 360, 1200), controller.move_calls)
+
     def test_discovers_linux_usb_serial_patterns(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

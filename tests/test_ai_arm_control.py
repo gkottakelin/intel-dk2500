@@ -123,14 +123,14 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         stopped = await self.controller.stop_all()
         state = await self.controller.state()
 
-        self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 550, "J3": 550, "J4": 900})
+        self.assertEqual(home["joint_positions"], {"J1": 485, "J2": 478, "J3": 641, "J4": 890})
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
         home_servo_ids = {
             servo_id
             for servo_id, _target, _run_time in self.controller.controller.move_calls
         }
-        self.assertEqual(home_servo_ids, {1, 2, 3, 4, 5, 10})
+        self.assertEqual(home_servo_ids, {1, 2, 3, 4, 5})
 
     async def test_tool_registry_exposes_only_bounded_arm_functions(self):
         schemas = build_arm_tool_registry(self.controller).schemas()

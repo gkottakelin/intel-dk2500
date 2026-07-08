@@ -84,17 +84,21 @@ class JointControllerTest(unittest.TestCase):
 
     def test_rejects_out_of_range_targets(self):
         with self.assertRaises(JointRangeError):
-            self.planner.plan_target("J2", 499, current_positions={"j2": 500})
+            self.planner.plan_target("J2", 199, current_positions={"j2": 500})
         with self.assertRaises(JointRangeError):
             self.planner.plan_target("J5", 800, current_positions={"j5": 500})
 
     def test_maps_joint_angle_degrees_to_servo_position(self):
         j1 = self.planner.plan_angle_target("J1", 12.0, current_positions={"j1": 500})
+        j2_low = self.planner.plan_angle_target("J2", -72.0, current_positions={"j2": 500})
+        j2_home = self.planner.plan_angle_target("J2", 0.0, current_positions={"j2": 500})
         j2 = self.planner.plan_angle_target("J2", 90.0, current_positions={"j2": 500})
         j4 = self.planner.plan_angle_target("J4", 0.0, current_positions={"j4": 500})
         j5 = self.planner.plan_angle_target("J5", -60.0, current_positions={"j5": 500})
 
         self.assertEqual(j1.target_position, 550)
+        self.assertEqual(j2_low.target_position, 200)
+        self.assertEqual(j2_home.target_position, 500)
         self.assertEqual(j2.target_position, 875)
         self.assertEqual(j4.target_position, 500)
         self.assertEqual(j5.target_position, 250)

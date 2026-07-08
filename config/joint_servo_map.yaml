@@ -79,7 +79,7 @@ joints:
         note: values recorded from user guidance; interpret before generating run_time_ms
     urdf_positive_motion: counterclockwise_rotation_from_above_right_hand_rule
     direction_sign: -1
-    home_position: 500
+    home_position: 485
     limit_test_required: false
 
   joint2_shoulder_pitch:
@@ -93,13 +93,14 @@ joints:
     motion_description: first arm link swings forward/backward and raises/lowers the arm
     urdf_axis_guess_xyz: [0, 1, 0]
     position:
-      min: 500
+      min: 200
       vertical: 500
       max: 875
     angle:
-      min_deg: 0
+      min_deg: -72
       vertical_deg: 0
       max_deg: 90
+      position_200_deg: -72
       position_500_deg: 0
       position_875_deg: 90
       deg_per_position_unit: 0.24
@@ -139,7 +140,7 @@ joints:
       near_90_deg_error_reason: torque_load
     urdf_positive_motion: position_increase_moves_down_or_away_from_vertical
     direction_sign: 1
-    home_position: 500
+    home_position: 478
     limit_test_required: false
 
   joint3_elbow_pitch:
@@ -178,7 +179,7 @@ joints:
         note: values recorded from user guidance; interpret before generating run_time_ms
     urdf_positive_motion: position_increase_moves_down
     direction_sign: 1
-    home_position: 500
+    home_position: 641
     limit_test_required: false
 
   joint4_wrist_pitch:
@@ -217,7 +218,7 @@ joints:
         note: values recorded from user guidance; interpret before generating run_time_ms
     urdf_positive_motion: position_increase_moves_down
     direction_sign: 1
-    home_position: 500
+    home_position: 890
     limit_test_required: false
 
   joint5_wrist_roll:
@@ -294,7 +295,7 @@ joints:
       timeout_s: 5.0
       stop_rule: stop_when_position_less_than_or_equal_target
     direction_sign: null
-    home_position: 0
+    home_position: null
     limit_test_required: true
 
 robot_geometry:
