@@ -36,7 +36,7 @@ except ImportError:
 
 
 DEFAULT_HOME_POSITIONS = {
-    "joint1_base_yaw": 485,
+    "joint1_base_yaw": 500,
     "joint2_shoulder_pitch": 478,
     "joint3_elbow_pitch": 641,
     "joint4_wrist_pitch": 890,

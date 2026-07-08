@@ -96,7 +96,7 @@ class UbuntuTerminalTest(unittest.TestCase):
         self.assertEqual(controller.motor_calls[-2:], [(10, 300), (5, 0)])
         self.assertEqual(
             controller.move_calls[-5:],
-            [(1, 485, 1200), (2, 478, 1200), (3, 641, 1200), (4, 890, 1200), (5, 500, 1200)],
+            [(1, 500, 1200), (2, 478, 1200), (3, 641, 1200), (4, 890, 1200), (5, 500, 1200)],
         )
         self.assertNotIn((10, 360, 1200), controller.move_calls)
 

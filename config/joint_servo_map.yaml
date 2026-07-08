@@ -79,7 +79,7 @@ joints:
         note: values recorded from user guidance; interpret before generating run_time_ms
     urdf_positive_motion: counterclockwise_rotation_from_above_right_hand_rule
     direction_sign: -1
-    home_position: 485
+    home_position: 500
     limit_test_required: false
 
   joint2_shoulder_pitch:

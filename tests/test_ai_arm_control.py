@@ -123,7 +123,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         stopped = await self.controller.stop_all()
         state = await self.controller.state()
 
-        self.assertEqual(home["joint_positions"], {"J1": 485, "J2": 478, "J3": 641, "J4": 890})
+        self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 478, "J3": 641, "J4": 890})
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
         home_servo_ids = {
