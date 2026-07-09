@@ -39,6 +39,8 @@ from jetarm_terminal import (
 DEFAULT_GRASP_TO_CAMERA_ALONG_TOOL_M = -0.04
 DEFAULT_GRASP_TO_CAMERA_NORMAL_M = -0.055
 DEFAULT_GRASP_TO_CAMERA_LATERAL_M = 0.0
+DEFAULT_FRAME_LOCK_ON_HOLD = True
+DEFAULT_PITCH_HOLD_WEIGHT_M = 0.08
 EPSILON = 1e-9
 
 
@@ -49,6 +51,8 @@ class CameraLineConfig:
     grasp_to_camera_along_tool_m: float = DEFAULT_GRASP_TO_CAMERA_ALONG_TOOL_M
     grasp_to_camera_normal_m: float = DEFAULT_GRASP_TO_CAMERA_NORMAL_M
     grasp_to_camera_lateral_m: float = DEFAULT_GRASP_TO_CAMERA_LATERAL_M
+    frame_lock_on_hold: bool = DEFAULT_FRAME_LOCK_ON_HOLD
+    pitch_hold_weight_m: float = DEFAULT_PITCH_HOLD_WEIGHT_M
 
     @classmethod
     def from_file(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "CameraLineConfig":
@@ -75,6 +79,12 @@ class CameraLineConfig:
                     "grasp_to_camera_lateral_m",
                     DEFAULT_GRASP_TO_CAMERA_LATERAL_M,
                 )
+            ),
+            frame_lock_on_hold=bool(
+                values.get("frame_lock_on_hold", DEFAULT_FRAME_LOCK_ON_HOLD)
+            ),
+            pitch_hold_weight_m=float(
+                values.get("pitch_hold_weight_m", DEFAULT_PITCH_HOLD_WEIGHT_M)
             ),
         )
 
@@ -195,6 +205,8 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             kwargs["monotonic"] = monotonic
         super().__init__(controller, settings, **kwargs)
         self.camera_config = camera_config or CameraLineConfig()
+        self._locked_frame: CameraRelativeFrame | None = None
+        self._locked_pitch_rad: float | None = None
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_relative_frame(
@@ -203,8 +215,27 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             self.camera_config,
         )
 
+    def active_camera_relative_frame(self) -> CameraRelativeFrame:
+        return self._locked_frame or self.camera_relative_frame()
+
+    def set_vertical_direction(self, direction: float) -> None:
+        super().set_vertical_direction(direction)
+        self._update_motion_lock()
+
+    def set_joystick(self, x: float, y: float) -> None:
+        super().set_joystick(x, y)
+        self._update_motion_lock()
+
+    def stop_all(self) -> None:
+        super().stop_all()
+        self._clear_motion_lock()
+
+    def go_home(self) -> None:
+        super().go_home()
+        self._clear_motion_lock()
+
     def cartesian_velocity(self) -> np.ndarray:
-        frame = self.camera_relative_frame()
+        frame = self.active_camera_relative_frame()
         plane_forward = -self.joystick_y * self.settings.max_horizontal_speed_m_s
         plane_left = -self.joystick_x * self.settings.max_horizontal_speed_m_s
         line_up = self.vertical_direction * self.settings.vertical_speed_m_s
@@ -213,6 +244,92 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             + frame.left * plane_left
             + frame.up * line_up
         )
+
+    def _update_motion_lock(self) -> None:
+        active = (
+            abs(self.vertical_direction) > EPSILON
+            or math.hypot(self.joystick_x, self.joystick_y) > EPSILON
+        )
+        if not active:
+            self._clear_motion_lock()
+            return
+        if not self.camera_config.frame_lock_on_hold:
+            return
+        if self._locked_frame is None:
+            self._locked_frame = self.camera_relative_frame()
+            self._locked_pitch_rad = self._tool_pitch_rad(self.positions)
+
+    def _clear_motion_lock(self) -> None:
+        self._locked_frame = None
+        self._locked_pitch_rad = None
+
+    def _tool_pitch_rad(self, positions: dict[str, int]) -> float:
+        return sum(
+            self.model.position_to_model_angle(name, positions[name])
+            for name in ARM_JOINTS[1:]
+        )
+
+    def _pitch_error_rad(self, positions: dict[str, int]) -> float:
+        if self._locked_pitch_rad is None:
+            return 0.0
+        error = self._locked_pitch_rad - self._tool_pitch_rad(positions)
+        return math.atan2(math.sin(error), math.cos(error))
+
+    def _solve_next_positions(self, target_delta: np.ndarray) -> dict[str, int]:
+        weight = max(0.0, float(self.camera_config.pitch_hold_weight_m))
+        if self._locked_pitch_rad is None or weight <= 0.0:
+            return super()._solve_next_positions(target_delta)
+
+        jacobian = self.model.jacobian(self.positions)
+        pitch_row = np.array([[0.0, weight, weight, weight]], dtype=float)
+        augmented_jacobian = np.vstack((jacobian, pitch_row))
+        augmented_target = np.concatenate(
+            (target_delta, np.array([weight * self._pitch_error_rad(self.positions)]))
+        )
+        damping = (self.settings.damping**2) * np.eye(augmented_jacobian.shape[0])
+        try:
+            dq = augmented_jacobian.T @ np.linalg.solve(
+                augmented_jacobian @ augmented_jacobian.T + damping,
+                augmented_target,
+            )
+        except np.linalg.LinAlgError:
+            dq = np.zeros(4)
+
+        max_step = math.radians(self.settings.max_joint_step_deg)
+        dq = np.clip(dq, -max_step, max_step)
+        seed = dict(self.positions)
+        for index, joint_name in enumerate(ARM_JOINTS):
+            current = self.model.position_to_model_angle(joint_name, self.positions[joint_name])
+            target = self.model.clamp_model_angle(joint_name, current + float(dq[index]))
+            seed[joint_name] = self.model.model_angle_to_position(joint_name, target)
+        return self._local_refine(seed, target_delta)
+
+    def _local_refine(self, seed: dict[str, int], target_delta: np.ndarray) -> dict[str, int]:
+        if self._locked_pitch_rad is None or self.camera_config.pitch_hold_weight_m <= 0.0:
+            return super()._local_refine(seed, target_delta)
+
+        target_tcp = self.model.tcp(self.positions) + target_delta
+        candidates = [dict(self.positions), dict(seed)]
+        step = max(1, self.settings.local_search_step_units)
+        for joint_name in ARM_JOINTS:
+            low, high = self.settings.position_limits(joint_name)
+            for direction in (-1, 1):
+                candidate = dict(seed)
+                candidate[joint_name] = max(low, min(high, candidate[joint_name] + direction * step))
+                candidates.append(candidate)
+        for direction in (-1, 1):
+            candidate = dict(seed)
+            for joint_name in ARM_JOINTS[1:]:
+                low, high = self.settings.position_limits(joint_name)
+                candidate[joint_name] = max(low, min(high, candidate[joint_name] + direction * step))
+            candidates.append(candidate)
+
+        return min(candidates, key=lambda item: self._camera_locked_error(item, target_tcp))
+
+    def _camera_locked_error(self, positions: dict[str, int], target_tcp: np.ndarray) -> float:
+        tcp_error = float(np.linalg.norm(self.model.tcp(positions) - target_tcp))
+        pitch_error = abs(self._pitch_error_rad(positions))
+        return tcp_error + self.camera_config.pitch_hold_weight_m * pitch_error
 
 
 class CameraVectorTerminalApp(OperationTerminalApp):

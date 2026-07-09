@@ -63,6 +63,29 @@ class CameraVectorTerminalTest(unittest.TestCase):
         np.testing.assert_allclose(up_velocity, frame.up * self.settings.vertical_speed_m_s)
         np.testing.assert_allclose(down_velocity, frame.down * self.settings.vertical_speed_m_s)
 
+    def test_control_frame_locks_while_input_is_held(self):
+        runtime, _controller = self.make_runtime()
+
+        runtime.set_vertical_direction(1)
+        held_velocity = runtime.cartesian_velocity()
+        runtime.positions["J4"] -= 100
+        still_held_velocity = runtime.cartesian_velocity()
+        runtime.set_vertical_direction(0)
+        released_frame = runtime.camera_relative_frame()
+
+        np.testing.assert_allclose(still_held_velocity, held_velocity)
+        self.assertFalse(np.allclose(released_frame.up, held_velocity / np.linalg.norm(held_velocity)))
+
+    def test_pitch_hold_limits_camera_line_rotation(self):
+        runtime, _controller = self.make_runtime()
+        before_pitch = runtime._tool_pitch_rad(runtime.positions)
+
+        runtime.set_vertical_direction(1)
+        self.assertTrue(runtime.step_cartesian(0.08))
+        after_pitch = runtime._tool_pitch_rad(runtime.positions)
+
+        self.assertLess(abs(after_pitch - before_pitch), 0.02)
+
     def test_joystick_moves_in_camera_plane(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()

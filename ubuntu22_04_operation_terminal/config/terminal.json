@@ -82,6 +82,8 @@
   "camera_control": {
     "grasp_to_camera_along_tool_m": -0.04,
     "grasp_to_camera_normal_m": -0.055,
-    "grasp_to_camera_lateral_m": 0.0
+    "grasp_to_camera_lateral_m": 0.0,
+    "frame_lock_on_hold": true,
+    "pitch_hold_weight_m": 0.08
   }
 }
