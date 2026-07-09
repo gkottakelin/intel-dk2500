@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 from contextlib import AsyncExitStack
@@ -13,8 +14,11 @@ from typing import Optional
 
 from .arm_control import (
     ARM_TOOL_SYSTEM_PROMPT,
+    ArmControlConfig,
     DEFAULT_TERMINAL_CONFIG,
+    DEFAULT_GRIPPER_RELEASE_POSITION,
     MAX_AGENT_MOVE_COMMAND_CM,
+    JetArmToolController,
     choose_arm_serial_port,
     looks_like_arm_command,
     looks_like_camera_command,
@@ -43,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="运行程序->AI->计数工具->AI贯通测试",
     )
+    mode.add_argument(
+        "--manual-pixel-test",
+        action="store_true",
+        help="不调用API，由人工输入目标点像素来模拟Agent视觉抓取闭环",
+    )
     parser.add_argument("--env-file", default=None, help="可选.env文件路径")
     parser.add_argument(
         "--device-config",
@@ -62,6 +71,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Agent单条TCP移动命令的排他上限，默认2cm且不能超过2cm",
+    )
+    parser.add_argument(
+        "--manual-image-width",
+        type=int,
+        default=640,
+        help="manual-pixel-test使用的模拟RGB图像宽度，默认640",
+    )
+    parser.add_argument(
+        "--manual-image-height",
+        type=int,
+        default=480,
+        help="manual-pixel-test使用的模拟RGB图像高度，默认480",
+    )
+    parser.add_argument(
+        "--manual-grasp-x",
+        type=float,
+        default=None,
+        help="manual-pixel-test使用的抓取点像素x，默认图像中心",
+    )
+    parser.add_argument(
+        "--manual-grasp-y",
+        type=float,
+        default=None,
+        help="manual-pixel-test使用的抓取点像素y，默认图像中心",
     )
     return parser
 
@@ -202,7 +235,137 @@ def _print_workflow_summary() -> None:
     print("  5. 达到抓取高度后执行夹取、复位，并让Agent按新图检查结果")
 
 
+def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
+    normalized = text.strip().lower()
+    if normalized in {"q", "quit", "exit", "退出"}:
+        return None
+    normalized = normalized.replace(",", " ").replace("，", " ")
+    parts = normalized.split()
+    if len(parts) != 2:
+        raise ValueError("请输入两个像素坐标，例如: 450 230")
+    try:
+        x = float(parts[0])
+        y = float(parts[1])
+    except ValueError as exc:
+        raise ValueError("像素坐标必须是数字，例如: 450 230") from exc
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise ValueError("像素坐标必须是有限数字")
+    return x, y
+
+
+def _print_manual_pixel_result(result: dict[str, object]) -> None:
+    decision = result.get("controller_decision")
+    error = result.get("pixel_error", {})
+    tolerance = result.get("dynamic_tolerance_px")
+    if decision == "horizontal_align":
+        print(
+            "控制结果: 水平对准 | "
+            f"方向={result.get('direction')} "
+            f"距离={result.get('requested_distance_cm')}cm "
+            f"速度={result.get('speed_cm_s')}cm/s "
+            f"误差={error} 容差={tolerance}px "
+            f"FK高度={result.get('height_cm')}cm"
+        )
+        return
+    if decision == "descend_after_alignment":
+        print(
+            "控制结果: 已对准，下降 | "
+            f"下降={result.get('requested_distance_cm')}cm "
+            f"速度={result.get('speed_cm_s')}cm/s "
+            f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
+            f"误差={error} 容差={tolerance}px"
+        )
+        return
+    print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
+
+
+async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
+    if args.manual_image_width <= 0 or args.manual_image_height <= 0:
+        raise ConfigurationError("manual image width/height必须大于0")
+    grasp_x = (
+        float(args.manual_grasp_x)
+        if args.manual_grasp_x is not None
+        else args.manual_image_width / 2.0
+    )
+    grasp_y = (
+        float(args.manual_grasp_y)
+        if args.manual_grasp_y is not None
+        else args.manual_image_height / 2.0
+    )
+    if not math.isfinite(grasp_x) or not math.isfinite(grasp_y):
+        raise ConfigurationError("manual grasp point必须是有限数字")
+
+    controller = JetArmToolController(
+        ArmControlConfig(
+            mode="dry-run",
+            terminal_config_path=Path(args.arm_config or DEFAULT_TERMINAL_CONFIG),
+            max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
+        )
+    )
+    try:
+        release = await controller.set_gripper_position(DEFAULT_GRIPPER_RELEASE_POSITION)
+        state = await controller.state()
+        final_height_cm = state["arm_parameters"]["vision_guided_grasp"][
+            "final_grasp_height_cm"
+        ]
+        print("手动像素闭环模拟测试（dry-run，不调用API，不接相机）")
+        print(
+            f"模拟图像: {args.manual_image_width}x{args.manual_image_height}, "
+            f"抓取点像素=({grasp_x:g}, {grasp_y:g})"
+        )
+        print(
+            f"J6已保持松开: {release['target_position']}；"
+            f"初始FK高度={state['tcp_cm']['up_z']}cm；"
+            f"抓取高度阈值={final_height_cm}cm"
+        )
+        print("输入目标点像素，格式如: 450 230 或 450,230。输入 q 退出。")
+
+        round_index = 1
+        while True:
+            state = await controller.state()
+            print(
+                f"\n[第{round_index}轮] 当前FK高度={state['tcp_cm']['up_z']}cm，"
+                "旧图像视为已失效，请输入新图中的目标点像素。"
+            )
+            try:
+                raw = input("目标点像素 x y: ")
+            except EOFError:
+                print()
+                return 0
+            try:
+                parsed = _parse_manual_target_pixel(raw)
+            except ValueError as exc:
+                print(f"输入错误: {exc}")
+                continue
+            if parsed is None:
+                print("已退出手动像素测试。")
+                return 0
+            target_x, target_y = parsed
+            result = await controller.control_to_target_pixel(
+                target_x,
+                target_y,
+                grasp_x,
+                grasp_y,
+            )
+            _print_manual_pixel_result(result)
+            height_after = result.get("height_after_cm")
+            if isinstance(height_after, (int, float)) and height_after <= final_height_cm:
+                grip = await controller.control_gripper("grip_lock")
+                home = await controller.go_home()
+                print(
+                    "已达到抓取高度，模拟执行夹取并复位 | "
+                    f"夹爪={grip['action']} Home状态={home['status']}"
+                )
+                return 0
+            round_index += 1
+    finally:
+        controller.close()
+
+
 async def run(args: argparse.Namespace) -> int:
+    if args.manual_pixel_test:
+        return await _run_manual_pixel_test(args)
+
     _load_env_file(args.env_file)
     device_path = Path(args.device_config)
     has_device_config = device_path.is_file()

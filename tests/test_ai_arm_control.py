@@ -19,6 +19,7 @@ try:
         required_mcp_tool_for_command,
     )
     from project.src.jetarm_agent.config import AgentSettings
+    from project.src.jetarm_agent.cli import _parse_manual_target_pixel
     from project.src.jetarm_agent.openai_compatible import (
         FunctionToolCall,
         ToolModelResponse,
@@ -39,6 +40,7 @@ except ModuleNotFoundError:
         required_mcp_tool_for_command,
     )
     from src.jetarm_agent.config import AgentSettings
+    from src.jetarm_agent.cli import _parse_manual_target_pixel
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
@@ -190,6 +192,16 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(descended["requires_new_target_pixel"])
         self.assertTrue(descended["tcp_samples_cm"])
         self.assertEqual(descended["tcp_samples_cm"][0]["source"], "joint_feedback_fk")
+
+    def test_manual_pixel_input_parser(self):
+        self.assertEqual(_parse_manual_target_pixel("450 230"), (450.0, 230.0))
+        self.assertEqual(_parse_manual_target_pixel("450,230"), (450.0, 230.0))
+        self.assertEqual(_parse_manual_target_pixel("450，230"), (450.0, 230.0))
+        self.assertIsNone(_parse_manual_target_pixel("q"))
+        with self.assertRaisesRegex(ValueError, "两个像素坐标"):
+            _parse_manual_target_pixel("450")
+        with self.assertRaisesRegex(ValueError, "必须是数字"):
+            _parse_manual_target_pixel("x y")
 
     async def test_home_stop_and_state_cover_original_terminal_actions(self):
         home = await self.controller.go_home()
