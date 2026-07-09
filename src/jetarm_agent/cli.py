@@ -253,12 +253,37 @@ def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
     return x, y
 
 
+def _extract_camera_grasp_vertical_angle(result: dict[str, object]) -> float | None:
+    """Extract the camera-grasp line angle from vertical from a move result dict."""
+    for key in ("camera_pose_after_move", "camera_pose_before_move"):
+        camera_pose = result.get(key)
+        if isinstance(camera_pose, dict):
+            angle = camera_pose.get("line_of_sight_angle_from_vertical_deg")
+            if isinstance(angle, (int, float)):
+                return float(angle)
+    camera_line = result.get("camera_line_angle_hold")
+    if isinstance(camera_line, dict):
+        angle = camera_line.get("actual_after_deg")
+        if isinstance(angle, (int, float)):
+            return float(angle)
+    return None
+
+
+def _format_camera_angle(angle: float | None) -> str:
+    if angle is None:
+        return ""
+    return f"摄像头-抓取点与竖直夹角: {angle:.1f}°"
+
+
 def _print_manual_pixel_result(result: dict[str, object]) -> None:
     decision = result.get("controller_decision")
     error = result.get("pixel_error", {})
     tolerance = result.get("dynamic_tolerance_px")
     grasp_xyz_before = result.get("grasp_point_xyz_before_cm")
     grasp_xyz_after = result.get("grasp_point_xyz_after_cm")
+    angle = _extract_camera_grasp_vertical_angle(result)
+    angle_text = _format_camera_angle(angle)
+    angle_segment = f" | {angle_text}" if angle_text else ""
     if decision == "horizontal_align":
         print(
             "控制结果: 水平对准 | "
@@ -267,6 +292,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"速度={result.get('speed_cm_s')}cm/s "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
+            f"{angle_segment}"
         )
         return
     if decision == "descend_after_alignment":
@@ -277,6 +303,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
+            f"{angle_segment}"
         )
         return
     if decision == "aligned_hold":
@@ -286,6 +313,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"当前高度={result.get('height_cm')}cm "
             f"误差={error} 容差={tolerance}px "
             + (f"距最终抓取高度还剩={remaining}cm" if remaining is not None else "")
+            + angle_segment
         )
         return
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")

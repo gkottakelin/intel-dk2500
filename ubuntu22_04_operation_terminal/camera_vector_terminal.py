@@ -523,7 +523,7 @@ class CameraVectorTerminalApp(OperationTerminalApp):
 
     def _refresh_velocity(self) -> None:
         super()._refresh_velocity()
-        if hasattr(self.runtime, "camera_line_vertical_angle_deg"):
+        if hasattr(self, "camera_angle_label") and hasattr(self.runtime, "camera_line_vertical_angle_deg"):
             angle = self.runtime.camera_line_vertical_angle_deg()
             self.camera_angle_label.configure(
                 text=f"相机-抓取连线与竖直夹角: {angle:.1f}°"
