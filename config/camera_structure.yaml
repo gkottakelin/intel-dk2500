@@ -2,14 +2,15 @@
 # This file is intentionally separate from joint_servo_map.yaml.
 
 metadata:
-  version: 0.2
-  status: orientation_model_partial
+  version: 0.3
+  status: orientation_and_offsets_partial
   camera_model: Gemini Pro Plus
   notes:
     - Camera line-of-sight pitch is currently derived from J2-J4 feedback.
     - Home is the measured zero-angle reference for the line of sight versus vertical.
     - Intrinsics and full hand-eye extrinsics still require calibration.
     - Keep camera mounting, intrinsics, extrinsics, and hand-eye calibration here.
+    - 2026-07-09 sketch marks the 4 cm dimension as camera-only, not part of robot_geometry.
 
 camera_mount:
   type: eye_in_hand
@@ -21,6 +22,12 @@ camera_mount:
     signed_pitch_positive_direction: toward_arm_radial_forward
     camera_view_up_at_home: base_link_positive_z
     agent_up_down_frame: camera_view
+  measured_offsets:
+    units: m
+    source: user_sketch_2026_07_09
+    camera_only_offset_along_main_chain: 0.04
+    camera_normal_offset_from_main_chain: 0.055
+    note: Partial physical measurement only; not a calibrated camera_to_tool0 transform.
 
 frames:
   color_frame: camera_color_optical_frame

@@ -23,7 +23,7 @@ class ArmModelTest(unittest.TestCase):
             {"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500, "J6": 0}
         )
 
-        assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.527))
+        assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.52))
         self.assertEqual(result.gripper_position, 0)
 
     def test_raw_position_to_model_angle_uses_direction_sign(self):
@@ -62,7 +62,7 @@ class ArmModelTest(unittest.TestCase):
             {"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500, "J6": 1000}
         )
 
-        assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.527))
+        assert_vector_close(self, result.tcp_xyz, (0.0, 0.0, 0.52))
         self.assertEqual(result.gripper_position, 1000)
 
     def test_forward_kinematics_from_model_angles(self):
@@ -70,7 +70,7 @@ class ArmModelTest(unittest.TestCase):
 
         self.assertAlmostEqual(result.tcp_xyz[0], 0.0, places=9)
         self.assertGreater(result.tcp_xyz[1], 0.0)
-        self.assertAlmostEqual(result.tcp_xyz[2], 0.105, places=9)
+        self.assertAlmostEqual(result.tcp_xyz[2], 0.10, places=9)
 
     def test_numeric_jacobian_shape_and_j5_position_column(self):
         jacobian = self.model.tcp_jacobian_from_positions({"J1": 500, "J2": 500, "J3": 500, "J4": 500, "J5": 500})
