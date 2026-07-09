@@ -118,9 +118,11 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(pose["status"], "ok")
         self.assertIn("grasp_point_base_cm", pose)
-        self.assertEqual(
+        self.assertEqual(pose["camera"]["control_frame"], "camera_vector")
+        self.assertGreater(
             pose["camera"]["line_of_sight_angle_from_vertical_deg"], 0.0
         )
+        self.assertIn("plane_forward_unit_base", pose["camera"])
 
     async def _close_service(self, service):
         service.close()

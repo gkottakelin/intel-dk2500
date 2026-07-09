@@ -284,6 +284,9 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "允许1到5cm/s。前后左右使用基座坐标，上下使用当前相机视角（Home时视角上为基座+Z）。"
             "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
             "收到status=ok后必须重新取图，再由Agent决定下一条。控制器不会自动切分。"
+            " Camera-vector frame is authoritative: up is grasp-point to camera, "
+            "down is camera to grasp-point, and forward/backward/left/right are "
+            "on the plane perpendicular to that line."
         ),
         structured_output=False,
     )

@@ -151,18 +151,25 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 478, "J3": 641, "J4": 890})
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
-        self.assertEqual(
+        self.assertGreater(
             state["arm_pose"]["camera"][
                 "line_of_sight_angle_from_vertical_deg"
             ],
             0.0,
         )
+        self.assertEqual(state["arm_pose"]["camera"]["control_frame"], "camera_vector")
         self.assertEqual(
             state["arm_pose"]["grasp_point_base_cm"], state["tcp_cm"]
         )
         self.assertEqual(
             state["arm_parameters"]["agent_direction_frames"]["up_down"],
-            "camera_view",
+            "camera_grasp_line",
+        )
+        self.assertEqual(
+            state["arm_parameters"]["agent_direction_frames"][
+                "forward_backward_left_right"
+            ],
+            "camera_vector_plane",
         )
         self.assertEqual(
             state["arm_parameters"]["joints"]["J2"]["servo_id"], 2
@@ -188,7 +195,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(
             pose["camera"]["line_of_sight_angle_from_vertical_deg"], 20
         )
-        self.assertEqual(result["direction_reference"], "camera_view")
+        self.assertEqual(result["direction_reference"], "camera_vector")
         self.assertNotEqual(result["direction_unit_base"]["forward_x"], 0.0)
         self.assertLess(result["direction_unit_base"]["up_z"], 1.0)
 

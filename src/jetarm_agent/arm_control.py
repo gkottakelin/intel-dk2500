@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import math
 import re
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,9 +69,14 @@ class ArmControlConfig:
 
 def _load_terminal_module() -> Any:
     import_error: Exception | None = None
+    terminal_dir = DEFAULT_TERMINAL_CONFIG.parents[1]
+    terminal_dir_text = str(terminal_dir)
+    if terminal_dir_text not in sys.path:
+        sys.path.insert(0, terminal_dir_text)
     for module_name in (
-        "ubuntu22_04_operation_terminal.jetarm_terminal",
-        "project.ubuntu22_04_operation_terminal.jetarm_terminal",
+        "camera_vector_terminal",
+        "ubuntu22_04_operation_terminal.camera_vector_terminal",
+        "project.ubuntu22_04_operation_terminal.camera_vector_terminal",
     ):
         try:
             return importlib.import_module(module_name)
@@ -178,9 +184,21 @@ class JetArmToolController:
                 self.settings.timeout_s,
             )
 
-        self.runtime = terminal.ManualServoRuntime(
-            self.controller, self.settings, logger=self.logger
+        camera_config_cls = getattr(terminal, "CameraLineConfig", None)
+        runtime_cls = getattr(
+            terminal,
+            "CameraRelativeManualServoRuntime",
+            terminal.ManualServoRuntime,
         )
+        self.camera_config = (
+            camera_config_cls.from_file(config.terminal_config_path)
+            if camera_config_cls is not None
+            else None
+        )
+        runtime_kwargs: dict[str, Any] = {"logger": self.logger}
+        if self.camera_config is not None:
+            runtime_kwargs["camera_config"] = self.camera_config
+        self.runtime = runtime_cls(self.controller, self.settings, **runtime_kwargs)
         try:
             self.runtime.initialize(use_home_positions=config.mode == "dry-run")
         except Exception:
@@ -218,6 +236,14 @@ class JetArmToolController:
         return math.atan2(math.sin(difference), math.cos(difference))
 
     def _direction_unit_base(self, direction: str) -> tuple[float, float, float]:
+        if self._uses_camera_vector_runtime():
+            frame = self.runtime.active_camera_relative_frame()
+            try:
+                vector = getattr(frame, direction)
+            except AttributeError as exc:
+                raise ArmControlError(f"涓嶆敮鎸佺殑TCP鏂瑰悜: {direction}") from exc
+            return tuple(float(value) for value in vector)
+
         base_directions = {
             "forward": (1.0, 0.0, 0.0),
             "backward": (-1.0, 0.0, 0.0),
@@ -244,11 +270,34 @@ class JetArmToolController:
             sign * math.cos(tilt),
         )
 
+    def _uses_camera_vector_runtime(self) -> bool:
+        return callable(getattr(self.runtime, "active_camera_relative_frame", None))
+
     def _set_cartesian_direction(
         self, direction: str
     ) -> tuple[float, tuple[float, float, float]]:
         self.runtime.set_vertical_direction(0)
         self.runtime.center_joystick()
+        if self._uses_camera_vector_runtime():
+            unit = self._direction_unit_base(direction)
+            if direction == "up":
+                self.runtime.set_vertical_direction(1)
+                return self.settings.vertical_speed_m_s, unit
+            if direction == "down":
+                self.runtime.set_vertical_direction(-1)
+                return self.settings.vertical_speed_m_s, unit
+            if direction == "forward":
+                self.runtime.set_joystick(0, -1)
+            elif direction == "backward":
+                self.runtime.set_joystick(0, 1)
+            elif direction == "left":
+                self.runtime.set_joystick(-1, 0)
+            elif direction == "right":
+                self.runtime.set_joystick(1, 0)
+            else:
+                raise ArmControlError(f"涓嶆敮鎸佺殑TCP鏂瑰悜: {direction}")
+            return self.settings.max_horizontal_speed_m_s, unit
+
         unit = self._direction_unit_base(direction)
         horizontal_length = math.hypot(unit[0], unit[1])
         speed_limits: list[float] = [
@@ -420,7 +469,8 @@ class JetArmToolController:
                 "up_z": round(float(delta_cm[2]), 3),
             },
             "direction_reference": (
-                "camera_view" if direction in {"up", "down"} else "base"
+                "camera_vector" if self._uses_camera_vector_runtime()
+                else ("camera_view" if direction in {"up", "down"} else "base")
             ),
             "direction_unit_base": {
                 "forward_x": round(direction_unit[0], 6),
@@ -637,11 +687,17 @@ class JetArmToolController:
     def _camera_pose(self) -> dict[str, Any]:
         tilt_rad = self._camera_signed_tilt_rad()
         up = self._direction_unit_base("up")
+        down = self._direction_unit_base("down")
+        forward = self._direction_unit_base("forward")
+        left = self._direction_unit_base("left")
+        vertical_dot = max(-1.0, min(1.0, up[2]))
         return {
             "mount": "eye_in_hand_near_j5_j6",
-            "home_line_of_sight_angle_from_vertical_deg": 0.0,
+            "control_frame": (
+                "camera_vector" if self._uses_camera_vector_runtime() else "legacy_camera_view"
+            ),
             "line_of_sight_angle_from_vertical_deg": round(
-                abs(math.degrees(tilt_rad)), 3
+                math.degrees(math.acos(vertical_dot)), 3
             ),
             "signed_pitch_from_home_deg": round(math.degrees(tilt_rad), 3),
             "signed_pitch_positive_direction": "toward_arm_radial_forward",
@@ -649,6 +705,21 @@ class JetArmToolController:
                 "forward_x": round(up[0], 6),
                 "left_y": round(up[1], 6),
                 "up_z": round(up[2], 6),
+            },
+            "camera_to_grasp_unit_base": {
+                "forward_x": round(down[0], 6),
+                "left_y": round(down[1], 6),
+                "up_z": round(down[2], 6),
+            },
+            "plane_forward_unit_base": {
+                "forward_x": round(forward[0], 6),
+                "left_y": round(forward[1], 6),
+                "up_z": round(forward[2], 6),
+            },
+            "plane_left_unit_base": {
+                "forward_x": round(left[0], 6),
+                "left_y": round(left[1], 6),
+                "up_z": round(left[2], 6),
             },
         }
 
@@ -687,8 +758,9 @@ class JetArmToolController:
                 "units": "cm",
             },
             "agent_direction_frames": {
-                "forward_backward_left_right": "base",
-                "up_down": "camera_view",
+                "forward_backward_left_right": "camera_vector_plane",
+                "up_down": "camera_grasp_line",
+                "implementation": "ubuntu22_04_operation_terminal.camera_vector_terminal",
             },
             "home_joint_positions": dict(self.settings.home),
             "joints": joints,
@@ -704,8 +776,10 @@ class JetArmToolController:
             },
             "camera_orientation_model": {
                 "mount": "eye_in_hand_near_j5_j6",
-                "home_angle_from_vertical_deg": 0.0,
-                "signed_pitch_formula": "pitch(J2+J3+J4)-home_pitch(J2+J3+J4)",
+                "control_frame": "camera_vector",
+                "up": "grasp_point_to_camera",
+                "down": "camera_to_grasp_point",
+                "forward_backward_left_right": "plane_perpendicular_to_camera_grasp_line",
             },
             "vision_guided_grasp": {
                 "pixel_alignment_tolerance_px": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
@@ -809,10 +883,10 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ToolDefinition(
                 name="move_jetarm_tcp",
                 description=(
-                    "Execute exactly one JetArm TCP movement. forward/backward/left/right "
-                    "use the robot-base frame; up/down use the current camera-view frame "
-                    "calibrated to base +Z at Home. distance_cm must be strictly less than "
-                    "2 cm. For a longer user "
+                    "Execute exactly one JetArm TCP movement through the camera-vector "
+                    "runtime. up is grasp-point -> camera, down is camera -> grasp-point, "
+                    "and forward/backward/left/right are axes in the plane perpendicular "
+                    "to that line. distance_cm must be strictly less than 2 cm. For a longer user "
                     "request, the Agent must use a fresh RGB frame to decide only the current "
                     "movement, wait for status=ok, then capture a new frame before deciding "
                     "the next call. The controller never splits a long command."
@@ -1149,7 +1223,7 @@ def looks_like_grasp_workflow_command(text: str) -> bool:
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
-2. “前/后/左/右”使用机械臂基座坐标系；“上/下”使用当前相机视角坐标，Home时相机视角的上等于基座+Z。距离必须保持用户给出的厘米数。
+2. “上/下/前/后/左/右”全部使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；前后左右=垂直于摄像头-抓取点连线的平面方向。距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 每次移动前必须调用get_rgb_camera_frame；该工具会在同一个结果中返回最新RGB图像、抓取点基座坐标和相机视线相对竖直方向的夹角。只有图像和对应姿态都已传给Agent，才允许Agent决定本次动作。
 5. Agent每次只根据当前最新图像下发一条move_jetarm命令，距离必须严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
