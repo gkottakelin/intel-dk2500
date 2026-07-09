@@ -233,6 +233,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         self._locked_frame: CameraRelativeFrame | None = None
         self._locked_pitch_rad: float | None = None
         self._last_forward: np.ndarray | None = None
+        self.z_lock: bool = False
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_relative_frame(
@@ -273,11 +274,14 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         plane_forward = -self.joystick_y * self.settings.max_horizontal_speed_m_s
         plane_left = -self.joystick_x * self.settings.max_horizontal_speed_m_s
         line_up = self.vertical_direction * self.settings.vertical_speed_m_s
-        return (
+        velocity = (
             frame.forward * plane_forward
             + frame.left * plane_left
             + frame.up * line_up
         )
+        if self.z_lock:
+            velocity[2] = 0.0
+        return velocity
 
     def _update_motion_lock(self) -> None:
         active = (

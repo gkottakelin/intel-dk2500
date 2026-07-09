@@ -478,6 +478,14 @@ class JetArmToolController:
         planner_speed_m_s, direction_unit = self._set_cartesian_direction(direction)
         camera_reference_before_move = self._camera_pose()
 
+        # Lock Z height during horizontal alignment so that the grasp point
+        # does not drift vertically while the camera-relative plane is tilted.
+        horizontal_directions = {"forward", "backward", "left", "right"}
+        lock_z = direction in horizontal_directions and self._uses_camera_vector_runtime()
+        if lock_z:
+            self.runtime.z_lock = True
+            direction_unit = (direction_unit[0], direction_unit[1], 0.0)
+
         planner_time_s = (distance_cm / 100.0) / planner_speed_m_s
         remaining_s = planner_time_s
         steps = 0
@@ -514,6 +522,8 @@ class JetArmToolController:
                         }
                     )
         finally:
+            if lock_z and self._uses_camera_vector_runtime():
+                self.runtime.z_lock = False
             self._stop_cartesian()
 
         if self.config.mode == "hardware":
