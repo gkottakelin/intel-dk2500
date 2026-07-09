@@ -228,6 +228,19 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.mode, "hardware")
         self.assertEqual(config.serial_port, "/dev/ttyUSB0")
 
+    def test_manual_pixel_hardware_without_port_delegates_to_terminal_discovery(self):
+        args = SimpleNamespace(
+            device_config=str(PROJECT_ROOT / "missing-devices.json"),
+            arm_mode="hardware",
+            arm_port=None,
+            arm_config=None,
+        )
+
+        config = _resolve_manual_pixel_arm_config(args)
+
+        self.assertEqual(config.mode, "hardware")
+        self.assertIsNone(config.serial_port)
+
     def test_manual_pixel_arm_config_rejects_off_mode(self):
         args = SimpleNamespace(
             device_config=str(PROJECT_ROOT / "missing-devices.json"),

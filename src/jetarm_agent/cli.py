@@ -303,10 +303,6 @@ def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConf
         or os.getenv("JETARM_ARM_PORT", "").strip()
         or None
     )
-    if arm_mode == "hardware" and not arm_port:
-        raise ConfigurationError(
-            "hardware手动像素测试必须配置串口，请先运行device_config或传入--arm-port"
-        )
     arm_config_path = Path(
         args.arm_config
         or os.getenv("JETARM_ARM_CONFIG", "")
@@ -340,7 +336,14 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
     arm_config = _resolve_manual_pixel_arm_config(args)
     if arm_config.mode == "hardware":
         print("硬件手动像素闭环测试：会真实控制机械臂运动。")
-        print(f"串口: {arm_config.serial_port}")
+        print(
+            "串口: "
+            + (
+                arm_config.serial_port
+                if arm_config.serial_port
+                else "未手动指定，将复用ubuntu22_04_operation_terminal自动识别"
+            )
+        )
         confirmation = input("确认机械臂周围安全后输入 RUN 开始，其他输入将退出: ").strip()
         if confirmation != "RUN":
             print("已取消硬件手动像素测试。")
