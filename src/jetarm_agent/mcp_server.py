@@ -199,7 +199,11 @@ class JetArmMCPService:
         descent_step_cm: float = DEFAULT_DESCENT_RECALIBRATION_CM,
         step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
         speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+        final_alignment_threshold_cm: float | None = None,
+        final_grasp_height_cm: float | None = None,
     ) -> dict[str, Any]:
+        from .arm_control import FINAL_ALIGNMENT_THRESHOLD_CM, FINAL_GRASP_HEIGHT_CM
+
         grasp_pixel = self._last_grasp_point_pixel
         resolved_grasp_x = (
             grasp_point_x
@@ -215,15 +219,22 @@ class JetArmMCPService:
             raise RuntimeError(
                 "missing grasp point pixel; call get_rgb_camera_frame first or pass grasp_point_x/grasp_point_y"
             )
+        kwargs: dict[str, Any] = dict(
+            descend_when_aligned=descend_when_aligned,
+            descent_step_cm=descent_step_cm,
+            step_duration_s=step_duration_s,
+            speed_saturation_px=speed_saturation_px,
+        )
+        if final_alignment_threshold_cm is not None:
+            kwargs["final_alignment_threshold_cm"] = float(final_alignment_threshold_cm)
+        if final_grasp_height_cm is not None:
+            kwargs["final_grasp_height_cm"] = float(final_grasp_height_cm)
         result = await self.controller().control_to_target_pixel(
             target_x,
             target_y,
             resolved_grasp_x,
             resolved_grasp_y,
-            descend_when_aligned=descend_when_aligned,
-            descent_step_cm=descent_step_cm,
-            step_duration_s=step_duration_s,
-            speed_saturation_px=speed_saturation_px,
+            **kwargs,
         )
         result["mcp"] = "control_jetarm_to_target_pixel"
         result["grasp_point_pixel_source"] = (
@@ -444,8 +455,10 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
-            "alignment with 13 px per cm, and descends 2 cm when aligned before "
-            "requesting a new target."
+            "alignment with 13.3 px per cm. When aligned, descends 2 cm. When one "
+            "more descent step would reach or pass the final-alignment threshold "
+            "(2 cm), the controller returns aligned_hold instead; the caller "
+            "should request a final alignment then descend to final_grasp_height_cm."
         ),
         structured_output=False,
     )
@@ -458,6 +471,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         descent_step_cm: float = DEFAULT_DESCENT_RECALIBRATION_CM,
         step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
         speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+        final_alignment_threshold_cm: float | None = None,
+        final_grasp_height_cm: float | None = None,
     ) -> Any:
         return content_result(
             await service.control_to_target_pixel(
@@ -469,6 +484,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
                 descent_step_cm,
                 step_duration_s,
                 speed_saturation_px,
+                final_alignment_threshold_cm,
+                final_grasp_height_cm,
             )
         )
 

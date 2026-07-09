@@ -194,14 +194,14 @@ joints:
     motion_description: wrist pitches up/down relative to the forearm
     urdf_axis_guess_xyz: [0, 1, 0]
     position:
-      min: 100
+      min: 0
       center: 500
       max: 1000
     angle:
-      min_deg: -96
+      min_deg: -120
       center_deg: 0
       max_deg: 120
-      position_100_deg: -96
+      position_0_deg: -120
       position_500_deg: 0
       position_1000_deg: 120
       deg_per_position_unit: 0.24

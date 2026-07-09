@@ -263,7 +263,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
         print(
             "控制结果: 水平对准 | "
             f"方向={result.get('direction')} "
-            f"固定步长={result.get('requested_distance_cm')}cm "
+            f"像素比例步长={result.get('requested_distance_cm')}cm "
             f"速度={result.get('speed_cm_s')}cm/s "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
@@ -277,6 +277,15 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
+        )
+        return
+    if decision == "aligned_hold":
+        remaining = result.get("remaining_descent_to_final_cm")
+        print(
+            "控制结果: 已对准，接近目标高度 | "
+            f"当前高度={result.get('height_cm')}cm "
+            f"误差={error} 容差={tolerance}px "
+            + (f"距最终抓取高度还剩={remaining}cm" if remaining is not None else "")
         )
         return
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
@@ -317,7 +326,6 @@ def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConf
         serial_port=arm_port,
         terminal_config_path=arm_config_path,
         max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
-        fixed_pixel_alignment_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
     )
 
 
@@ -357,9 +365,9 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
     try:
         release = await controller.set_gripper_position(DEFAULT_GRIPPER_RELEASE_POSITION)
         state = await controller.state()
-        final_height_cm = state["arm_parameters"]["vision_guided_grasp"][
-            "final_grasp_height_cm"
-        ]
+        grasp_params = state["arm_parameters"]["vision_guided_grasp"]
+        final_alignment_threshold_cm = grasp_params["final_alignment_threshold_cm"]
+        final_grasp_height_cm = grasp_params["final_grasp_height_cm"]
         mode_text = (
             "hardware，真实机械臂运行"
             if arm_config.mode == "hardware"
@@ -373,12 +381,18 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
         print(
             f"J6已保持松开: {release['target_position']}；"
             f"初始抓取点XYZ={state['grasp_point_xyz_cm']}；"
-            f"抓取高度阈值={final_height_cm}cm"
+            f"最终对准触发高度={final_alignment_threshold_cm}cm；"
+            f"最终抓取高度={final_grasp_height_cm}cm"
         )
-        print("手动像素修正: 抓取点像素固定；未对齐时每次水平移动固定2cm。")
+        print(
+            "手动像素修正: 抓取点像素固定；水平移动按13.3px/cm比例；"
+            f"下降每次2cm；高度≤{final_alignment_threshold_cm:g}cm时触发最终对准，"
+            f"对准后下降至{final_grasp_height_cm:g}cm抓取。"
+        )
         print("输入目标点像素，格式如: 450 230 或 450,230。输入 q 退出。")
 
         round_index = 1
+        in_final_phase = False
         while True:
             state = await controller.state()
             print(
@@ -399,22 +413,68 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
                 print("已退出手动像素测试。")
                 return 0
             target_x, target_y = parsed
-            result = await controller.control_to_target_pixel(
-                target_x,
-                target_y,
-                grasp_x,
-                grasp_y,
-            )
-            _print_manual_pixel_result(result)
-            height_after = result.get("height_after_cm")
-            if isinstance(height_after, (int, float)) and height_after <= final_height_cm:
+
+            if in_final_phase:
+                # Align one last time without descending, then descend to
+                # final_grasp_height_cm and execute the grasp.
+                result = await controller.control_to_target_pixel(
+                    target_x, target_y, grasp_x, grasp_y,
+                    descend_when_aligned=False,
+                )
+                _print_manual_pixel_result(result)
+                decision = result.get("controller_decision")
+                if decision != "aligned_hold":
+                    print("最终对准未完成，请重新输入目标点像素。")
+                    continue
+                print(
+                    f"最终对准完成，下降至{final_grasp_height_cm:g}cm…"
+                )
+                descend_result = await controller.descend_to_height(
+                    final_grasp_height_cm
+                )
+                print(
+                    f"下降结果: 高度={descend_result.get('height_after_cm')}cm "
+                    f"步数={descend_result.get('steps')}"
+                )
                 grip = await controller.control_gripper("grip_lock")
                 home = await controller.go_home()
                 print(
-                    "已达到抓取高度，模拟执行夹取并复位 | "
+                    "已完成抓取并复位 | "
                     f"夹爪={grip['action']} Home状态={home['status']}"
                 )
                 return 0
+
+            result = await controller.control_to_target_pixel(
+                target_x, target_y, grasp_x, grasp_y,
+            )
+            _print_manual_pixel_result(result)
+            decision = result.get("controller_decision")
+
+            if decision == "aligned_hold":
+                # Height is already near or below the final-alignment threshold
+                # and the controller declined to descend. Enter the final phase.
+                remaining = result.get("remaining_descent_to_final_cm")
+                height_now = result.get("height_cm")
+                print(
+                    f"高度{height_now}cm已达到最终对准阈值，"
+                    f"距抓取高度剩余{remaining}cm。请输入新目标点像素完成最终对准。"
+                )
+                in_final_phase = True
+                round_index += 1
+                continue
+
+            if decision == "descend_after_alignment":
+                height_after = result.get("height_after_cm")
+                if (
+                    isinstance(height_after, (int, float))
+                    and height_after <= final_alignment_threshold_cm
+                ):
+                    print(
+                        f"下降后高度{height_after}cm已达到最终对准阈值，"
+                        "下一轮将触发最终对准。"
+                    )
+                    in_final_phase = True
+
             round_index += 1
     finally:
         controller.close()

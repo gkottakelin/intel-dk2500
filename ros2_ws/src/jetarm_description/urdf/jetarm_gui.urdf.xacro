@@ -13,7 +13,7 @@
   <xacro:property name="j2_lower" value="0.0"/>
   <xacro:property name="j2_upper" value="1.5707963267948966"/>
   <xacro:property name="j3_limit" value="2.0943951023931953"/>
-  <xacro:property name="j4_lower" value="-1.6755160819145563"/>
+  <xacro:property name="j4_lower" value="-2.0943951023931953"/>
   <xacro:property name="j4_upper" value="2.0943951023931953"/>
   <xacro:property name="j5_limit" value="1.0471975511965976"/>
   <xacro:property name="j6_raw_max_position" value="1000.0"/>

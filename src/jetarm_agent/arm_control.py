@@ -33,8 +33,10 @@ MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
 DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
 DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX = 120.0
-PIXEL_ALIGNMENT_PX_PER_CM = 13.0
+PIXEL_ALIGNMENT_PX_PER_CM = 13.3
 DEFAULT_DESCENT_RECALIBRATION_CM = 2.0
+FINAL_ALIGNMENT_THRESHOLD_CM = 2.0
+FINAL_GRASP_HEIGHT_CM = 1.0
 DESCENT_SPEED_CM_S = 2.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
@@ -711,12 +713,19 @@ class JetArmToolController:
         descent_step_cm: object = DEFAULT_DESCENT_RECALIBRATION_CM,
         step_duration_s: object = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
         speed_saturation_px: object = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+        final_alignment_threshold_cm: float = FINAL_ALIGNMENT_THRESHOLD_CM,
+        final_grasp_height_cm: float = FINAL_GRASP_HEIGHT_CM,
     ) -> dict[str, Any]:
         """Controller-owned visual servo step from target pixel only.
 
         The Agent supplies the target pixel.  The controller reads joint
         feedback/FK, chooses tolerance from grasp-point height, and decides
         whether to move in the image plane or descend for the next recalibration.
+
+        When aligned and one more descent step would drop the grasp point to or
+        below ``final_alignment_threshold_cm``, the method returns ``aligned_hold``
+        so the caller can request a final alignment before descending the last
+        segment to ``final_grasp_height_cm``.
         """
 
         self._refresh_hardware_positions()
@@ -786,6 +795,36 @@ class JetArmToolController:
                 "requires_new_target_pixel": False,
             }
 
+        # When one descent step would reach or pass the final-alignment
+        # threshold, return aligned_hold so the caller can request a fresh
+        # alignment before the last short descent to final_grasp_height_cm.
+        if height_cm - float(descent_step_cm) <= final_alignment_threshold_cm:
+            remaining_to_final = max(0.0, height_cm - final_grasp_height_cm)
+            return {
+                "status": "ok",
+                "mode": self.config.mode,
+                "action": "controller_pixel_align",
+                "agent_role": "target_pixel_only",
+                "controller_decision": "aligned_hold",
+                "aligned": True,
+                "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+                "target_pixel": {"x": target_px, "y": target_py},
+                "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                "grasp_point_before_cm": tcp_before,
+                "grasp_point_after_cm": tcp_before,
+                "grasp_point_xyz_before_cm": xyz_before,
+                "grasp_point_xyz_after_cm": xyz_before,
+                "height_cm": height_cm,
+                "height_source": "joint_feedback_fk",
+                "dynamic_tolerance_px": tolerance,
+                "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "final_alignment_threshold_cm": final_alignment_threshold_cm,
+                "final_grasp_height_cm": final_grasp_height_cm,
+                "remaining_descent_to_final_cm": round(remaining_to_final, 3),
+                "motion_command_count": 0,
+                "requires_new_target_pixel": True,
+            }
+
         descent = self._validate_positive_number(
             descent_step_cm, "descent_step_cm", self.config.max_distance_cm
         )
@@ -817,7 +856,68 @@ class JetArmToolController:
             "dynamic_tolerance_px": tolerance,
             "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
             "descent_recalibration_interval_cm": descent,
+            "final_alignment_threshold_cm": final_alignment_threshold_cm,
+            "final_grasp_height_cm": final_grasp_height_cm,
             "requires_new_target_pixel": True,
+        }
+
+    async def descend_to_height(
+        self, target_height_cm: float, *, speed_cm_s: float = DESCENT_SPEED_CM_S
+    ) -> dict[str, Any]:
+        """Descend until the grasp-point FK height reaches ``target_height_cm``.
+
+        The method reads joint feedback before moving and strictly clamps the
+        commanded descent so that the target height is never overshot.
+        """
+
+        self._refresh_hardware_positions()
+        current = self._current_tcp_cm()
+        current_height = current["up_z"]
+        if current_height <= target_height_cm:
+            return {
+                "status": "ok",
+                "mode": self.config.mode,
+                "action": "descend_to_height",
+                "already_at_target": True,
+                "height_cm": current_height,
+                "target_height_cm": target_height_cm,
+            }
+        remaining_cm = current_height - target_height_cm
+        # Clamp to the per-command limit so the move stays safe.
+        effective_cm = min(remaining_cm, self.config.max_distance_cm)
+        steps = 0
+        heights: list[float] = [current_height]
+        while current_height > target_height_cm and steps < 200:
+            remaining_cm = current_height - target_height_cm
+            if remaining_cm <= 0:
+                break
+            effective_cm = min(remaining_cm, self.config.max_distance_cm)
+            result = await self._move_tcp_segment(
+                "down", effective_cm, speed_cm_s, collect_tcp_samples=True
+            )
+            self._refresh_hardware_positions()
+            after = self._current_tcp_cm()
+            current_height = after["up_z"]
+            heights.append(current_height)
+            steps += 1
+            if result.get("status") != "ok":
+                return {
+                    **result,
+                    "action": "descend_to_height",
+                    "target_height_cm": target_height_cm,
+                    "height_samples_cm": heights,
+                    "steps": steps,
+                }
+        return {
+            "status": "ok",
+            "mode": self.config.mode,
+            "action": "descend_to_height",
+            "target_height_cm": target_height_cm,
+            "height_before_cm": heights[0],
+            "height_after_cm": current_height,
+            "height_samples_cm": heights,
+            "steps": steps,
+            "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(self._current_tcp_cm()),
         }
 
     async def rotate_wrist(
@@ -1032,7 +1132,8 @@ class JetArmToolController:
                     {"height_cm": ">5 and <=10", "tolerance_px": 10},
                     {"height_cm": "<=5", "tolerance_px": 8},
                 ],
-                "final_grasp_height_cm": 1.0,
+                "final_alignment_threshold_cm": FINAL_ALIGNMENT_THRESHOLD_CM,
+                "final_grasp_height_cm": FINAL_GRASP_HEIGHT_CM,
                 "j6_release_position_before_success": DEFAULT_GRIPPER_RELEASE_POSITION,
                 "pixel_to_motion_mapping": {
                     "positive_dx": "right",
