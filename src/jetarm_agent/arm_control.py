@@ -597,6 +597,15 @@ class JetArmToolController:
         camera_angle_after_deg = float(
             camera_pose_after_move["line_of_sight_angle_from_vertical_deg"]
         )
+        line_before = camera_reference_before_move["view_up_unit_base"]
+        line_after = camera_pose_after_move["view_up_unit_base"]
+        line_dot = (
+            float(line_before["forward_x"]) * float(line_after["forward_x"])
+            + float(line_before["left_y"]) * float(line_after["left_y"])
+            + float(line_before["up_z"]) * float(line_after["up_z"])
+        )
+        line_dot = max(-1.0, min(1.0, line_dot))
+        line_unit_error_deg = math.degrees(math.acos(line_dot))
         delta_cm = (end_tcp - start_tcp) * 100.0
         estimated_distance = sum(
             float(delta_cm[index]) * direction_unit[index] for index in range(3)
@@ -611,6 +620,8 @@ class JetArmToolController:
             "left_y": round(float(end_tcp[1] * 100.0), 3),
             "up_z": round(float(end_tcp[2] * 100.0), 3),
         }
+        horizontal_motion = direction in horizontal_directions
+        height_error_cm = float((end_tcp[2] - start_tcp[2]) * 100.0)
         return {
             "status": "ok",
             "mode": self.config.mode,
@@ -637,6 +648,19 @@ class JetArmToolController:
                 "camera_vector" if self._uses_camera_vector_runtime()
                 else ("camera_view" if direction in {"up", "down"} else "base")
             ),
+            "horizontal_motion_frame": (
+                "grasp_point_xyz_xy" if horizontal_motion else None
+            ),
+            "horizontal_height_hold": (
+                {
+                    "target_z_cm": round(float(start_tcp[2] * 100.0), 3),
+                    "actual_after_z_cm": round(float(end_tcp[2] * 100.0), 3),
+                    "error_cm": round(height_error_cm, 4),
+                    "z_participates_in_command": False,
+                }
+                if horizontal_motion
+                else None
+            ),
             "direction_unit_base": {
                 "forward_x": round(direction_unit[0], 6),
                 "left_y": round(direction_unit[1], 6),
@@ -648,6 +672,14 @@ class JetArmToolController:
                 "target_deg": round(camera_angle_before_deg, 3),
                 "actual_after_deg": round(camera_angle_after_deg, 3),
                 "error_deg": round(camera_angle_after_deg - camera_angle_before_deg, 3),
+            },
+            "camera_grasp_pose_hold": {
+                "line_unit_before": line_before,
+                "line_unit_after": line_after,
+                "line_unit_error_deg": round(line_unit_error_deg, 3),
+                "line_angle_error_deg": round(
+                    camera_angle_after_deg - camera_angle_before_deg, 3
+                ),
             },
             "steps": steps,
             "joint_positions": dict(self.runtime.positions),
@@ -1224,7 +1256,7 @@ class JetArmToolController:
                 "up": "grasp_point_to_camera",
                 "down": "camera_to_grasp_point",
                 "forward_backward_left_right": "base_horizontal_xy",
-                "motion_constraint": "keep_camera_grasp_line_angle_from_vertical",
+                "motion_constraint": "keep_camera_grasp_line_pose_and_lock_horizontal_z",
             },
             "vision_guided_grasp": {
                 "pixel_alignment_tolerance_px": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
@@ -1766,7 +1798,7 @@ def looks_like_grasp_workflow_command(text: str) -> bool:
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
-2. “上/下”使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；“前/后/左/右”使用抓取点XYZ水平坐标：前=Y减小，后=Y增大，左=X减小，右=X增大。运动过程中保持摄像头-抓取点连线与竖直方向夹角不变，距离必须保持用户给出的厘米数。
+2. “上/下”使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；“前/后/左/右”使用抓取点XYZ水平坐标：前=Y减小，后=Y增大，左=X减小，右=X增大。水平运动时把目标换算到XYZ的X/Y方向，Z不参与移动目标并保持当前高度；运动过程中保持摄像头-抓取点姿态尽量不变，距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。

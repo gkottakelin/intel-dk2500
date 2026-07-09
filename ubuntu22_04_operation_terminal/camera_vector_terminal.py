@@ -45,7 +45,9 @@ DEFAULT_GRASP_TO_CAMERA_ALONG_TOOL_M = -0.04
 DEFAULT_GRASP_TO_CAMERA_NORMAL_M = -0.055
 DEFAULT_GRASP_TO_CAMERA_LATERAL_M = 0.0
 DEFAULT_FRAME_LOCK_ON_HOLD = True
-DEFAULT_LINE_ANGLE_HOLD_WEIGHT_M = 0.2
+DEFAULT_LINE_ANGLE_HOLD_WEIGHT_M = 1.0
+HEIGHT_HOLD_ERROR_WEIGHT = 20.0
+YAW_POSE_HOLD_WEIGHT = 0.05
 EPSILON = 1e-9
 
 
@@ -238,8 +240,10 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         self.camera_config = camera_config or CameraLineConfig()
         self._locked_frame: CameraRelativeFrame | None = None
         self._locked_line_angle_rad: float | None = None
+        self._locked_yaw_rad: float | None = None
         self._last_forward: np.ndarray | None = None
         self._pending_target_delta = np.zeros(3, dtype=float)
+        self._height_hold_active = False
         self.z_lock: bool = False
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
@@ -330,6 +334,10 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         if not active:
             self._clear_motion_lock()
             return
+        self._height_hold_active = (
+            abs(self.vertical_direction) <= EPSILON
+            and math.hypot(self.joystick_x, self.joystick_y) > EPSILON
+        )
         if not self.camera_config.frame_lock_on_hold:
             return
         if self._locked_frame is None:
@@ -337,19 +345,31 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             self._locked_line_angle_rad = self._camera_line_vertical_angle_rad(
                 self.positions
             )
+            self._locked_yaw_rad = self._tool_yaw_rad(self.positions)
 
     def _clear_motion_lock(self, *, clear_forward: bool = False) -> None:
         self._locked_frame = None
         self._locked_line_angle_rad = None
+        self._locked_yaw_rad = None
         self._pending_target_delta = np.zeros(3, dtype=float)
+        self._height_hold_active = False
         if clear_forward:
             self._last_forward = None
+
+    def _tool_yaw_rad(self, positions: dict[str, int]) -> float:
+        return self.model.position_to_model_angle("J1", positions["J1"])
 
     def _tool_pitch_rad(self, positions: dict[str, int]) -> float:
         return sum(
             self.model.position_to_model_angle(name, positions[name])
             for name in ARM_JOINTS[1:]
         )
+
+    def _yaw_error_rad(self, positions: dict[str, int]) -> float:
+        if self._locked_yaw_rad is None:
+            return 0.0
+        error = self._locked_yaw_rad - self._tool_yaw_rad(positions)
+        return math.atan2(math.sin(error), math.cos(error))
 
     def _camera_line_vertical_cos_from_pitch(self, pitch_rad: float) -> float:
         length = self.camera_config.vector_length_m()
@@ -392,30 +412,39 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         weight = max(0.0, float(self.camera_config.line_angle_hold_weight_m))
         if self._locked_line_angle_rad is None or weight <= 0.0:
             return super()._solve_next_positions(target_delta)
+        line_weight = weight if self._height_hold_active else min(weight, 0.2)
 
-        angle_row = self._line_angle_jacobian_row(self.positions)
-        angle_norm_sq = float((angle_row @ angle_row.T)[0, 0])
-        if angle_norm_sq < EPSILON:
-            return super()._solve_next_positions(target_delta)
-
-        angle_error = self._line_angle_error_rad(self.positions)
-        angle_column = angle_row.T
-        constraint_part = (angle_column[:, 0] * (angle_error / angle_norm_sq))
-        nullspace = np.eye(len(ARM_JOINTS)) - (angle_column @ angle_row) / angle_norm_sq
         jacobian = self.model.jacobian(self.positions)
-        constrained_jacobian = jacobian @ nullspace
-        constrained_target = target_delta - jacobian @ constraint_part
-        damping = (self.settings.damping**2) * np.eye(constrained_jacobian.shape[0])
+        height_weight = HEIGHT_HOLD_ERROR_WEIGHT if self._height_hold_active else 1.0
+        augmented_jacobian = np.vstack(
+            (
+                jacobian[0:2],
+                height_weight * jacobian[2:3],
+                line_weight * self._line_angle_jacobian_row(self.positions),
+                YAW_POSE_HOLD_WEIGHT
+                * np.array([[1.0, 0.0, 0.0, 0.0]], dtype=float),
+            )
+        )
+        augmented_target = np.concatenate(
+            (
+                target_delta[0:2],
+                height_weight * target_delta[2:3],
+                np.array([line_weight * self._line_angle_error_rad(self.positions)]),
+                np.array(
+                    [YAW_POSE_HOLD_WEIGHT * self._yaw_error_rad(self.positions)]
+                ),
+            )
+        )
+        damping = (self.settings.damping**2) * np.eye(augmented_jacobian.shape[0])
         try:
-            dq_free = constrained_jacobian.T @ np.linalg.solve(
-                constrained_jacobian @ constrained_jacobian.T + damping,
-                constrained_target,
+            dq = augmented_jacobian.T @ np.linalg.solve(
+                augmented_jacobian @ augmented_jacobian.T + damping,
+                augmented_target,
             )
         except np.linalg.LinAlgError:
-            dq_free = np.zeros(4)
+            dq = np.zeros(4)
 
         max_step = math.radians(self.settings.max_joint_step_deg)
-        dq = constraint_part + nullspace @ dq_free
         max_abs = float(np.max(np.abs(dq)))
         if max_abs > max_step:
             dq = dq * (max_step / max_abs)
@@ -452,9 +481,23 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         return min(candidates, key=lambda item: self._camera_locked_error(item, target_tcp))
 
     def _camera_locked_error(self, positions: dict[str, int], target_tcp: np.ndarray) -> float:
-        tcp_error = float(np.linalg.norm(self.model.tcp(positions) - target_tcp))
+        tcp_delta = self.model.tcp(positions) - target_tcp
+        horizontal_error = float(np.linalg.norm(tcp_delta[0:2]))
+        height_error = abs(float(tcp_delta[2]))
+        height_weight = HEIGHT_HOLD_ERROR_WEIGHT if self._height_hold_active else 1.0
+        line_weight = (
+            self.camera_config.line_angle_hold_weight_m
+            if self._height_hold_active
+            else min(self.camera_config.line_angle_hold_weight_m, 0.2)
+        )
         line_angle_error = abs(self._line_angle_error_rad(positions))
-        return tcp_error + self.camera_config.line_angle_hold_weight_m * line_angle_error
+        yaw_error = abs(self._yaw_error_rad(positions))
+        return (
+            horizontal_error
+            + height_weight * height_error
+            + line_weight * line_angle_error
+            + YAW_POSE_HOLD_WEIGHT * yaw_error
+        )
 
 
 class CameraVectorTerminalApp(OperationTerminalApp):

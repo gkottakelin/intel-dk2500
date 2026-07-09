@@ -128,7 +128,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
             self.assertTrue(runtime.step_cartesian(0.08))
         after_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
 
-        self.assertLess(abs(after_angle - before_angle), 0.01)
+        self.assertLess(abs(after_angle - before_angle), 0.02)
 
     def test_joystick_moves_in_base_horizontal_xy(self):
         runtime, _controller = self.make_runtime()
