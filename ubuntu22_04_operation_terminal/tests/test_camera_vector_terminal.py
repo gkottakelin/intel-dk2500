@@ -45,7 +45,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
         if tk is not None:
             self.assertIsNotNone(ttk)
 
-    def test_camera_frame_is_orthonormal(self):
+    def test_camera_frame_uses_camera_line_and_base_xy_axes(self):
         runtime, _controller = self.make_runtime()
 
         frame = runtime.camera_relative_frame()
@@ -53,12 +53,14 @@ class CameraVectorTerminalTest(unittest.TestCase):
         self.assert_unit(frame.up)
         self.assert_unit(frame.forward)
         self.assert_unit(frame.left)
-        self.assertAlmostEqual(float(np.dot(frame.up, frame.forward)), 0.0, places=9)
-        self.assertAlmostEqual(float(np.dot(frame.up, frame.left)), 0.0, places=9)
         self.assertAlmostEqual(float(np.dot(frame.forward, frame.left)), 0.0, places=9)
         np.testing.assert_allclose(frame.down, -frame.up)
         np.testing.assert_allclose(frame.backward, -frame.forward)
         np.testing.assert_allclose(frame.right, -frame.left)
+        np.testing.assert_allclose(frame.forward, np.array((1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(frame.left, np.array((0.0, -1.0, 0.0)))
+        self.assertEqual(float(frame.forward[2]), 0.0)
+        self.assertEqual(float(frame.left[2]), 0.0)
 
     def test_up_and_down_follow_grasp_camera_line(self):
         runtime, _controller = self.make_runtime()
@@ -107,7 +109,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
         np.testing.assert_allclose(fixed.left, np.array((0.0, -1.0, 0.0)))
         np.testing.assert_allclose(fixed.right, np.array((0.0, 1.0, 0.0)))
 
-    def test_motion_lock_uses_continuous_forward_direction(self):
+    def test_motion_lock_keeps_fixed_forward_direction(self):
         runtime, _controller = self.make_runtime()
         raw_frame = runtime.camera_relative_frame()
         runtime._last_forward = -raw_frame.forward.copy()
@@ -115,8 +117,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
         runtime.set_joystick(0, -1)
         active_frame = runtime.active_camera_relative_frame()
 
-        self.assertGreater(float(np.dot(active_frame.forward, -raw_frame.forward)), 0.99)
-        self.assertLess(float(np.dot(active_frame.forward, raw_frame.forward)), -0.99)
+        np.testing.assert_allclose(active_frame.forward, raw_frame.forward)
 
     def test_line_angle_hold_keeps_camera_line_vertical_angle(self):
         runtime, _controller = self.make_runtime()
@@ -129,7 +130,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
 
         self.assertLess(abs(after_angle - before_angle), 0.01)
 
-    def test_joystick_moves_in_camera_plane(self):
+    def test_joystick_moves_in_base_horizontal_xy(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
 
@@ -146,8 +147,10 @@ class CameraVectorTerminalTest(unittest.TestCase):
             right_velocity,
             frame.right * self.settings.max_horizontal_speed_m_s,
         )
-        self.assertAlmostEqual(float(np.dot(forward_velocity, frame.up)), 0.0, places=9)
-        self.assertAlmostEqual(float(np.dot(right_velocity, frame.up)), 0.0, places=9)
+        self.assertEqual(float(forward_velocity[2]), 0.0)
+        self.assertEqual(float(right_velocity[2]), 0.0)
+        self.assertGreater(float(forward_velocity[0]), 0.0)
+        self.assertGreater(float(right_velocity[1]), 0.0)
 
     def test_step_cartesian_uses_camera_relative_velocity(self):
         runtime, controller = self.make_runtime()

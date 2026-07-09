@@ -298,8 +298,8 @@ class JetArmToolController:
         base_directions = {
             "forward": (1.0, 0.0, 0.0),
             "backward": (-1.0, 0.0, 0.0),
-            "left": (0.0, 1.0, 0.0),
-            "right": (0.0, -1.0, 0.0),
+            "left": (0.0, -1.0, 0.0),
+            "right": (0.0, 1.0, 0.0),
         }
         if direction in base_directions:
             return base_directions[direction]
@@ -1198,9 +1198,13 @@ class JetArmToolController:
                 "units": "cm",
             },
             "agent_direction_frames": {
-                "forward_backward_left_right": "camera_vector_plane",
+                "forward_backward_left_right": "base_horizontal_xy",
                 "up_down": "camera_grasp_line",
                 "implementation": "ubuntu22_04_operation_terminal.camera_vector_terminal",
+                "forward": "grasp_point_xyz_y_decreases",
+                "backward": "grasp_point_xyz_y_increases",
+                "left": "grasp_point_xyz_x_decreases",
+                "right": "grasp_point_xyz_x_increases",
             },
             "home_joint_positions": dict(self.settings.home),
             "joints": joints,
@@ -1219,7 +1223,7 @@ class JetArmToolController:
                 "control_frame": "camera_vector",
                 "up": "grasp_point_to_camera",
                 "down": "camera_to_grasp_point",
-                "forward_backward_left_right": "plane_perpendicular_to_camera_grasp_line",
+                "forward_backward_left_right": "base_horizontal_xy",
                 "motion_constraint": "keep_camera_grasp_line_angle_from_vertical",
             },
             "vision_guided_grasp": {
@@ -1376,8 +1380,8 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                 description=(
                     "Execute exactly one JetArm TCP movement through the camera-vector "
                     "runtime. up is grasp-point -> camera, down is camera -> grasp-point, "
-                    "and forward/backward/left/right are axes in the plane perpendicular "
-                    "to that line. distance_cm must be strictly less than 2 cm. For a longer user "
+                    "forward decreases grasp-point XYZ Y, backward increases XYZ Y, "
+                    "left decreases XYZ X, and right increases XYZ X. distance_cm must be strictly less than 2 cm. For a longer user "
                     "request, the Agent must use a fresh RGB frame to decide only the current "
                     "movement, wait for status=ok, then capture a new frame before deciding "
                     "the next call. The controller never splits a long command."
@@ -1762,7 +1766,7 @@ def looks_like_grasp_workflow_command(text: str) -> bool:
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
-2. “上/下/前/后/左/右”全部使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；前后左右=垂直于摄像头-抓取点连线的平面方向。运动过程中保持摄像头-抓取点连线与竖直方向夹角不变，距离必须保持用户给出的厘米数。
+2. “上/下”使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；“前/后/左/右”使用抓取点XYZ水平坐标：前=Y减小，后=Y增大，左=X减小，右=X增大。运动过程中保持摄像头-抓取点连线与竖直方向夹角不变，距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。

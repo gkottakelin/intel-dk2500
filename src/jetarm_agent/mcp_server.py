@@ -355,14 +355,14 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
             "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
             "允许1到5cm/s。所有方向使用camera-vector控制系：上为抓取点到摄像头，"
-            "下为摄像头到抓取点，前后左右位于垂直于摄像头-抓取点连线的平面；"
+            "下为摄像头到抓取点；前=抓取点XYZ的Y减小，后=Y增大，左=X减小，右=X增大；"
             "运动过程中保持摄像头-抓取点连线与竖直方向夹角不变。"
             "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
             "收到status=ok后必须重新取图；视觉抓取应改用control_jetarm_to_target_pixel，"
             "由控制程序根据目标点像素决策运动。控制器不会自动切分。"
             " Camera-vector frame is authoritative: up is grasp-point to camera, "
-            "down is camera to grasp-point, and forward/backward/left/right are "
-            "on the plane perpendicular to that line."
+            "down is camera to grasp-point; forward/backward/left/right use the "
+            "grasp-point XYZ horizontal axes."
         ),
         structured_output=False,
     )

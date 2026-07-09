@@ -363,7 +363,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             state["arm_parameters"]["agent_direction_frames"][
                 "forward_backward_left_right"
             ],
-            "camera_vector_plane",
+            "base_horizontal_xy",
         )
         self.assertEqual(
             state["arm_parameters"]["joints"]["J2"]["servo_id"], 2

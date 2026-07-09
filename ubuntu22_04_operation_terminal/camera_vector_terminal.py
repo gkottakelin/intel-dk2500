@@ -1,11 +1,15 @@
 """Camera-to-grasp-point relative JetArm terminal.
 
-This terminal reuses the standalone Ubuntu servo terminal, but maps the six
-TCP directions into a frame built from the measured camera-to-grasp-point line:
+This terminal reuses the standalone Ubuntu servo terminal.  Up/down follow the
+measured camera-to-grasp-point line; the four planar directions use the fixed
+base XY axes used by the grasp-point XYZ readout:
 
 - up: grasp point -> camera
 - down: camera -> grasp point
-- forward/backward/left/right: the plane perpendicular to that line
+- forward: grasp-point Y decreases
+- backward: grasp-point Y increases
+- left: grasp-point X decreases
+- right: grasp-point X increases
 """
 
 from __future__ import annotations
@@ -171,16 +175,8 @@ def build_camera_relative_frame(
         + camera_config.grasp_to_camera_lateral_m * lateral_axis
     )
     up = _unit(grasp_to_camera)
-    forward = _first_valid_plane_axis(
-        up,
-        (
-            np.array((0.0, 0.0, 1.0), dtype=float),
-            normal_axis,
-            np.array((1.0, 0.0, 0.0), dtype=float),
-            np.array((0.0, 1.0, 0.0), dtype=float),
-        ),
-    )
-    left = _unit(np.cross(forward, up))
+    forward = np.array((1.0, 0.0, 0.0), dtype=float)
+    left = np.array((0.0, -1.0, 0.0), dtype=float)
     return CameraRelativeFrame(
         up=up,
         down=-up,
@@ -254,10 +250,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         )
 
     def continuous_camera_relative_frame(self) -> CameraRelativeFrame:
-        frame = _with_forward_continuity(
-            self.camera_relative_frame(),
-            self._last_forward,
-        )
+        frame = self.camera_relative_frame()
         self._last_forward = frame.forward.copy()
         return frame
 
