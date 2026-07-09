@@ -325,7 +325,8 @@ def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConf
         mode=arm_mode,
         serial_port=arm_port,
         terminal_config_path=arm_config_path,
-        max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
+        max_distance_cm=100.0,
+        allow_extended_distance=True,
     )
 
 

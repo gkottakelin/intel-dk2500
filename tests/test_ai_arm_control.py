@@ -281,8 +281,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(config.mode, "hardware")
         self.assertEqual(config.serial_port, "/dev/ttyUSB0")
-        self.assertEqual(config.max_distance_cm, MAX_AGENT_MOVE_COMMAND_CM)
-        self.assertIsNone(config.fixed_pixel_alignment_distance_cm)
+        self.assertEqual(config.max_distance_cm, 100.0)
+        self.assertTrue(config.allow_extended_distance)
 
     def test_manual_pixel_hardware_without_port_delegates_to_terminal_discovery(self):
         args = SimpleNamespace(
