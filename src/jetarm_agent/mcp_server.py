@@ -412,7 +412,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "current visual grasp workflow; use control_jetarm_to_target_pixel so "
             "the controller owns movement decisions. This tool moves one small "
             "image-plane step using explicit block-center and grasp-point pixels. "
-            "Speed is limited to 0.5..1.5 cm/s."
+            "Distance is abs(pixel_error)/13 cm capped by the command limit; speed "
+            "is limited to 0.5..1.5 cm/s."
         ),
         structured_output=False,
     )
@@ -443,7 +444,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
-            "alignment, and descends 2 cm when aligned before requesting a new target."
+            "alignment with 13 px per cm, and descends 2 cm when aligned before "
+            "requesting a new target."
         ),
         structured_output=False,
     )

@@ -148,7 +148,23 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moved["direction"], "right")
         self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
-        self.assertLess(moved["requested_distance_cm"], 2)
+        self.assertEqual(moved["requested_distance_cm"], 2)
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.0)
+
+    async def test_pixel_difference_maps_to_centimeters_at_thirteen_px_per_cm(self):
+        moved = await self.controller.move_by_pixel_error(
+            74,
+            100,
+            100,
+            100,
+            tolerance_px=10,
+        )
+
+        self.assertFalse(moved["aligned"])
+        self.assertEqual(moved["direction"], "left")
+        self.assertEqual(moved["requested_distance_cm"], 2.0)
+        self.assertEqual(moved["pixel_error"], {"dx": -26.0, "dy": 0.0})
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.0)
 
     async def test_controller_owned_target_pixel_workflow(self):
         aligned_hold = await self.controller.control_to_target_pixel(
@@ -187,6 +203,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(moved["requires_new_target_pixel"])
         self.assertEqual(moved["target_pixel"], {"x": 220.0, "y": 100.0})
         self.assertEqual(moved["grasp_point_pixel"], {"x": 100.0, "y": 100.0})
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.0)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
 
         self.assertEqual(descended["controller_decision"], "descend_after_alignment")
