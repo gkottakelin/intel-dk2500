@@ -480,13 +480,7 @@ class JetArmToolController:
         planner_speed_m_s, direction_unit = self._set_cartesian_direction(direction)
         camera_reference_before_move = self._camera_pose()
 
-        # Lock Z height during horizontal alignment so that the grasp point
-        # does not drift vertically while the camera-relative plane is tilted.
         horizontal_directions = {"forward", "backward", "left", "right"}
-        lock_z = direction in horizontal_directions and self._uses_camera_vector_runtime()
-        if lock_z:
-            self.runtime.z_lock = True
-            direction_unit = (direction_unit[0], direction_unit[1], 0.0)
 
         # Scale joystick values to match the requested speed.  The terminal
         # sets them to ±1 (full speed); we multiply by speed / max_speed so
@@ -515,7 +509,6 @@ class JetArmToolController:
                     self.runtime.tick()
                     steps += 1
                     await self.sleep(tick_interval)
-                    self._refresh_hardware_positions()
                     if collect_tcp_samples:
                         sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
                         sample_base_cm = {
@@ -526,7 +519,7 @@ class JetArmToolController:
                         tcp_samples.append(
                             {
                                 "step": steps,
-                                "source": "joint_feedback_fk",
+                                "source": "command_integrated_fk",
                                 "tcp_cm": sample_base_cm,
                                 "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
                             }
@@ -555,14 +548,12 @@ class JetArmToolController:
                         tcp_samples.append(
                             {
                                 "step": steps,
-                                "source": "joint_feedback_fk",
+                                "source": "command_integrated_fk",
                                 "tcp_cm": sample_base_cm,
                                 "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
                             }
                         )
         finally:
-            if lock_z and self._uses_camera_vector_runtime():
-                self.runtime.z_lock = False
             self._stop_cartesian()
 
         if self.config.mode == "hardware":
@@ -590,6 +581,12 @@ class JetArmToolController:
             "requested_distance_cm": distance_cm,
             "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
+            "motion_loop": "camera_vector_continuous_command",
+            "feedback_read_policy": (
+                "before_and_after_motion"
+                if self.config.mode == "hardware"
+                else "dry_run_command_integrated"
+            ),
             "grasp_point_before_cm": grasp_before_cm,
             "grasp_point_after_cm": grasp_after_cm,
             "grasp_point_xyz_before_cm": self._grasp_point_xyz_cm(grasp_before_cm),
