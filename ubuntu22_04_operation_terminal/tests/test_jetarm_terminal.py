@@ -1,3 +1,5 @@
+import math
+import struct
 import sys
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(APP_ROOT))
 
 from jetarm_terminal import (  # noqa: E402
+    BusServoController,
     DryRunServoController,
     ManualServoRuntime,
     TerminalSettings,
@@ -63,6 +66,36 @@ class UbuntuTerminalTest(unittest.TestCase):
         self.assertAlmostEqual(runtime.cartesian_velocity()[1], -0.05)
         runtime.set_vertical_direction(1)
         self.assertAlmostEqual(runtime.cartesian_velocity()[2], 0.05)
+
+    def test_j3_extended_limit_keeps_original_angle_ratio(self):
+        self.assertEqual(self.settings.position_limits("J3"), (0, 1050))
+        self.assertAlmostEqual(self.settings.joints["J3"]["angle_max_deg"], 132.0)
+        runtime, _controller = self.make_runtime()
+
+        self.assertEqual(runtime.model.model_angle_to_position("J3", math.radians(132.0)), 1050)
+        self.assertAlmostEqual(math.degrees(runtime.model.position_to_model_angle("J3", 1050)), 132.0)
+
+    def test_bus_controller_allows_extended_j3_position(self):
+        class FakePort:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def flush(self):
+                return None
+
+        fake = FakePort()
+        controller = BusServoController("/dev/null", 115200, 0.2)
+        controller._port = fake
+
+        controller.move_servo(3, 1050, 1000)
+
+        self.assertEqual(
+            fake.writes,
+            [build_packet(3, 1, struct.pack("<HH", 1050, 1000))],
+        )
 
     def test_cartesian_step_sends_j1_to_j4_commands(self):
         runtime, controller = self.make_runtime()

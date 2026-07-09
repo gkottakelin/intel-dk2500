@@ -4,11 +4,11 @@
 # - User-provided measured servo IDs, ranges, angle ranges, and motion notes.
 
 metadata:
-  version: 0.4
+  version: 0.5
   status: measured_partial
   default_com_port: COM15
   baudrate: 115200
-  position_unit: servo_raw_0_to_1000
+  position_unit: servo_raw_device_units
   angle_unit: deg
   notes:
     - Joint 6 is the gripper open/close servo, not an arm pose DOF.
@@ -20,6 +20,7 @@ metadata:
     - Gripper geometry is modeled as an RViz-friendly two-arm scissor visual approximation starting at J5; the TCP remains the measured grasp point.
     - Except for J2, observed joint position error is negligible for current debugging.
     - 2026-07-09 sketch updates main vertical chain to 10 + 13 + 13 + 6 + 10 cm; the 4 cm dimension belongs to the camera, not the main arm chain.
+    - J3 max position is intentionally extended to 1050; angle mapping keeps the original 0.24 deg per raw position unit.
 
 coordinate_convention:
   base_link:
@@ -156,14 +157,14 @@ joints:
     position:
       min: 0
       center: 500
-      max: 1000
+      max: 1050
     angle:
       min_deg: -120
       center_deg: 0
-      max_deg: 120
+      max_deg: 132
       position_0_deg: -120
       position_500_deg: 0
-      position_1000_deg: 120
+      position_1050_deg: 132
       deg_per_position_unit: 0.24
     observed_motion:
       position_decrease: moves_up

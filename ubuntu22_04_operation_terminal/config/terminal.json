@@ -42,9 +42,9 @@
     "J3": {
       "servo_id": 3,
       "position_min": 0,
-      "position_max": 1000,
+      "position_max": 1050,
       "angle_min_deg": -120.0,
-      "angle_max_deg": 120.0,
+      "angle_max_deg": 132.0,
       "direction_sign": 1.0
     },
     "J4": {

@@ -29,7 +29,9 @@ class ArmModelTest(unittest.TestCase):
     def test_raw_position_to_model_angle_uses_direction_sign(self):
         self.assertAlmostEqual(math.degrees(self.model.position_to_model_angle_rad("J1", 1000)), -120.0)
         self.assertAlmostEqual(math.degrees(self.model.position_to_model_angle_rad("J2", 875)), 90.0)
+        self.assertAlmostEqual(math.degrees(self.model.position_to_model_angle_rad("J3", 1050)), 132.0)
         self.assertEqual(self.model.model_angle_rad_to_servo_position("J1", math.radians(-120.0)), 1000)
+        self.assertEqual(self.model.model_angle_rad_to_servo_position("J3", math.radians(132.0)), 1050)
 
     def test_j1_raw_increase_is_clockwise_in_model(self):
         left = self.model.forward_kinematics_from_positions({"J1": 0, "J2": 875})

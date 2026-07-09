@@ -147,8 +147,8 @@ class BusServoController:
         self.port.flush()
 
     def move_servo(self, servo_id: int, target_position: int, run_time_ms: int) -> None:
-        if not 0 <= target_position <= 1000:
-            raise ValueError("target_position must be in 0..1000")
+        if not 0 <= target_position <= 1050:
+            raise ValueError("target_position must be in 0..1050")
         if not 0 <= run_time_ms <= 30000:
             raise ValueError("run_time_ms must be in 0..30000")
         params = struct.pack("<HH", target_position, run_time_ms)

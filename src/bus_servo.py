@@ -27,7 +27,7 @@ MIN_SERVO_ID = 0
 MAX_SERVO_ID = 253
 BROADCAST_ID = 254
 MIN_POSITION = 0
-MAX_POSITION = 1000
+MAX_POSITION = 1050
 MIN_RUN_TIME_MS = 0
 MAX_RUN_TIME_MS = 30000
 MIN_DUTY_SPEED = -1000
@@ -272,7 +272,7 @@ class BusServoController:
 
         Args:
             servo_id: Servo ID, 0..253. Use 254 only for broadcast writes.
-            target_position: 0..1000, corresponding to 0..240 degrees.
+            target_position: 0..1050 raw position units.
             run_time_ms: Move duration, 0..30000 ms.
         """
 

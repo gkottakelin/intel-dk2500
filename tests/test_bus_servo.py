@@ -74,6 +74,17 @@ class BusServoProtocolTest(unittest.TestCase):
 
         self.assertEqual(fake.writes, [bytes.fromhex("55 55 01 07 01 F4 01 E8 03 16")])
 
+    def test_move_servo_allows_extended_j3_position(self):
+        fake = FakeSerial()
+        controller = BusServoController("COM3", serial_factory=lambda *_: fake)
+
+        controller.move_servo(3, 1050, 1000)
+
+        self.assertEqual(
+            fake.writes,
+            [build_packet(3, SERVO_MOVE_TIME_WRITE, struct.pack("<HH", 1050, 1000))],
+        )
+
     def test_set_motor_speed_writes_expected_frame(self):
         fake = FakeSerial()
         controller = BusServoController("COM3", serial_factory=lambda *_: fake)
