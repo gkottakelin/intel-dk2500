@@ -10,7 +10,9 @@ sys.path.insert(0, str(APP_ROOT))
 
 from camera_vector_terminal import (  # noqa: E402
     CameraLineConfig,
+    CameraRelativeFrame,
     CameraRelativeManualServoRuntime,
+    _with_forward_continuity,
     build_camera_relative_frame,
 )
 from jetarm_terminal import DryRunServoController, TerminalSettings  # noqa: E402
@@ -75,6 +77,38 @@ class CameraVectorTerminalTest(unittest.TestCase):
 
         np.testing.assert_allclose(still_held_velocity, held_velocity)
         self.assertFalse(np.allclose(released_frame.up, held_velocity / np.linalg.norm(held_velocity)))
+
+    def test_forward_continuity_flips_reversed_plane(self):
+        frame = CameraRelativeFrame(
+            up=np.array((0.0, 0.0, 1.0), dtype=float),
+            down=np.array((0.0, 0.0, -1.0), dtype=float),
+            forward=np.array((-1.0, 0.0, 0.0), dtype=float),
+            backward=np.array((1.0, 0.0, 0.0), dtype=float),
+            left=np.array((0.0, 1.0, 0.0), dtype=float),
+            right=np.array((0.0, -1.0, 0.0), dtype=float),
+        )
+
+        fixed = _with_forward_continuity(
+            frame,
+            np.array((1.0, 0.0, 0.0), dtype=float),
+        )
+
+        np.testing.assert_allclose(fixed.up, frame.up)
+        np.testing.assert_allclose(fixed.forward, np.array((1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(fixed.backward, np.array((-1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(fixed.left, np.array((0.0, -1.0, 0.0)))
+        np.testing.assert_allclose(fixed.right, np.array((0.0, 1.0, 0.0)))
+
+    def test_motion_lock_uses_continuous_forward_direction(self):
+        runtime, _controller = self.make_runtime()
+        raw_frame = runtime.camera_relative_frame()
+        runtime._last_forward = -raw_frame.forward.copy()
+
+        runtime.set_joystick(0, -1)
+        active_frame = runtime.active_camera_relative_frame()
+
+        self.assertGreater(float(np.dot(active_frame.forward, -raw_frame.forward)), 0.99)
+        self.assertLess(float(np.dot(active_frame.forward, raw_frame.forward)), -0.99)
 
     def test_pitch_hold_limits_camera_line_rotation(self):
         runtime, _controller = self.make_runtime()

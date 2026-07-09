@@ -180,6 +180,30 @@ def build_camera_relative_frame(
     )
 
 
+def _with_forward_continuity(
+    frame: CameraRelativeFrame,
+    previous_forward: np.ndarray | None,
+) -> CameraRelativeFrame:
+    if previous_forward is None:
+        return frame
+
+    previous_in_plane = _project_to_plane(previous_forward, frame.up)
+    if float(np.linalg.norm(previous_in_plane)) < EPSILON:
+        return frame
+
+    if float(np.dot(frame.forward, _unit(previous_in_plane))) >= 0.0:
+        return frame
+
+    return CameraRelativeFrame(
+        up=frame.up,
+        down=frame.down,
+        forward=-frame.forward,
+        backward=-frame.backward,
+        left=-frame.left,
+        right=-frame.right,
+    )
+
+
 def settings_kinematics(settings: TerminalSettings) -> Any:
     # Import lazily through jetarm_terminal to keep tests focused and avoid
     # duplicating the standalone terminal's kinematic implementation.
@@ -207,6 +231,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         self.camera_config = camera_config or CameraLineConfig()
         self._locked_frame: CameraRelativeFrame | None = None
         self._locked_pitch_rad: float | None = None
+        self._last_forward: np.ndarray | None = None
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_relative_frame(
@@ -215,8 +240,16 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             self.camera_config,
         )
 
+    def continuous_camera_relative_frame(self) -> CameraRelativeFrame:
+        frame = _with_forward_continuity(
+            self.camera_relative_frame(),
+            self._last_forward,
+        )
+        self._last_forward = frame.forward.copy()
+        return frame
+
     def active_camera_relative_frame(self) -> CameraRelativeFrame:
-        return self._locked_frame or self.camera_relative_frame()
+        return self._locked_frame or self.continuous_camera_relative_frame()
 
     def set_vertical_direction(self, direction: float) -> None:
         super().set_vertical_direction(direction)
@@ -232,7 +265,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
 
     def go_home(self) -> None:
         super().go_home()
-        self._clear_motion_lock()
+        self._clear_motion_lock(clear_forward=True)
 
     def cartesian_velocity(self) -> np.ndarray:
         frame = self.active_camera_relative_frame()
@@ -256,12 +289,14 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         if not self.camera_config.frame_lock_on_hold:
             return
         if self._locked_frame is None:
-            self._locked_frame = self.camera_relative_frame()
+            self._locked_frame = self.continuous_camera_relative_frame()
             self._locked_pitch_rad = self._tool_pitch_rad(self.positions)
 
-    def _clear_motion_lock(self) -> None:
+    def _clear_motion_lock(self, *, clear_forward: bool = False) -> None:
         self._locked_frame = None
         self._locked_pitch_rad = None
+        if clear_forward:
+            self._last_forward = None
 
     def _tool_pitch_rad(self, positions: dict[str, int]) -> float:
         return sum(
