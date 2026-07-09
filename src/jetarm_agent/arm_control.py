@@ -7,6 +7,7 @@ import importlib
 import math
 import re
 import sys
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -470,7 +471,8 @@ class JetArmToolController:
         *,
         collect_tcp_samples: bool = False,
     ) -> dict[str, Any]:
-        """Execute one physical Cartesian segment no longer than max_segment_cm."""
+        """Execute one Cartesian segment by driving the runtime's joystick and
+        tick loop, exactly as the camera_vector GUI terminal does."""
 
         self._refresh_hardware_positions()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
@@ -486,41 +488,78 @@ class JetArmToolController:
             self.runtime.z_lock = True
             direction_unit = (direction_unit[0], direction_unit[1], 0.0)
 
-        planner_time_s = (distance_cm / 100.0) / planner_speed_m_s
-        remaining_s = planner_time_s
+        # Scale joystick values to match the requested speed.  The terminal
+        # sets them to ±1 (full speed); we multiply by speed / max_speed so
+        # that cartesian_velocity() returns the requested speed exactly.
+        speed_m_s = speed_cm_s / 100.0
+        speed_ratio = speed_m_s / planner_speed_m_s
+        if direction in horizontal_directions:
+            self.runtime.joystick_x *= speed_ratio
+            self.runtime.joystick_y *= speed_ratio
+        else:
+            self.runtime.vertical_direction *= speed_ratio
+
+        duration_s = distance_cm / speed_cm_s
+        tick_interval = self.settings.tick_s
+
         steps = 0
         tcp_samples: list[dict[str, Any]] = []
         try:
-            while remaining_s > 1e-9:
-                planner_dt = min(self.settings.tick_s, remaining_s)
-                execution_dt = planner_dt * planner_speed_m_s / requested_speed_m_s
-                if not self.runtime.step_cartesian(
-                    planner_dt, run_time_s=execution_dt
-                ):
-                    raise ArmControlError(
-                        f"向{direction}运动在第{steps + 1}步无法继续，"
-                        "可能已到关节限位或当前姿态不可达"
-                    )
-                steps += 1
-                remaining_s -= planner_dt
-                if self.config.mode == "hardware":
-                    await self.sleep(execution_dt)
+            if self.config.mode == "hardware":
+                # Real-clock tick() loop, matching the GUI terminal.
+                self.runtime.last_step_at = None
+                self.runtime.tick()  # first tick: initialise timestamp only
+
+                deadline = time.monotonic() + duration_s
+                while time.monotonic() < deadline:
+                    self.runtime.tick()
+                    steps += 1
+                    await self.sleep(tick_interval)
                     self._refresh_hardware_positions()
-                if collect_tcp_samples:
-                    sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
-                    sample_base_cm = {
-                        "forward_x": round(float(sample_tcp[0]), 3),
-                        "left_y": round(float(sample_tcp[1]), 3),
-                        "up_z": round(float(sample_tcp[2]), 3),
-                    }
-                    tcp_samples.append(
-                        {
-                            "step": steps,
-                            "source": "joint_feedback_fk",
-                            "tcp_cm": sample_base_cm,
-                            "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
+                    if collect_tcp_samples:
+                        sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
+                        sample_base_cm = {
+                            "forward_x": round(float(sample_tcp[0]), 3),
+                            "left_y": round(float(sample_tcp[1]), 3),
+                            "up_z": round(float(sample_tcp[2]), 3),
                         }
-                    )
+                        tcp_samples.append(
+                            {
+                                "step": steps,
+                                "source": "joint_feedback_fk",
+                                "tcp_cm": sample_base_cm,
+                                "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
+                            }
+                        )
+            else:
+                # Dry-run: fixed-dt stepping with run_time_s for backward
+                # compatibility (run_time_ms varies with speed).
+                remaining_s = duration_s
+                while remaining_s > 1e-9:
+                    dt = min(tick_interval, remaining_s)
+                    execution_dt = dt * planner_speed_m_s / requested_speed_m_s
+                    if not self.runtime.step_cartesian(
+                        dt, run_time_s=execution_dt
+                    ):
+                        break
+                    steps += 1
+                    remaining_s -= dt
+                    await self.sleep(0)
+                    if collect_tcp_samples:
+                        sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
+                        sample_base_cm = {
+                            "forward_x": round(float(sample_tcp[0]), 3),
+                            "left_y": round(float(sample_tcp[1]), 3),
+                            "up_z": round(float(sample_tcp[2]), 3),
+                        }
+                        tcp_samples.append(
+                            {
+                                "step": steps,
+                                "source": "joint_feedback_fk",
+                                "tcp_cm": sample_base_cm,
+                                "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
+                            }
+                        )
         finally:
             if lock_z and self._uses_camera_vector_runtime():
                 self.runtime.z_lock = False
