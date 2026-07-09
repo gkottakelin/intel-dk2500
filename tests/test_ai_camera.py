@@ -155,6 +155,14 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.structuredContent["arm_pose"]["status"], "unavailable"
         )
+        self.assertEqual(
+            response.structuredContent["camera"]["grasp_point_pixel"],
+            {"x": 320.0, "y": 240.0, "source": "image_center_default"},
+        )
+        self.assertEqual(
+            service._last_grasp_point_pixel,
+            {"x": 320.0, "y": 240.0, "source": "image_center_default"},
+        )
         serialized = response.model_dump_json(by_alias=True)
         self.assertIn('"type":"image"', serialized)
         self.assertNotIn("Unable to serialize", serialized)

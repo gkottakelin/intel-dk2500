@@ -131,6 +131,25 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             step_duration_s=0.4,
             speed_saturation_px=120,
         )
+        with self.assertRaisesRegex(RuntimeError, "get_rgb_camera_frame"):
+            await self.service.control_to_target_pixel(100, 100)
+        self.service._last_grasp_point_pixel = {
+            "x": 100.0,
+            "y": 100.0,
+            "source": "test_frame",
+        }
+        target_aligned = await self.service.control_to_target_pixel(
+            100,
+            100,
+            descend_when_aligned=False,
+        )
+        target_moved = await self.service.control_to_target_pixel(
+            220,
+            100,
+            descend_when_aligned=False,
+            step_duration_s=0.4,
+            speed_saturation_px=120,
+        )
 
         self.assertEqual(release["status"], "ok")
         self.assertEqual(release["mcp"], "set_jetarm_gripper_position")
@@ -141,6 +160,12 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moved["direction"], "right")
         self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
+        self.assertEqual(target_aligned["mcp"], "control_jetarm_to_target_pixel")
+        self.assertEqual(target_aligned["agent_role"], "target_pixel_only")
+        self.assertEqual(target_aligned["controller_decision"], "aligned_hold")
+        self.assertEqual(target_aligned["grasp_point_pixel_source"], "test_frame")
+        self.assertEqual(target_moved["controller_decision"], "horizontal_align")
+        self.assertEqual(target_moved["direction"], "right")
 
     async def test_visual_closed_loop_limit_is_two_hundred_rounds(self):
         settings = AgentSettings.from_sources(
@@ -159,11 +184,13 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         instructions = self.service.initial_instructions()
         self.assertTrue(DEFAULT_WORKFLOW_PATH.is_file())
         self.assertIn("get_rgb_camera_frame", instructions)
-        self.assertIn("move_jetarm_by_pixel_error", instructions)
+        self.assertIn("control_jetarm_to_target_pixel", instructions)
+        self.assertIn("Agent 只负责解析用户命令", instructions)
+        self.assertIn("camera.grasp_point_pixel", instructions)
         self.assertIn("set_jetarm_gripper_position(position=370)", instructions)
-        self.assertIn("每累计下降 `3 cm`", instructions)
-        self.assertIn("高度第一次 `<=2 cm`", instructions)
-        self.assertIn("status=ok", instructions)
+        self.assertIn("每下降 `2 cm`", instructions)
+        self.assertIn("高度 `>15 cm`", instructions)
+        self.assertIn("status=error", instructions)
 
     async def test_model_mcp_controller_model_roundtrip(self):
         service = self.service

@@ -33,6 +33,8 @@ MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
 DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
 DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX = 120.0
+DEFAULT_DESCENT_RECALIBRATION_CM = 2.0
+DESCENT_SPEED_CM_S = 2.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -416,8 +418,31 @@ class JetArmToolController:
             MAX_PIXEL_ALIGNMENT_SPEED_CM_S - MIN_PIXEL_ALIGNMENT_SPEED_CM_S
         )
 
+    @staticmethod
+    def _pixel_tolerance_for_height(height_cm: float) -> float:
+        if height_cm > 15.0:
+            return 18.0
+        if height_cm > 10.0:
+            return 15.0
+        if height_cm > 5.0:
+            return 10.0
+        return 8.0
+
+    def _current_tcp_cm(self) -> dict[str, float]:
+        tcp_cm = self.runtime.model.tcp(self.runtime.positions) * 100.0
+        return {
+            "forward_x": round(float(tcp_cm[0]), 3),
+            "left_y": round(float(tcp_cm[1]), 3),
+            "up_z": round(float(tcp_cm[2]), 3),
+        }
+
     async def _move_tcp_segment(
-        self, direction: str, distance_cm: float, speed_cm_s: float
+        self,
+        direction: str,
+        distance_cm: float,
+        speed_cm_s: float,
+        *,
+        collect_tcp_samples: bool = False,
     ) -> dict[str, Any]:
         """Execute one physical Cartesian segment no longer than max_segment_cm."""
 
@@ -430,6 +455,7 @@ class JetArmToolController:
         planner_time_s = (distance_cm / 100.0) / planner_speed_m_s
         remaining_s = planner_time_s
         steps = 0
+        tcp_samples: list[dict[str, Any]] = []
         try:
             while remaining_s > 1e-9:
                 planner_dt = min(self.settings.tick_s, remaining_s)
@@ -445,6 +471,20 @@ class JetArmToolController:
                 remaining_s -= planner_dt
                 if self.config.mode == "hardware":
                     await self.sleep(execution_dt)
+                    self._refresh_hardware_positions()
+                if collect_tcp_samples:
+                    sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
+                    tcp_samples.append(
+                        {
+                            "step": steps,
+                            "source": "joint_feedback_fk",
+                            "tcp_cm": {
+                                "forward_x": round(float(sample_tcp[0]), 3),
+                                "left_y": round(float(sample_tcp[1]), 3),
+                                "up_z": round(float(sample_tcp[2]), 3),
+                            },
+                        }
+                    )
         finally:
             self._stop_cartesian()
 
@@ -480,6 +520,7 @@ class JetArmToolController:
             "camera_pose_before_move": camera_reference_before_move,
             "steps": steps,
             "joint_positions": dict(self.runtime.positions),
+            "tcp_samples_cm": tcp_samples,
         }
 
     async def move_tcp(
@@ -596,6 +637,107 @@ class JetArmToolController:
             "step_duration_s": duration,
             "command_limit_cm_exclusive": self.config.max_distance_cm,
             "motion_command_count": 1,
+        }
+
+    async def control_to_target_pixel(
+        self,
+        target_x: object,
+        target_y: object,
+        grasp_point_x: object,
+        grasp_point_y: object,
+        *,
+        descend_when_aligned: object = True,
+        descent_step_cm: object = DEFAULT_DESCENT_RECALIBRATION_CM,
+        step_duration_s: object = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: object = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> dict[str, Any]:
+        """Controller-owned visual servo step from target pixel only.
+
+        The Agent supplies the target pixel.  The controller reads joint
+        feedback/FK, chooses tolerance from grasp-point height, and decides
+        whether to move in the image plane or descend for the next recalibration.
+        """
+
+        self._refresh_hardware_positions()
+        tcp_before = self._current_tcp_cm()
+        height_cm = tcp_before["up_z"]
+        tolerance = self._pixel_tolerance_for_height(height_cm)
+        target_px = self._validate_pixel_number(target_x, "target_x")
+        target_py = self._validate_pixel_number(target_y, "target_y")
+        grasp_px = self._validate_pixel_number(grasp_point_x, "grasp_point_x")
+        grasp_py = self._validate_pixel_number(grasp_point_y, "grasp_point_y")
+        dx = target_px - grasp_px
+        dy = target_py - grasp_py
+        aligned = abs(dx) <= tolerance and abs(dy) <= tolerance
+
+        if not aligned:
+            result = await self.move_by_pixel_error(
+                target_px,
+                target_py,
+                grasp_px,
+                grasp_py,
+                tolerance_px=tolerance,
+                step_duration_s=step_duration_s,
+                speed_saturation_px=speed_saturation_px,
+            )
+            return {
+                **result,
+                "action": "controller_pixel_align",
+                "agent_role": "target_pixel_only",
+                "controller_decision": "horizontal_align",
+                "target_pixel": {"x": target_px, "y": target_py},
+                "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                "height_cm": height_cm,
+                "height_source": "joint_feedback_fk",
+                "dynamic_tolerance_px": tolerance,
+                "requires_new_target_pixel": True,
+            }
+
+        should_descend = bool(descend_when_aligned)
+        if not should_descend:
+            return {
+                "status": "ok",
+                "mode": self.config.mode,
+                "action": "controller_pixel_align",
+                "agent_role": "target_pixel_only",
+                "controller_decision": "aligned_hold",
+                "aligned": True,
+                "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+                "target_pixel": {"x": target_px, "y": target_py},
+                "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                "height_cm": height_cm,
+                "height_source": "joint_feedback_fk",
+                "dynamic_tolerance_px": tolerance,
+                "motion_command_count": 0,
+                "requires_new_target_pixel": False,
+            }
+
+        descent = self._validate_positive_number(
+            descent_step_cm, "descent_step_cm", self.config.max_distance_cm
+        )
+        result = await self._move_tcp_segment(
+            "down",
+            descent,
+            DESCENT_SPEED_CM_S,
+            collect_tcp_samples=True,
+        )
+        self._refresh_hardware_positions()
+        tcp_after = self._current_tcp_cm()
+        return {
+            **result,
+            "action": "controller_pixel_align_and_descend",
+            "agent_role": "target_pixel_only",
+            "controller_decision": "descend_after_alignment",
+            "aligned": True,
+            "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+            "target_pixel": {"x": target_px, "y": target_py},
+            "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+            "height_before_cm": height_cm,
+            "height_after_cm": tcp_after["up_z"],
+            "height_source": "joint_feedback_fk",
+            "dynamic_tolerance_px": tolerance,
+            "descent_recalibration_interval_cm": descent,
+            "requires_new_target_pixel": True,
         }
 
     async def rotate_wrist(
@@ -788,8 +930,13 @@ class JetArmToolController:
                 "pixel_alignment_default_step_duration_s": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
                 "pixel_alignment_speed_saturation_px": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
                 "descent_speed_cm_s": 2.0,
-                "ai_recalibration_interval_cm": 3.0,
-                "low_height_recalibration_threshold_cm": 2.0,
+                "pixel_recalculation_descent_interval_cm": DEFAULT_DESCENT_RECALIBRATION_CM,
+                "height_tolerance_bands_px": [
+                    {"height_cm": ">15", "tolerance_px": 18},
+                    {"height_cm": ">10 and <=15", "tolerance_px": 15},
+                    {"height_cm": ">5 and <=10", "tolerance_px": 10},
+                    {"height_cm": "<=5", "tolerance_px": 8},
+                ],
                 "final_grasp_height_cm": 1.0,
                 "j6_release_position_before_success": DEFAULT_GRIPPER_RELEASE_POSITION,
                 "pixel_to_motion_mapping": {
@@ -860,6 +1007,24 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             arguments.get("grasp_point_y"),
             tolerance_px=arguments.get(
                 "tolerance_px", DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX
+            ),
+            step_duration_s=arguments.get(
+                "step_duration_s", DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S
+            ),
+            speed_saturation_px=arguments.get(
+                "speed_saturation_px", DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX
+            ),
+        )
+
+    async def target_pixel_control(arguments: Mapping[str, Any]) -> object:
+        return await controller.control_to_target_pixel(
+            arguments.get("target_x"),
+            arguments.get("target_y"),
+            arguments.get("grasp_point_x"),
+            arguments.get("grasp_point_y"),
+            descend_when_aligned=arguments.get("descend_when_aligned", True),
+            descent_step_cm=arguments.get(
+                "descent_step_cm", DEFAULT_DESCENT_RECALIBRATION_CM
             ),
             step_duration_s=arguments.get(
                 "step_duration_s", DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S
@@ -1005,11 +1170,12 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
             ToolDefinition(
                 name="move_jetarm_by_pixel_error",
                 description=(
-                    "Use one fresh RGB observation to move one small image-plane step "
-                    "from the grasp-point pixel toward the block-center pixel. If both "
-                    "pixel errors are within tolerance_px, no motion is executed and "
-                    "aligned=true is returned. Speed is computed only in the 0.5..1.5 "
-                    "cm/s range."
+                    "Low-level compatibility pixel-error step. Do not use this for the "
+                    "current visual grasp workflow; use control_jetarm_to_target_pixel "
+                    "so the controller owns movement decisions. This tool moves one "
+                    "small image-plane step from the grasp-point pixel toward the "
+                    "block-center pixel and computes speed only in the 0.5..1.5 cm/s "
+                    "range."
                 ),
                 parameters={
                     "type": "object",
@@ -1044,6 +1210,51 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "additionalProperties": False,
                 },
                 handler=pixel_align,
+            ),
+            ToolDefinition(
+                name="control_jetarm_to_target_pixel",
+                description=(
+                    "Controller-owned target-pixel workflow. The Agent only parses the "
+                    "command, finds the target point in the latest image, and supplies "
+                    "target_x/target_y. The controller reads FK height from joint "
+                    "feedback, chooses tolerance by height, decides front/back/left/right "
+                    "alignment, and descends 2 cm when aligned."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "target_x": {"type": "number"},
+                        "target_y": {"type": "number"},
+                        "grasp_point_x": {"type": "number"},
+                        "grasp_point_y": {"type": "number"},
+                        "descend_when_aligned": {"type": "boolean", "default": True},
+                        "descent_step_cm": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": controller.config.max_distance_cm,
+                            "default": DEFAULT_DESCENT_RECALIBRATION_CM,
+                        },
+                        "step_duration_s": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": controller.config.max_distance_cm,
+                            "default": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+                        },
+                        "speed_saturation_px": {
+                            "type": "number",
+                            "exclusiveMinimum": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+                            "default": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+                        },
+                    },
+                    "required": [
+                        "target_x",
+                        "target_y",
+                        "grasp_point_x",
+                        "grasp_point_y",
+                    ],
+                    "additionalProperties": False,
+                },
+                handler=target_pixel_control,
             ),
             ToolDefinition(
                 name="move_jetarm_home",
@@ -1225,14 +1436,15 @@ ARM_TOOL_SYSTEM_PROMPT = """
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
 2. “上/下/前/后/左/右”全部使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；前后左右=垂直于摄像头-抓取点连线的平面方向。距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
-4. 每次移动前必须调用get_rgb_camera_frame；该工具会在同一个结果中返回最新RGB图像、抓取点基座坐标和相机视线相对竖直方向的夹角。只有图像和对应姿态都已传给Agent，才允许Agent决定本次动作。
-5. Agent每次只根据当前最新图像下发一条move_jetarm命令，距离必须严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
-6. 本条移动返回status=ok后，必须重新调用get_rgb_camera_frame，把动作后的新图像传给Agent，再决定是否及如何移动下一条。
-7. 控制器不会替Agent切分长距离。长距离目标必须通过“取图→单步移动→重新取图”的视觉闭环逐步完成。
-8. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
-9. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
-10. 当前只使用单路RGB相机，不得请求或声称使用深度流。
-11. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
-12. 每张RGB图像只授权紧随其后的一条移动命令；机械臂位置改变后旧图像立即失效，禁止基于旧图连续移动。
-13. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
+4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
+5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。
+6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为18px，>10且<=15cm为15px，>5且<=10cm为10px，<=5cm为8px。
+7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；已重合时，控制程序以2cm/s向下运动，并在下降过程中持续基于关节角度/FK解算抓取点位置。
+8. 每下降2cm或任一机械臂移动返回status=ok后，旧图像立即失效；必须重新调用get_rgb_camera_frame，再由Agent重新寻找目标点像素。
+9. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
+10. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
+11. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
+12. 当前只使用单路RGB相机，不得请求或声称使用深度流。
+13. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
+14. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
 """.strip()

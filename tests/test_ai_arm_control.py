@@ -143,6 +143,54 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
         self.assertLess(moved["requested_distance_cm"], 2)
 
+    async def test_controller_owned_target_pixel_workflow(self):
+        aligned_hold = await self.controller.control_to_target_pixel(
+            100,
+            100,
+            100,
+            100,
+            descend_when_aligned=False,
+        )
+        moved = await self.controller.control_to_target_pixel(
+            220,
+            100,
+            100,
+            100,
+            descend_when_aligned=False,
+            step_duration_s=0.4,
+            speed_saturation_px=120,
+        )
+        descended = await self.controller.control_to_target_pixel(
+            100,
+            100,
+            100,
+            100,
+        )
+
+        self.assertEqual(aligned_hold["agent_role"], "target_pixel_only")
+        self.assertEqual(aligned_hold["controller_decision"], "aligned_hold")
+        self.assertTrue(aligned_hold["aligned"])
+        self.assertFalse(aligned_hold["requires_new_target_pixel"])
+        self.assertEqual(aligned_hold["height_source"], "joint_feedback_fk")
+        self.assertIn(aligned_hold["dynamic_tolerance_px"], {18.0, 15.0, 10.0, 8.0})
+
+        self.assertEqual(moved["controller_decision"], "horizontal_align")
+        self.assertFalse(moved["aligned"])
+        self.assertEqual(moved["direction"], "right")
+        self.assertTrue(moved["requires_new_target_pixel"])
+        self.assertEqual(moved["target_pixel"], {"x": 220.0, "y": 100.0})
+        self.assertEqual(moved["grasp_point_pixel"], {"x": 100.0, "y": 100.0})
+        self.assertLessEqual(moved["speed_cm_s"], 1.5)
+
+        self.assertEqual(descended["controller_decision"], "descend_after_alignment")
+        self.assertTrue(descended["aligned"])
+        self.assertEqual(descended["direction"], "down")
+        self.assertEqual(descended["speed_cm_s"], 2.0)
+        self.assertEqual(descended["descent_recalibration_interval_cm"], 2.0)
+        self.assertTrue(descended["requires_new_target_pixel"])
+        self.assertTrue(descended["tcp_samples_cm"])
+        self.assertEqual(descended["tcp_samples_cm"][0]["source"], "joint_feedback_fk")
+
     async def test_home_stop_and_state_cover_original_terminal_actions(self):
         home = await self.controller.go_home()
         stopped = await self.controller.stop_all()
@@ -180,6 +228,21 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             ],
             370,
         )
+        self.assertEqual(
+            state["arm_parameters"]["vision_guided_grasp"][
+                "pixel_recalculation_descent_interval_cm"
+            ],
+            2.0,
+        )
+        self.assertEqual(
+            [
+                band["tolerance_px"]
+                for band in state["arm_parameters"]["vision_guided_grasp"][
+                    "height_tolerance_bands_px"
+                ]
+            ],
+            [18, 15, 10, 8],
+        )
         home_servo_ids = {
             servo_id
             for servo_id, _target, _run_time in self.controller.controller.move_calls
@@ -211,6 +274,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 "control_jetarm_gripper",
                 "set_jetarm_gripper_position",
                 "move_jetarm_by_pixel_error",
+                "control_jetarm_to_target_pixel",
                 "move_jetarm_home",
                 "stop_jetarm",
                 "get_jetarm_state",
@@ -235,6 +299,13 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             pixel_schema["function"]["parameters"]["properties"]["tolerance_px"]["default"],
             10,
+        )
+        target_schema = next(
+            schema for schema in schemas if schema["function"]["name"] == "control_jetarm_to_target_pixel"
+        )
+        self.assertEqual(
+            target_schema["function"]["parameters"]["properties"]["descent_step_cm"]["default"],
+            2.0,
         )
 
     async def test_arm_command_detection_does_not_require_model_guessing(self):

@@ -196,10 +196,10 @@ def _workflow_text() -> str:
 def _print_workflow_summary() -> None:
     print("MCP执行工作流:")
     print("  1. MCP采集最新RGB图像并传给Agent")
-    print("  2. Agent读取图像，只决定一条严格小于2cm的移动命令")
-    print("  3. MCP执行该条移动命令并返回status")
-    print("  4. status=ok后重新采集RGB图像，再由Agent决定下一条")
-    print("  5. 达到目标后Agent根据图像与实际回执生成总结报告")
+    print("  2. Agent只解析命令并寻找目标点像素，不决定机械臂运动")
+    print("  3. MCP控制程序根据目标点和抓取点像素执行对准或下降")
+    print("  4. 每移动或下降2cm后重新采集RGB图像，再让Agent重新找目标点")
+    print("  5. 达到抓取高度后执行夹取、复位，并让Agent按新图检查结果")
 
 
 async def run(args: argparse.Namespace) -> int:

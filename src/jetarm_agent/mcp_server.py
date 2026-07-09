@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .arm_control import (
+    DEFAULT_DESCENT_RECALIBRATION_CM,
     DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
     DEFAULT_GRIPPER_RELEASE_POSITION,
     DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
@@ -53,6 +54,7 @@ class JetArmMCPService:
         self.workflow_path = Path(workflow_path)
         self.max_distance_cm = max_distance_cm
         self._controller: JetArmToolController | None = None
+        self._last_grasp_point_pixel: dict[str, Any] | None = None
 
     def _terminal_config_path(self) -> Path:
         path = Path(self.devices.arm_terminal_config)
@@ -148,6 +150,14 @@ class JetArmMCPService:
         result["mcp"] = "control_jetarm_gripper"
         return result
 
+    @staticmethod
+    def grasp_point_pixel_for_frame(width: int, height: int) -> dict[str, Any]:
+        return {
+            "x": round(float(width) / 2.0, 3),
+            "y": round(float(height) / 2.0, 3),
+            "source": "image_center_default",
+        }
+
     async def set_gripper_position(
         self,
         position: int = DEFAULT_GRIPPER_RELEASE_POSITION,
@@ -177,6 +187,50 @@ class JetArmMCPService:
             speed_saturation_px=speed_saturation_px,
         )
         result["mcp"] = "move_jetarm_by_pixel_error"
+        return result
+
+    async def control_to_target_pixel(
+        self,
+        target_x: float,
+        target_y: float,
+        grasp_point_x: float | None = None,
+        grasp_point_y: float | None = None,
+        descend_when_aligned: bool = True,
+        descent_step_cm: float = DEFAULT_DESCENT_RECALIBRATION_CM,
+        step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> dict[str, Any]:
+        grasp_pixel = self._last_grasp_point_pixel
+        resolved_grasp_x = (
+            grasp_point_x
+            if grasp_point_x is not None
+            else (grasp_pixel or {}).get("x")
+        )
+        resolved_grasp_y = (
+            grasp_point_y
+            if grasp_point_y is not None
+            else (grasp_pixel or {}).get("y")
+        )
+        if resolved_grasp_x is None or resolved_grasp_y is None:
+            raise RuntimeError(
+                "missing grasp point pixel; call get_rgb_camera_frame first or pass grasp_point_x/grasp_point_y"
+            )
+        result = await self.controller().control_to_target_pixel(
+            target_x,
+            target_y,
+            resolved_grasp_x,
+            resolved_grasp_y,
+            descend_when_aligned=descend_when_aligned,
+            descent_step_cm=descent_step_cm,
+            step_duration_s=step_duration_s,
+            speed_saturation_px=speed_saturation_px,
+        )
+        result["mcp"] = "control_jetarm_to_target_pixel"
+        result["grasp_point_pixel_source"] = (
+            (grasp_pixel or {}).get("source")
+            if grasp_point_x is None or grasp_point_y is None
+            else "tool_arguments"
+        )
         return result
 
     def close(self) -> None:
@@ -238,6 +292,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
                 result["camera"] = {"status": "error", "error": str(exc)}
             return content_result(result)
 
+        grasp_point_pixel = service.grasp_point_pixel_for_frame(frame.width, frame.height)
+        service._last_grasp_point_pixel = grasp_point_pixel
         result["camera"] = {
             "status": "ok",
             "device": service.devices.rgb_camera,
@@ -245,6 +301,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "width": frame.width,
             "height": frame.height,
             "mime_type": frame.mime_type,
+            "grasp_point_pixel": grasp_point_pixel,
         }
         # One MCP result carries both the pixels and the pose used to interpret
         # them.  Movement is blocked when an enabled arm cannot provide pose.
@@ -267,7 +324,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         description=(
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
             "同一结果还返回抓取点基座坐标、关节位置、相机视线与竖直方向夹角及相机视角上方向。"
-            "每次机械臂移动前必须调用，并把图像和姿态一起传给Agent后才能决定本次移动；不启动深度流。"
+            "每次视觉定位和机械臂移动前必须调用；视觉抓取时Agent只返回目标点像素，"
+            "运动由control_jetarm_to_target_pixel决策；不启动深度流。"
         ),
         structured_output=False,
     )
@@ -281,9 +339,11 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         description=(
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
             "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
-            "允许1到5cm/s。前后左右使用基座坐标，上下使用当前相机视角（Home时视角上为基座+Z）。"
+            "允许1到5cm/s。所有方向使用camera-vector控制系：上为抓取点到摄像头，"
+            "下为摄像头到抓取点，前后左右位于垂直于摄像头-抓取点连线的平面。"
             "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
-            "收到status=ok后必须重新取图，再由Agent决定下一条。控制器不会自动切分。"
+            "收到status=ok后必须重新取图；视觉抓取应改用control_jetarm_to_target_pixel，"
+            "由控制程序根据目标点像素决策运动。控制器不会自动切分。"
             " Camera-vector frame is authoritative: up is grasp-point to camera, "
             "down is camera to grasp-point, and forward/backward/left/right are "
             "on the plane perpendicular to that line."
@@ -348,10 +408,11 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
-            "Move one small image-plane alignment step using the pixel difference "
-            "between the AI-detected block center and grasp-point pixel from the "
-            "latest RGB frame. Returns aligned=true and does not move when both "
-            "errors are within tolerance_px. Speed is limited to 0.5..1.5 cm/s."
+            "Low-level compatibility pixel-error step. Do not use this for the "
+            "current visual grasp workflow; use control_jetarm_to_target_pixel so "
+            "the controller owns movement decisions. This tool moves one small "
+            "image-plane step using explicit block-center and grasp-point pixels. "
+            "Speed is limited to 0.5..1.5 cm/s."
         ),
         structured_output=False,
     )
@@ -371,6 +432,39 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
                 grasp_point_x,
                 grasp_point_y,
                 tolerance_px,
+                step_duration_s,
+                speed_saturation_px,
+            )
+        )
+
+    @mcp.tool(
+        description=(
+            "Controller-owned target-pixel workflow. The Agent only returns the "
+            "target pixel from the latest RGB image. The controller uses the "
+            "latest grasp-point pixel, reads joint feedback/FK height, chooses "
+            "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
+            "alignment, and descends 2 cm when aligned before requesting a new target."
+        ),
+        structured_output=False,
+    )
+    async def control_jetarm_to_target_pixel(
+        target_x: float,
+        target_y: float,
+        grasp_point_x: float | None = None,
+        grasp_point_y: float | None = None,
+        descend_when_aligned: bool = True,
+        descent_step_cm: float = DEFAULT_DESCENT_RECALIBRATION_CM,
+        step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> Any:
+        return content_result(
+            await service.control_to_target_pixel(
+                target_x,
+                target_y,
+                grasp_point_x,
+                grasp_point_y,
+                descend_when_aligned,
+                descent_step_cm,
                 step_duration_s,
                 speed_saturation_px,
             )
