@@ -119,6 +119,29 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["motion_command_count"], 1)
         self.assertNotIn("segments", result)
 
+    async def test_mcp_service_exposes_grasp_helpers(self):
+        release = await self.service.set_gripper_position(370)
+        aligned = await self.service.pixel_align(104, 96, 100, 100)
+        moved = await self.service.pixel_align(
+            220,
+            100,
+            100,
+            100,
+            tolerance_px=10,
+            step_duration_s=0.4,
+            speed_saturation_px=120,
+        )
+
+        self.assertEqual(release["status"], "ok")
+        self.assertEqual(release["mcp"], "set_jetarm_gripper_position")
+        self.assertEqual(release["target_position"], 370)
+        self.assertTrue(aligned["aligned"])
+        self.assertEqual(aligned["mcp"], "move_jetarm_by_pixel_error")
+        self.assertFalse(moved["aligned"])
+        self.assertEqual(moved["direction"], "right")
+        self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
+        self.assertLessEqual(moved["speed_cm_s"], 1.5)
+
     async def test_visual_closed_loop_limit_is_two_hundred_rounds(self):
         settings = AgentSettings.from_sources(
             PROJECT_ROOT / "config" / "ai_agent.json", environ={}
@@ -136,8 +159,10 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         instructions = self.service.initial_instructions()
         self.assertTrue(DEFAULT_WORKFLOW_PATH.is_file())
         self.assertIn("get_rgb_camera_frame", instructions)
-        self.assertIn("动作后的图像传给Agent", instructions)
-        self.assertIn("控制程序只执行当前收到的一条命令", instructions)
+        self.assertIn("move_jetarm_by_pixel_error", instructions)
+        self.assertIn("set_jetarm_gripper_position(position=370)", instructions)
+        self.assertIn("每累计下降 `3 cm`", instructions)
+        self.assertIn("高度第一次 `<=2 cm`", instructions)
         self.assertIn("status=ok", instructions)
 
     async def test_model_mcp_controller_model_roundtrip(self):

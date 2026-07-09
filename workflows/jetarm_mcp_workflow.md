@@ -1,65 +1,56 @@
 ---
 name: jetarm-mcp-motion
-description: 将明确的自然语言机械臂指令转换为JetArm MCP调用，并根据真实工具回执总结。
+description: 将自然语言机械臂指令转换为 JetArm MCP 调用，并按真实工具回执总结。
 ---
 
 # JetArm MCP 工作流规范
 
-## 适用范围
+## 通用控制规则
 
-用户明确要求机械臂移动、回到 Home、停止、旋转腕部、控制夹爪，或查看当前相机画面时
-使用。本工作流只读取一路 RGB 相机，不启动或依赖深度流。
+1. 只有用户明确要求移动、抓取、回 Home、停止、旋转腕部、控制夹爪或查看画面时，才调用会改变机械臂状态的工具。
+2. 每次笛卡尔移动前必须调用 `get_rgb_camera_frame`，让 Agent 看到最新 RGB 画面和同一时刻的 `arm_pose`。
+3. 每张 RGB 图像只允许驱动紧随其后的一条移动命令。机械臂移动后旧图立即失效。
+4. `move_jetarm` 的单条移动距离必须严格小于 `2 cm`。控制程序只执行当前收到的一条命令，不替 Agent 自动拆分长距离。
+5. 普通移动未指定速度时使用 `1.5 cm/s`；用户指定速度时必须在工具允许范围内。
+6. 任一工具返回 `status=error` 后立即停止后续动作；存在运动风险时调用 `stop_jetarm`。
+7. 最终总结必须以 MCP 工具真实返回值为依据，不得虚构视觉结果、位置或完成状态。
 
-## 强制执行流程
+## 视觉抓取物块工作流
 
-1. 读取用户原始指令，不补充用户没有要求的动作。
-2. 提取方向、总距离和可选速度。距离缺失时必须询问，禁止猜测。
-3. 调用 `get_rgb_camera_frame` 采集当前RGB图像。一次返回必须同时包含真实JPEG和
-   `arm_pose`：J1-J4位置、抓取点基座坐标、相机视线相对竖直方向夹角及相机视角上方向。
-   图像或机械臂姿态缺失时均禁止移动。
-4. 未指定速度时使用 `1.5 cm/s`；用户指定速度必须在 `1–5 cm/s`。
-5. Agent只根据刚收到的最新图像决定当前一步，调用一次 `move_jetarm(command, speed_cm_s)`；
-   当前命令距离必须严格小于 `2 cm`，推荐最大 `1.9 cm`。禁止一次生成并下发后续动作序列。
-6. 工具返回后检查 `status`：
-   - `status=ok`：旧图像立即失效；重新调用 `get_rgb_camera_frame`，将动作后的图像传给Agent，
-     再由Agent判断是否到达目标以及下一步方向和距离。
-   - `status=error`：立即终止剩余计划，不得继续移动或声称完成；存在运动风险时调用
-     `stop_jetarm`。
-7. 控制程序只执行当前收到的一条命令，不负责把长距离命令自动切分。任何距离大于或等于
-   `2 cm` 的单条命令都必须拒绝。
-8. 最终总结必须以 MCP 的实际返回值为依据，不得虚构位置、视觉结果或完成状态。
-9. `get_rgb_camera_frame` 是每次移动前的强制工具，不只用于用户明确要求查看画面时。
-10. 每张图像只允许驱动紧随其后的一条移动命令。机械臂移动后必须重新取图，禁止沿用旧图。
-11. `前/后/左/右` 使用基座坐标系；`上/下` 使用当前相机视角。Home姿态标定为相机视角
-    夹角 `0°`，此时视角上等于基座 `+Z`。控制器根据当前J1-J4反馈完成视角到基座坐标的转换。
-12. Agent需要关节限位、Home位置、连杆尺寸、控制速度或坐标定义时，调用
-    `get_jetarm_state` 并读取 `arm_parameters`，不得猜测。
+当用户要求抓取物块、方块、积木、目标物体或 block/cube/object 时，必须使用以下闭环流程。
 
-## 示例
+1. 调用 `set_jetarm_gripper_position(position=370)`，在抓取成功前让 J6 保持松开状态。
+2. 调用 `get_rgb_camera_frame` 获取最新画面。Agent 必须在画面中分别找出物块中心点像素和抓取点像素。
+3. 将这两个像素传给 `move_jetarm_by_pixel_error`：
+   - `block_center_x/block_center_y` 为物块中心像素。
+   - `grasp_point_x/grasp_point_y` 为抓取点像素。
+   - 对齐容差为 `±10 px`。
+   - 像素误差控制速度范围固定为 `0.5..1.5 cm/s`。
+   - `dx>0` 向右，`dx<0` 向左，`dy>0` 向后，`dy<0` 向前。
+4. 如果 `move_jetarm_by_pixel_error` 返回 `aligned=false`，必须等待工具返回 `status=ok` 后重新取图，再由 Agent 用新图重新找像素并继续对准。
+5. 如果两个像素点重合在 `±10 px` 内，`move_jetarm_by_pixel_error` 返回 `aligned=true`；此时开始下降阶段。
+6. 下降阶段速度固定为 `2 cm/s`。下降时要读取 `get_jetarm_state` 中的抓取点高度 `tcp_cm.up_z`。
+7. 每累计下降 `3 cm`，必须再次调用 `get_rgb_camera_frame` 触发一次 AI 校准，然后回到像素对准步骤。
+8. 当高度第一次 `<=2 cm` 时，必须再调用一次 `get_rgb_camera_frame` 触发 AI 校准，然后回到像素对准步骤。
+9. 完成 `<=2 cm` 的校准后，下降到 `1 cm` 处执行抓取。
+10. 抓取动作使用 `control_jetarm_gripper(action="grip_lock")`。
+11. 抓取完成后调用 `move_jetarm_home` 复位。
+12. 复位后调用 `get_rgb_camera_frame`，由 Agent 检查物块是否被成功抓起。
+13. 如果 AI 判断抓取失败，必须调用 `set_jetarm_gripper_position(position=370)` 重新松开 J6，再从取图和像素对准开始重试。
 
-用户输入：`根据相机画面逐步向下接近目标`
+## 抓取示例
 
 ```text
-MCP调用1：get_rgb_camera_frame()
-MCP返回1：status=ok + RGB图像1 + 对应arm_pose
-Agent读取图像1：决定本次向下1.9cm
-MCP调用2：move_jetarm(command="下1.9", speed_cm_s=1.5)
-MCP返回2：status=ok
-MCP调用3：get_rgb_camera_frame()
-MCP返回3：status=ok + RGB图像2 + 更新后的arm_pose
-Agent读取图像2：重新判断目标位置，只决定下一条小于2cm的动作
+get_rgb_camera_frame()
+Agent 找到物块中心像素和抓取点像素
+set_jetarm_gripper_position(position=370)
+move_jetarm_by_pixel_error(block_center_x=..., block_center_y=..., grasp_point_x=..., grasp_point_y=...)
+若 aligned=false：重新 get_rgb_camera_frame 后继续像素对准
+若 aligned=true：get_jetarm_state() 读取 tcp_cm.up_z
+move_jetarm(command="下1.9", speed_cm_s=2.0)
+每累计下降 3 cm 或首次高度 <=2 cm：get_rgb_camera_frame() 重新 AI 校准
+下降到 1 cm：control_jetarm_gripper(action="grip_lock")
+move_jetarm_home()
+get_rgb_camera_frame()
+Agent 检查抓取是否成功；失败则 set_jetarm_gripper_position(position=370) 后重试
 ```
-
-## 安全约束
-
-- Agent下发的每条移动命令必须严格小于 `2 cm`，不是小于或等于 `2 cm`。
-- 禁止Agent在第一张图像上预先生成完整移动序列；每次只能决定当前一步。
-- 每条命令成功后必须重新取图，Agent看到新图后才能决定下一条。
-- 单次任务最多执行 `200` 轮Agent视觉闭环；达到上限后停止继续移动并报告任务尚未完成。
-- 单次用户请求的总距离不得超过 `10 cm`。
-- 不允许小于 `1 cm/s` 或大于 `5 cm/s`。
-- 方向、距离不明确时不执行。
-- 用户要求停止时立即调用 `stop_jetarm`，不得等待当前对话规划结束。
-- RGB 相机未实际取帧时，禁止声称已经看见、识别或定位物体。
-- RGB取帧失败不得影响已经完成的机械臂动作状态；必须分别报告动作结果和相机错误。
-- 图像只允许来自Orbbec SDK按序列号/UID选中的单台Gemini设备，禁止启动深度流。

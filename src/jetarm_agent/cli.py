@@ -18,6 +18,7 @@ from .arm_control import (
     choose_arm_serial_port,
     looks_like_arm_command,
     looks_like_camera_command,
+    looks_like_grasp_workflow_command,
     required_mcp_tool_for_command,
 )
 from .config import AgentSettings, ConfigurationError, DEFAULT_CONFIG_PATH
@@ -138,6 +139,7 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     is_arm_command = looks_like_arm_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
     movement_request = required_tool == "move_jetarm"
+    grasp_workflow_request = looks_like_grasp_workflow_command(text)
     if is_arm_command:
         print(f"[工作流 1/5] 接收自然语言: {text}")
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
@@ -147,9 +149,13 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         required_tool_name=required_tool,
         required_tool_retries=1,
         preselected_tool_name=(
-            "get_rgb_camera_frame" if camera_request or movement_request else None
+            "get_rgb_camera_frame"
+            if camera_request or movement_request or grasp_workflow_request
+            else None
         ),
-        preselected_tool_arguments={} if camera_request or movement_request else None,
+        preselected_tool_arguments=(
+            {} if camera_request or movement_request or grasp_workflow_request else None
+        ),
         first_tool_choice="none" if camera_request else "auto",
         allow_additional_tools=not camera_request,
     )

@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .arm_control import (
+    DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+    DEFAULT_GRIPPER_RELEASE_POSITION,
+    DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+    DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
     MAX_AGENT_MOVE_COMMAND_CM,
     ArmControlConfig,
     JetArmToolController,
@@ -141,6 +146,37 @@ class JetArmMCPService:
     async def gripper(self, action: str, duration_s: float = 0.5) -> dict[str, Any]:
         result = await self.controller().control_gripper(action, duration_s)
         result["mcp"] = "control_jetarm_gripper"
+        return result
+
+    async def set_gripper_position(
+        self,
+        position: int = DEFAULT_GRIPPER_RELEASE_POSITION,
+        run_time_ms: int = DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+    ) -> dict[str, Any]:
+        result = await self.controller().set_gripper_position(position, run_time_ms)
+        result["mcp"] = "set_jetarm_gripper_position"
+        return result
+
+    async def pixel_align(
+        self,
+        block_center_x: float,
+        block_center_y: float,
+        grasp_point_x: float,
+        grasp_point_y: float,
+        tolerance_px: float = DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+        step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> dict[str, Any]:
+        result = await self.controller().move_by_pixel_error(
+            block_center_x,
+            block_center_y,
+            grasp_point_x,
+            grasp_point_y,
+            tolerance_px=tolerance_px,
+            step_duration_s=step_duration_s,
+            speed_saturation_px=speed_saturation_px,
+        )
+        result["mcp"] = "move_jetarm_by_pixel_error"
         return result
 
     def close(self) -> None:
@@ -290,6 +326,52 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         action: str, duration_s: float = 0.5
     ) -> Any:
         return await with_rgb_image(await service.gripper(action, duration_s))
+
+    @mcp.tool(
+        description=(
+            "Move J6 to a raw position. The grasp workflow uses position 370 to "
+            "keep the gripper released before success, and after failed visual "
+            "success checks before retrying."
+        ),
+        structured_output=False,
+    )
+    async def set_jetarm_gripper_position(
+        position: int = DEFAULT_GRIPPER_RELEASE_POSITION,
+        run_time_ms: int = DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+    ) -> Any:
+        return await with_rgb_image(
+            await service.set_gripper_position(position, run_time_ms)
+        )
+
+    @mcp.tool(
+        description=(
+            "Move one small image-plane alignment step using the pixel difference "
+            "between the AI-detected block center and grasp-point pixel from the "
+            "latest RGB frame. Returns aligned=true and does not move when both "
+            "errors are within tolerance_px. Speed is limited to 0.5..1.5 cm/s."
+        ),
+        structured_output=False,
+    )
+    async def move_jetarm_by_pixel_error(
+        block_center_x: float,
+        block_center_y: float,
+        grasp_point_x: float,
+        grasp_point_y: float,
+        tolerance_px: float = DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+        step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> Any:
+        return content_result(
+            await service.pixel_align(
+                block_center_x,
+                block_center_y,
+                grasp_point_x,
+                grasp_point_y,
+                tolerance_px,
+                step_duration_s,
+                speed_saturation_px,
+            )
+        )
 
     return mcp
 

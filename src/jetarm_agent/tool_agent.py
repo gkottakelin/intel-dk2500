@@ -15,7 +15,9 @@ from .tooling import (
     ToolRegistry,
 )
 
-SEQUENTIAL_MOTION_TOOLS = frozenset({"move_jetarm", "move_jetarm_tcp"})
+SEQUENTIAL_MOTION_TOOLS = frozenset(
+    {"move_jetarm", "move_jetarm_tcp", "move_jetarm_by_pixel_error"}
+)
 RGB_CAMERA_TOOL = "get_rgb_camera_frame"
 MAX_VISUAL_CLOSED_LOOP_ROUNDS = 200
 

@@ -14,6 +14,7 @@ try:
         format_compact_arm_command,
         looks_like_arm_command,
         looks_like_camera_command,
+        looks_like_grasp_workflow_command,
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
         format_compact_arm_command,
         looks_like_arm_command,
         looks_like_camera_command,
+        looks_like_grasp_workflow_command,
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
@@ -117,6 +119,30 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[2:4], [(10, -100), (10, 0)])
         self.assertEqual(calls[4:6], [(10, 300), (10, 0)])
 
+    async def test_gripper_release_position_and_pixel_alignment_tool(self):
+        release = await self.controller.set_gripper_position(370)
+        aligned = await self.controller.move_by_pixel_error(104, 96, 100, 100)
+        moved = await self.controller.move_by_pixel_error(
+            220,
+            100,
+            100,
+            100,
+            tolerance_px=10,
+            step_duration_s=0.4,
+            speed_saturation_px=120,
+        )
+
+        self.assertEqual(release["status"], "ok")
+        self.assertEqual(release["target_position"], 370)
+        self.assertEqual(self.controller.controller.move_calls[0], (10, 370, 500))
+        self.assertTrue(aligned["aligned"])
+        self.assertEqual(aligned["motion_command_count"], 0)
+        self.assertFalse(moved["aligned"])
+        self.assertEqual(moved["direction"], "right")
+        self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
+        self.assertLessEqual(moved["speed_cm_s"], 1.5)
+        self.assertLess(moved["requested_distance_cm"], 2)
+
     async def test_home_stop_and_state_cover_original_terminal_actions(self):
         home = await self.controller.go_home()
         stopped = await self.controller.stop_all()
@@ -140,6 +166,12 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             state["arm_parameters"]["joints"]["J2"]["servo_id"], 2
+        )
+        self.assertEqual(
+            state["arm_parameters"]["vision_guided_grasp"][
+                "j6_release_position_before_success"
+            ],
+            370,
         )
         home_servo_ids = {
             servo_id
@@ -170,6 +202,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 "move_jetarm_tcp",
                 "rotate_jetarm_wrist",
                 "control_jetarm_gripper",
+                "set_jetarm_gripper_position",
+                "move_jetarm_by_pixel_error",
                 "move_jetarm_home",
                 "stop_jetarm",
                 "get_jetarm_state",
@@ -188,8 +222,18 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(speed_schema["minimum"], 1)
         self.assertEqual(speed_schema["maximum"], 5)
         self.assertEqual(speed_schema["default"], 1.5)
+        pixel_schema = next(
+            schema for schema in schemas if schema["function"]["name"] == "move_jetarm_by_pixel_error"
+        )
+        self.assertEqual(
+            pixel_schema["function"]["parameters"]["properties"]["tolerance_px"]["default"],
+            10,
+        )
 
     async def test_arm_command_detection_does_not_require_model_guessing(self):
+        self.assertTrue(looks_like_grasp_workflow_command("抓取物块"))
+        self.assertTrue(looks_like_arm_command("抓取物块"))
+        self.assertIsNone(required_mcp_tool_for_command("抓取物块"))
         self.assertTrue(looks_like_arm_command("向前移动5厘米"))
         self.assertTrue(looks_like_arm_command("前5"))
         self.assertTrue(looks_like_arm_command("夹紧夹爪"))

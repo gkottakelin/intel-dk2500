@@ -25,6 +25,13 @@ DEFAULT_TCP_SPEED_CM_S = 1.5
 MIN_TCP_SPEED_CM_S = 1.0
 MAX_TCP_SPEED_CM_S = 5.0
 MAX_AGENT_MOVE_COMMAND_CM = 2.0
+DEFAULT_GRIPPER_RELEASE_POSITION = 370
+DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
+MIN_PIXEL_ALIGNMENT_SPEED_CM_S = 0.5
+MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
+DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
+DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
+DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX = 120.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -302,6 +309,64 @@ class JetArmToolController:
             )
         return speed
 
+    def _validate_position(self, joint_name: str, value: object) -> int:
+        if isinstance(value, bool):
+            raise ArmControlError(f"{joint_name} position must be a number")
+        try:
+            position_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ArmControlError(f"{joint_name} position must be a number") from exc
+        if not math.isfinite(position_float):
+            raise ArmControlError(f"{joint_name} position must be finite")
+        position = int(round(position_float))
+        if abs(position - position_float) > 1e-6:
+            raise ArmControlError(f"{joint_name} position must be an integer")
+        low, high = self.settings.position_limits(joint_name)
+        if not low <= position <= high:
+            raise ArmControlError(
+                f"{joint_name} position must be in {low}..{high}, got {position}"
+            )
+        return position
+
+    def _validate_run_time_ms(self, value: object | None) -> int:
+        raw_value = DEFAULT_GRIPPER_POSITION_RUN_TIME_MS if value is None else value
+        if isinstance(raw_value, bool):
+            raise ArmControlError("run_time_ms must be a number")
+        try:
+            run_time_float = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ArmControlError("run_time_ms must be a number") from exc
+        if not math.isfinite(run_time_float) or run_time_float <= 0:
+            raise ArmControlError("run_time_ms must be greater than 0")
+        run_time_ms = int(round(run_time_float))
+        if run_time_ms > 30000:
+            raise ArmControlError("run_time_ms must be in 1..30000")
+        return run_time_ms
+
+    @staticmethod
+    def _validate_pixel_number(value: object, name: str) -> float:
+        if isinstance(value, bool):
+            raise ArmControlError(f"{name} must be a number")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ArmControlError(f"{name} must be a number") from exc
+        if not math.isfinite(number):
+            raise ArmControlError(f"{name} must be finite")
+        return number
+
+    @staticmethod
+    def _pixel_alignment_speed(
+        axis_error_px: float, tolerance_px: float, saturation_px: float
+    ) -> float:
+        if saturation_px <= tolerance_px:
+            raise ArmControlError("speed_saturation_px must be greater than tolerance_px")
+        over_tolerance = max(0.0, abs(axis_error_px) - tolerance_px)
+        ratio = min(1.0, over_tolerance / (saturation_px - tolerance_px))
+        return MIN_PIXEL_ALIGNMENT_SPEED_CM_S + ratio * (
+            MAX_PIXEL_ALIGNMENT_SPEED_CM_S - MIN_PIXEL_ALIGNMENT_SPEED_CM_S
+        )
+
     async def _move_tcp_segment(
         self, direction: str, distance_cm: float, speed_cm_s: float
     ) -> dict[str, Any]:
@@ -397,6 +462,91 @@ class JetArmToolController:
     ) -> dict[str, Any]:
         direction, distance_cm = parse_compact_arm_command(command)
         return await self.move_tcp(direction, distance_cm, speed_cm_s)
+
+    async def set_gripper_position(
+        self,
+        position: object = DEFAULT_GRIPPER_RELEASE_POSITION,
+        run_time_ms: object | None = DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+    ) -> dict[str, Any]:
+        target = self._validate_position("J6", position)
+        duration_ms = self._validate_run_time_ms(run_time_ms)
+        if self.runtime.j6_grip_locked:
+            self.runtime.toggle_grip_lock()
+        self.controller.move_servo(self.settings.servo_id("J6"), target, duration_ms)
+        if self.config.mode == "hardware":
+            await self.sleep(duration_ms / 1000.0)
+        return {
+            "status": "ok",
+            "mode": self.config.mode,
+            "joint": "J6",
+            "action": "set_position",
+            "target_position": target,
+            "run_time_ms": duration_ms,
+            "grip_locked": False,
+        }
+
+    async def move_by_pixel_error(
+        self,
+        block_center_x: object,
+        block_center_y: object,
+        grasp_point_x: object,
+        grasp_point_y: object,
+        *,
+        tolerance_px: object = DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+        step_duration_s: object = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+        speed_saturation_px: object = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+    ) -> dict[str, Any]:
+        block_x = self._validate_pixel_number(block_center_x, "block_center_x")
+        block_y = self._validate_pixel_number(block_center_y, "block_center_y")
+        grasp_x = self._validate_pixel_number(grasp_point_x, "grasp_point_x")
+        grasp_y = self._validate_pixel_number(grasp_point_y, "grasp_point_y")
+        tolerance = self._validate_pixel_number(tolerance_px, "tolerance_px")
+        duration = self._validate_positive_number(
+            step_duration_s, "step_duration_s", self.config.max_distance_cm
+        )
+        saturation = self._validate_pixel_number(
+            speed_saturation_px, "speed_saturation_px"
+        )
+        if tolerance < 0:
+            raise ArmControlError("tolerance_px must be greater than or equal to 0")
+
+        dx = block_x - grasp_x
+        dy = block_y - grasp_y
+        if abs(dx) <= tolerance and abs(dy) <= tolerance:
+            return {
+                "status": "ok",
+                "mode": self.config.mode,
+                "action": "pixel_align",
+                "aligned": True,
+                "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+                "tolerance_px": tolerance,
+                "motion_command_count": 0,
+            }
+
+        if abs(dx) >= abs(dy):
+            axis_error = dx
+            direction = "right" if dx > 0 else "left"
+            pixel_axis = "x"
+        else:
+            axis_error = dy
+            direction = "backward" if dy > 0 else "forward"
+            pixel_axis = "y"
+
+        speed = self._pixel_alignment_speed(axis_error, tolerance, saturation)
+        distance = min(speed * duration, self.config.max_distance_cm - 1e-3)
+        result = await self._move_tcp_segment(direction, distance, speed)
+        return {
+            **result,
+            "action": "pixel_align",
+            "aligned": False,
+            "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+            "pixel_axis": pixel_axis,
+            "tolerance_px": tolerance,
+            "speed_saturation_px": saturation,
+            "step_duration_s": duration,
+            "command_limit_cm_exclusive": self.config.max_distance_cm,
+            "motion_command_count": 1,
+        }
 
     async def rotate_wrist(
         self, direction: str, duration_s: object
@@ -557,6 +707,24 @@ class JetArmToolController:
                 "home_angle_from_vertical_deg": 0.0,
                 "signed_pitch_formula": "pitch(J2+J3+J4)-home_pitch(J2+J3+J4)",
             },
+            "vision_guided_grasp": {
+                "pixel_alignment_tolerance_px": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+                "pixel_alignment_min_speed_cm_s": MIN_PIXEL_ALIGNMENT_SPEED_CM_S,
+                "pixel_alignment_max_speed_cm_s": MAX_PIXEL_ALIGNMENT_SPEED_CM_S,
+                "pixel_alignment_default_step_duration_s": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+                "pixel_alignment_speed_saturation_px": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+                "descent_speed_cm_s": 2.0,
+                "ai_recalibration_interval_cm": 3.0,
+                "low_height_recalibration_threshold_cm": 2.0,
+                "final_grasp_height_cm": 1.0,
+                "j6_release_position_before_success": DEFAULT_GRIPPER_RELEASE_POSITION,
+                "pixel_to_motion_mapping": {
+                    "positive_dx": "right",
+                    "negative_dx": "left",
+                    "positive_dy": "backward",
+                    "negative_dy": "forward",
+                },
+            },
         }
 
     async def pose(self) -> dict[str, Any]:
@@ -602,6 +770,29 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
     async def gripper(arguments: Mapping[str, Any]) -> object:
         return await controller.control_gripper(
             str(arguments.get("action", "")), arguments.get("duration_s", 0.5)
+        )
+
+    async def gripper_position(arguments: Mapping[str, Any]) -> object:
+        return await controller.set_gripper_position(
+            arguments.get("position", DEFAULT_GRIPPER_RELEASE_POSITION),
+            arguments.get("run_time_ms", DEFAULT_GRIPPER_POSITION_RUN_TIME_MS),
+        )
+
+    async def pixel_align(arguments: Mapping[str, Any]) -> object:
+        return await controller.move_by_pixel_error(
+            arguments.get("block_center_x"),
+            arguments.get("block_center_y"),
+            arguments.get("grasp_point_x"),
+            arguments.get("grasp_point_y"),
+            tolerance_px=arguments.get(
+                "tolerance_px", DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX
+            ),
+            step_duration_s=arguments.get(
+                "step_duration_s", DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S
+            ),
+            speed_saturation_px=arguments.get(
+                "speed_saturation_px", DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX
+            ),
         )
 
     async def home(_arguments: Mapping[str, Any]) -> object:
@@ -711,6 +902,76 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                 handler=gripper,
             ),
             ToolDefinition(
+                name="set_jetarm_gripper_position",
+                description=(
+                    "Move J6 to a raw position. The grasp workflow uses position 370 "
+                    "to keep the gripper released before a successful grasp, and after "
+                    "a failed grasp before retrying."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "position": {
+                            "type": "integer",
+                            "minimum": controller.settings.position_limits("J6")[0],
+                            "maximum": controller.settings.position_limits("J6")[1],
+                            "default": DEFAULT_GRIPPER_RELEASE_POSITION,
+                        },
+                        "run_time_ms": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 30000,
+                            "default": DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                handler=gripper_position,
+            ),
+            ToolDefinition(
+                name="move_jetarm_by_pixel_error",
+                description=(
+                    "Use one fresh RGB observation to move one small image-plane step "
+                    "from the grasp-point pixel toward the block-center pixel. If both "
+                    "pixel errors are within tolerance_px, no motion is executed and "
+                    "aligned=true is returned. Speed is computed only in the 0.5..1.5 "
+                    "cm/s range."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "block_center_x": {"type": "number"},
+                        "block_center_y": {"type": "number"},
+                        "grasp_point_x": {"type": "number"},
+                        "grasp_point_y": {"type": "number"},
+                        "tolerance_px": {
+                            "type": "number",
+                            "minimum": 0,
+                            "default": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+                        },
+                        "step_duration_s": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "maximum": controller.config.max_distance_cm,
+                            "default": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
+                        },
+                        "speed_saturation_px": {
+                            "type": "number",
+                            "exclusiveMinimum": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+                            "default": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
+                        },
+                    },
+                    "required": [
+                        "block_center_x",
+                        "block_center_y",
+                        "grasp_point_x",
+                        "grasp_point_y",
+                    ],
+                    "additionalProperties": False,
+                },
+                handler=pixel_align,
+            ),
+            ToolDefinition(
                 name="move_jetarm_home",
                 description="Move J1-J5 to the configured home pose and leave J6 unchanged.",
                 parameters={"type": "object", "properties": {}},
@@ -737,6 +998,9 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
 
 def looks_like_arm_command(text: str) -> bool:
     """Conservatively identify commands that must produce a real arm tool call."""
+
+    if looks_like_grasp_workflow_command(text):
+        return True
 
     try:
         parse_compact_arm_command(text)
@@ -789,6 +1053,9 @@ def looks_like_arm_command(text: str) -> bool:
 
 def required_mcp_tool_for_command(text: str) -> str | None:
     """Map explicit natural-language actions to the MCP tool that must run."""
+
+    if looks_like_grasp_workflow_command(text):
+        return None
 
     if looks_like_camera_command(text):
         return "get_rgb_camera_frame"
@@ -864,6 +1131,18 @@ def looks_like_camera_command(text: str) -> bool:
     )
     return any(term in normalized for term in camera_terms) and any(
         term in normalized for term in request_terms
+    )
+
+
+def looks_like_grasp_workflow_command(text: str) -> bool:
+    """Return whether the user is asking for visual block grasping, not just J6."""
+
+    normalized = text.strip().lower().replace(" ", "")
+    grasp_terms = ("抓取", "夹取", "拿取", "拾取", "grasp", "pick")
+    object_terms = ("物块", "方块", "积木", "目标", "物体", "block", "cube", "object")
+    return any(term in normalized for term in grasp_terms) and (
+        any(term in normalized for term in object_terms)
+        or normalized in {"抓取", "夹取", "拿取", "grasp", "pick"}
     )
 
 
