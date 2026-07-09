@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,8 +19,10 @@ try:
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
-    from project.src.jetarm_agent.config import AgentSettings
+    from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
     from project.src.jetarm_agent.cli import _parse_manual_target_pixel
+    from project.src.jetarm_agent.cli import _resolve_manual_pixel_arm_config
+    from project.src.jetarm_agent.device_config import RuntimeDeviceConfig
     from project.src.jetarm_agent.openai_compatible import (
         FunctionToolCall,
         ToolModelResponse,
@@ -39,8 +42,10 @@ except ModuleNotFoundError:
         parse_compact_arm_command,
         required_mcp_tool_for_command,
     )
-    from src.jetarm_agent.config import AgentSettings
+    from src.jetarm_agent.config import AgentSettings, ConfigurationError
     from src.jetarm_agent.cli import _parse_manual_target_pixel
+    from src.jetarm_agent.cli import _resolve_manual_pixel_arm_config
+    from src.jetarm_agent.device_config import RuntimeDeviceConfig
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
@@ -202,6 +207,37 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             _parse_manual_target_pixel("450")
         with self.assertRaisesRegex(ValueError, "必须是数字"):
             _parse_manual_target_pixel("x y")
+
+    def test_manual_pixel_arm_config_uses_hardware_device_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "devices.json"
+            RuntimeDeviceConfig(
+                arm_mode="hardware",
+                arm_port="/dev/ttyUSB0",
+                arm_terminal_config=str(PROJECT_ROOT / "ubuntu22_04_operation_terminal" / "config" / "terminal.json"),
+            ).save(config_path)
+            args = SimpleNamespace(
+                device_config=str(config_path),
+                arm_mode=None,
+                arm_port=None,
+                arm_config=None,
+            )
+
+            config = _resolve_manual_pixel_arm_config(args)
+
+        self.assertEqual(config.mode, "hardware")
+        self.assertEqual(config.serial_port, "/dev/ttyUSB0")
+
+    def test_manual_pixel_arm_config_rejects_off_mode(self):
+        args = SimpleNamespace(
+            device_config=str(PROJECT_ROOT / "missing-devices.json"),
+            arm_mode="off",
+            arm_port=None,
+            arm_config=None,
+        )
+
+        with self.assertRaisesRegex(ConfigurationError, "不能使用off"):
+            _resolve_manual_pixel_arm_config(args)
 
     async def test_home_stop_and_state_cover_original_terminal_actions(self):
         home = await self.controller.go_home()

@@ -279,6 +279,48 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
 
 
+def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConfig:
+    device_path = Path(args.device_config)
+    saved_devices = RuntimeDeviceConfig.load(device_path, required=False)
+    saved_has_config = device_path.is_file()
+    if args.arm_mode == "off":
+        raise ConfigurationError("manual-pixel-test需要dry-run或hardware，不能使用off")
+    arm_mode = (
+        args.arm_mode
+        or (
+            saved_devices.arm_mode
+            if saved_has_config and saved_devices.arm_mode != "off"
+            else ""
+        )
+        or os.getenv("JETARM_ARM_MODE", "").strip()
+        or "dry-run"
+    )
+    if arm_mode not in {"dry-run", "hardware"}:
+        raise ConfigurationError("manual-pixel-test只支持dry-run或hardware")
+    arm_port = (
+        args.arm_port
+        or (saved_devices.arm_port if saved_has_config else "")
+        or os.getenv("JETARM_ARM_PORT", "").strip()
+        or None
+    )
+    if arm_mode == "hardware" and not arm_port:
+        raise ConfigurationError(
+            "hardware手动像素测试必须配置串口，请先运行device_config或传入--arm-port"
+        )
+    arm_config_path = Path(
+        args.arm_config
+        or os.getenv("JETARM_ARM_CONFIG", "")
+        or saved_devices.arm_terminal_config
+        or DEFAULT_TERMINAL_CONFIG
+    )
+    return ArmControlConfig(
+        mode=arm_mode,
+        serial_port=arm_port,
+        terminal_config_path=arm_config_path,
+        max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
+    )
+
+
 async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
     if args.manual_image_width <= 0 or args.manual_image_height <= 0:
         raise ConfigurationError("manual image width/height必须大于0")
@@ -295,20 +337,28 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
     if not math.isfinite(grasp_x) or not math.isfinite(grasp_y):
         raise ConfigurationError("manual grasp point必须是有限数字")
 
-    controller = JetArmToolController(
-        ArmControlConfig(
-            mode="dry-run",
-            terminal_config_path=Path(args.arm_config or DEFAULT_TERMINAL_CONFIG),
-            max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
-        )
-    )
+    arm_config = _resolve_manual_pixel_arm_config(args)
+    if arm_config.mode == "hardware":
+        print("硬件手动像素闭环测试：会真实控制机械臂运动。")
+        print(f"串口: {arm_config.serial_port}")
+        confirmation = input("确认机械臂周围安全后输入 RUN 开始，其他输入将退出: ").strip()
+        if confirmation != "RUN":
+            print("已取消硬件手动像素测试。")
+            return 0
+
+    controller = JetArmToolController(arm_config)
     try:
         release = await controller.set_gripper_position(DEFAULT_GRIPPER_RELEASE_POSITION)
         state = await controller.state()
         final_height_cm = state["arm_parameters"]["vision_guided_grasp"][
             "final_grasp_height_cm"
         ]
-        print("手动像素闭环模拟测试（dry-run，不调用API，不接相机）")
+        mode_text = (
+            "hardware，真实机械臂运行"
+            if arm_config.mode == "hardware"
+            else "dry-run，仅模拟"
+        )
+        print(f"手动像素闭环测试（{mode_text}；不调用API，不接相机）")
         print(
             f"模拟图像: {args.manual_image_width}x{args.manual_image_height}, "
             f"抓取点像素=({grasp_x:g}, {grasp_y:g})"
