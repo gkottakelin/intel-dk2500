@@ -33,6 +33,7 @@ from jetarm_terminal import (
     select_linux_serial_port,
     serial_discovery_diagnostic,
     tk,
+    ttk,
 )
 
 

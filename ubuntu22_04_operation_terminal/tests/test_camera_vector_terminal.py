@@ -14,6 +14,8 @@ from camera_vector_terminal import (  # noqa: E402
     CameraRelativeManualServoRuntime,
     _with_forward_continuity,
     build_camera_relative_frame,
+    tk,
+    ttk,
 )
 from jetarm_terminal import DryRunServoController, TerminalSettings  # noqa: E402
 
@@ -36,6 +38,12 @@ class CameraVectorTerminalTest(unittest.TestCase):
 
     def assert_unit(self, vector):
         self.assertAlmostEqual(float(np.linalg.norm(vector)), 1.0, places=9)
+
+    def test_terminal_reexports_tkinter_modules_for_device_config(self):
+        self.assertTrue(hasattr(sys.modules["camera_vector_terminal"], "tk"))
+        self.assertTrue(hasattr(sys.modules["camera_vector_terminal"], "ttk"))
+        if tk is not None:
+            self.assertIsNotNone(ttk)
 
     def test_camera_frame_is_orthonormal(self):
         runtime, _controller = self.make_runtime()
