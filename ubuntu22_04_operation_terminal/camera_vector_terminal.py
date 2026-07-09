@@ -41,7 +41,7 @@ DEFAULT_GRASP_TO_CAMERA_ALONG_TOOL_M = -0.04
 DEFAULT_GRASP_TO_CAMERA_NORMAL_M = -0.055
 DEFAULT_GRASP_TO_CAMERA_LATERAL_M = 0.0
 DEFAULT_FRAME_LOCK_ON_HOLD = True
-DEFAULT_PITCH_HOLD_WEIGHT_M = 0.08
+DEFAULT_LINE_ANGLE_HOLD_WEIGHT_M = 0.2
 EPSILON = 1e-9
 
 
@@ -53,7 +53,11 @@ class CameraLineConfig:
     grasp_to_camera_normal_m: float = DEFAULT_GRASP_TO_CAMERA_NORMAL_M
     grasp_to_camera_lateral_m: float = DEFAULT_GRASP_TO_CAMERA_LATERAL_M
     frame_lock_on_hold: bool = DEFAULT_FRAME_LOCK_ON_HOLD
-    pitch_hold_weight_m: float = DEFAULT_PITCH_HOLD_WEIGHT_M
+    line_angle_hold_weight_m: float = DEFAULT_LINE_ANGLE_HOLD_WEIGHT_M
+
+    @property
+    def pitch_hold_weight_m(self) -> float:
+        return self.line_angle_hold_weight_m
 
     @classmethod
     def from_file(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "CameraLineConfig":
@@ -84,8 +88,14 @@ class CameraLineConfig:
             frame_lock_on_hold=bool(
                 values.get("frame_lock_on_hold", DEFAULT_FRAME_LOCK_ON_HOLD)
             ),
-            pitch_hold_weight_m=float(
-                values.get("pitch_hold_weight_m", DEFAULT_PITCH_HOLD_WEIGHT_M)
+            line_angle_hold_weight_m=float(
+                values.get(
+                    "line_angle_hold_weight_m",
+                    values.get(
+                        "pitch_hold_weight_m",
+                        DEFAULT_LINE_ANGLE_HOLD_WEIGHT_M,
+                    ),
+                )
             ),
         )
 
@@ -231,8 +241,9 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         super().__init__(controller, settings, **kwargs)
         self.camera_config = camera_config or CameraLineConfig()
         self._locked_frame: CameraRelativeFrame | None = None
-        self._locked_pitch_rad: float | None = None
+        self._locked_line_angle_rad: float | None = None
         self._last_forward: np.ndarray | None = None
+        self._pending_target_delta = np.zeros(3, dtype=float)
         self.z_lock: bool = False
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
@@ -283,6 +294,41 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             velocity[2] = 0.0
         return velocity
 
+    def step_cartesian(self, dt: float, *, run_time_s: Optional[float] = None) -> bool:
+        velocity = self.cartesian_velocity()
+        if float(np.linalg.norm(velocity)) < 1e-9:
+            self._pending_target_delta = np.zeros(3, dtype=float)
+            return False
+
+        before_tcp = self.model.tcp(self.positions)
+        target_delta = self._pending_target_delta + velocity * dt
+        target_positions = self._solve_next_positions(target_delta)
+        if target_positions == self.positions:
+            self._pending_target_delta = target_delta
+            return True
+
+        execution_time_s = dt if run_time_s is None else run_time_s
+        run_time_ms = max(1, int(round(execution_time_s * 1000)))
+        previous_positions = dict(self.positions)
+        for joint_name in ARM_JOINTS:
+            target = target_positions[joint_name]
+            if target != self.positions[joint_name]:
+                self.controller.move_servo(
+                    self.settings.servo_id(joint_name), target, run_time_ms
+                )
+                self.positions[joint_name] = target
+
+        if self.positions == previous_positions:
+            self._pending_target_delta = target_delta
+            return True
+
+        actual_delta = self.model.tcp(self.positions) - before_tcp
+        residual = target_delta - actual_delta
+        if float(np.linalg.norm(residual)) > 0.02:
+            residual = np.zeros(3, dtype=float)
+        self._pending_target_delta = residual
+        return True
+
     def _update_motion_lock(self) -> None:
         active = (
             abs(self.vertical_direction) > EPSILON
@@ -295,11 +341,14 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             return
         if self._locked_frame is None:
             self._locked_frame = self.continuous_camera_relative_frame()
-            self._locked_pitch_rad = self._tool_pitch_rad(self.positions)
+            self._locked_line_angle_rad = self._camera_line_vertical_angle_rad(
+                self.positions
+            )
 
     def _clear_motion_lock(self, *, clear_forward: bool = False) -> None:
         self._locked_frame = None
-        self._locked_pitch_rad = None
+        self._locked_line_angle_rad = None
+        self._pending_target_delta = np.zeros(3, dtype=float)
         if clear_forward:
             self._last_forward = None
 
@@ -309,34 +358,74 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
             for name in ARM_JOINTS[1:]
         )
 
-    def _pitch_error_rad(self, positions: dict[str, int]) -> float:
-        if self._locked_pitch_rad is None:
+    def _camera_line_vertical_cos_from_pitch(self, pitch_rad: float) -> float:
+        length = self.camera_config.vector_length_m()
+        if length < EPSILON:
+            raise ValueError("camera_control grasp-to-camera vector must be non-zero")
+        z_component = (
+            self.camera_config.grasp_to_camera_along_tool_m * math.cos(pitch_rad)
+            - self.camera_config.grasp_to_camera_normal_m * math.sin(pitch_rad)
+        )
+        return max(-1.0, min(1.0, z_component / length))
+
+    def _camera_line_vertical_angle_from_pitch(self, pitch_rad: float) -> float:
+        return math.acos(self._camera_line_vertical_cos_from_pitch(pitch_rad))
+
+    def _camera_line_vertical_angle_rad(self, positions: dict[str, int]) -> float:
+        return self._camera_line_vertical_angle_from_pitch(
+            self._tool_pitch_rad(positions)
+        )
+
+    def _line_angle_error_rad(self, positions: dict[str, int]) -> float:
+        if self._locked_line_angle_rad is None:
             return 0.0
-        error = self._locked_pitch_rad - self._tool_pitch_rad(positions)
-        return math.atan2(math.sin(error), math.cos(error))
+        return self._locked_line_angle_rad - self._camera_line_vertical_angle_rad(
+            positions
+        )
+
+    def _line_angle_jacobian_row(self, positions: dict[str, int]) -> np.ndarray:
+        pitch = self._tool_pitch_rad(positions)
+        length = self.camera_config.vector_length_m()
+        cos_angle = self._camera_line_vertical_cos_from_pitch(pitch)
+        sin_angle = math.sqrt(max(EPSILON, 1.0 - cos_angle * cos_angle))
+        dz_dpitch = (
+            -self.camera_config.grasp_to_camera_along_tool_m * math.sin(pitch)
+            - self.camera_config.grasp_to_camera_normal_m * math.cos(pitch)
+        ) / length
+        dangle_dpitch = -dz_dpitch / sin_angle
+        return np.array([[0.0, dangle_dpitch, dangle_dpitch, dangle_dpitch]], dtype=float)
 
     def _solve_next_positions(self, target_delta: np.ndarray) -> dict[str, int]:
-        weight = max(0.0, float(self.camera_config.pitch_hold_weight_m))
-        if self._locked_pitch_rad is None or weight <= 0.0:
+        weight = max(0.0, float(self.camera_config.line_angle_hold_weight_m))
+        if self._locked_line_angle_rad is None or weight <= 0.0:
             return super()._solve_next_positions(target_delta)
 
+        angle_row = self._line_angle_jacobian_row(self.positions)
+        angle_norm_sq = float((angle_row @ angle_row.T)[0, 0])
+        if angle_norm_sq < EPSILON:
+            return super()._solve_next_positions(target_delta)
+
+        angle_error = self._line_angle_error_rad(self.positions)
+        angle_column = angle_row.T
+        constraint_part = (angle_column[:, 0] * (angle_error / angle_norm_sq))
+        nullspace = np.eye(len(ARM_JOINTS)) - (angle_column @ angle_row) / angle_norm_sq
         jacobian = self.model.jacobian(self.positions)
-        pitch_row = np.array([[0.0, weight, weight, weight]], dtype=float)
-        augmented_jacobian = np.vstack((jacobian, pitch_row))
-        augmented_target = np.concatenate(
-            (target_delta, np.array([weight * self._pitch_error_rad(self.positions)]))
-        )
-        damping = (self.settings.damping**2) * np.eye(augmented_jacobian.shape[0])
+        constrained_jacobian = jacobian @ nullspace
+        constrained_target = target_delta - jacobian @ constraint_part
+        damping = (self.settings.damping**2) * np.eye(constrained_jacobian.shape[0])
         try:
-            dq = augmented_jacobian.T @ np.linalg.solve(
-                augmented_jacobian @ augmented_jacobian.T + damping,
-                augmented_target,
+            dq_free = constrained_jacobian.T @ np.linalg.solve(
+                constrained_jacobian @ constrained_jacobian.T + damping,
+                constrained_target,
             )
         except np.linalg.LinAlgError:
-            dq = np.zeros(4)
+            dq_free = np.zeros(4)
 
         max_step = math.radians(self.settings.max_joint_step_deg)
-        dq = np.clip(dq, -max_step, max_step)
+        dq = constraint_part + nullspace @ dq_free
+        max_abs = float(np.max(np.abs(dq)))
+        if max_abs > max_step:
+            dq = dq * (max_step / max_abs)
         seed = dict(self.positions)
         for index, joint_name in enumerate(ARM_JOINTS):
             current = self.model.position_to_model_angle(joint_name, self.positions[joint_name])
@@ -345,7 +434,10 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         return self._local_refine(seed, target_delta)
 
     def _local_refine(self, seed: dict[str, int], target_delta: np.ndarray) -> dict[str, int]:
-        if self._locked_pitch_rad is None or self.camera_config.pitch_hold_weight_m <= 0.0:
+        if (
+            self._locked_line_angle_rad is None
+            or self.camera_config.line_angle_hold_weight_m <= 0.0
+        ):
             return super()._local_refine(seed, target_delta)
 
         target_tcp = self.model.tcp(self.positions) + target_delta
@@ -368,8 +460,8 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
 
     def _camera_locked_error(self, positions: dict[str, int], target_tcp: np.ndarray) -> float:
         tcp_error = float(np.linalg.norm(self.model.tcp(positions) - target_tcp))
-        pitch_error = abs(self._pitch_error_rad(positions))
-        return tcp_error + self.camera_config.pitch_hold_weight_m * pitch_error
+        line_angle_error = abs(self._line_angle_error_rad(positions))
+        return tcp_error + self.camera_config.line_angle_hold_weight_m * line_angle_error
 
 
 class CameraVectorTerminalApp(OperationTerminalApp):

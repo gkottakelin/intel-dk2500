@@ -590,6 +590,13 @@ class JetArmToolController:
             await self.sleep(0.05)
             self._refresh_hardware_positions()
         end_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
+        camera_pose_after_move = self._camera_pose()
+        camera_angle_before_deg = float(
+            camera_reference_before_move["line_of_sight_angle_from_vertical_deg"]
+        )
+        camera_angle_after_deg = float(
+            camera_pose_after_move["line_of_sight_angle_from_vertical_deg"]
+        )
         delta_cm = (end_tcp - start_tcp) * 100.0
         estimated_distance = sum(
             float(delta_cm[index]) * direction_unit[index] for index in range(3)
@@ -636,6 +643,12 @@ class JetArmToolController:
                 "up_z": round(direction_unit[2], 6),
             },
             "camera_pose_before_move": camera_reference_before_move,
+            "camera_pose_after_move": camera_pose_after_move,
+            "camera_line_angle_hold": {
+                "target_deg": round(camera_angle_before_deg, 3),
+                "actual_after_deg": round(camera_angle_after_deg, 3),
+                "error_deg": round(camera_angle_after_deg - camera_angle_before_deg, 3),
+            },
             "steps": steps,
             "joint_positions": dict(self.runtime.positions),
             "tcp_samples_cm": tcp_samples,
@@ -1207,6 +1220,7 @@ class JetArmToolController:
                 "up": "grasp_point_to_camera",
                 "down": "camera_to_grasp_point",
                 "forward_backward_left_right": "plane_perpendicular_to_camera_grasp_line",
+                "motion_constraint": "keep_camera_grasp_line_angle_from_vertical",
             },
             "vision_guided_grasp": {
                 "pixel_alignment_tolerance_px": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
@@ -1748,7 +1762,7 @@ def looks_like_grasp_workflow_command(text: str) -> bool:
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
-2. “上/下/前/后/左/右”全部使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；前后左右=垂直于摄像头-抓取点连线的平面方向。距离必须保持用户给出的厘米数。
+2. “上/下/前/后/左/右”全部使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；前后左右=垂直于摄像头-抓取点连线的平面方向。运动过程中保持摄像头-抓取点连线与竖直方向夹角不变，距离必须保持用户给出的厘米数。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。

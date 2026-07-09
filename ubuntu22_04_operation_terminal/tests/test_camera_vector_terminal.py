@@ -118,15 +118,16 @@ class CameraVectorTerminalTest(unittest.TestCase):
         self.assertGreater(float(np.dot(active_frame.forward, -raw_frame.forward)), 0.99)
         self.assertLess(float(np.dot(active_frame.forward, raw_frame.forward)), -0.99)
 
-    def test_pitch_hold_limits_camera_line_rotation(self):
+    def test_line_angle_hold_keeps_camera_line_vertical_angle(self):
         runtime, _controller = self.make_runtime()
-        before_pitch = runtime._tool_pitch_rad(runtime.positions)
+        before_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
 
         runtime.set_vertical_direction(1)
-        self.assertTrue(runtime.step_cartesian(0.08))
-        after_pitch = runtime._tool_pitch_rad(runtime.positions)
+        for _index in range(5):
+            self.assertTrue(runtime.step_cartesian(0.08))
+        after_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
 
-        self.assertLess(abs(after_pitch - before_pitch), 0.02)
+        self.assertLess(abs(after_angle - before_angle), 0.01)
 
     def test_joystick_moves_in_camera_plane(self):
         runtime, _controller = self.make_runtime()
