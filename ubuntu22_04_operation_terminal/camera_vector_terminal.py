@@ -246,6 +246,10 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         self._height_hold_active = False
         self.z_lock: bool = False
 
+    def camera_line_vertical_angle_deg(self) -> float:
+        """抓取点→相机连线与竖直方向（Z轴）的夹角（度）。"""
+        return math.degrees(self._camera_line_vertical_angle_rad(self.positions))
+
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_relative_frame(
             self.settings,
@@ -324,6 +328,8 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         if float(np.linalg.norm(residual)) > 0.02:
             residual = np.zeros(3, dtype=float)
         self._pending_target_delta = residual
+        angle_deg = self.camera_line_vertical_angle_deg()
+        self.logger(f"相机-抓取点连线与竖直夹角: {angle_deg:.1f}°")
         return True
 
     def _update_motion_lock(self) -> None:
@@ -501,11 +507,27 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
 
 
 class CameraVectorTerminalApp(OperationTerminalApp):
-    """Small title wrapper for the existing terminal UI."""
+    """Camera-vector terminal with grasp-camera angle display."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.root.title("JetArm camera-vector terminal")
+        # 相机-抓取点连线与竖直方向夹角显示标签
+        self.camera_angle_label = ttk.Label(
+            self.log_text.master,
+            text="",
+            style="Panel.TLabel",
+        )
+        self.camera_angle_label.grid(row=2, column=0, sticky="w", pady=(0, 6))
+        self.log_text.grid(row=3, column=0, sticky="nsew")
+
+    def _refresh_velocity(self) -> None:
+        super()._refresh_velocity()
+        if hasattr(self.runtime, "camera_line_vertical_angle_deg"):
+            angle = self.runtime.camera_line_vertical_angle_deg()
+            self.camera_angle_label.configure(
+                text=f"相机-抓取连线与竖直夹角: {angle:.1f}°"
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:
