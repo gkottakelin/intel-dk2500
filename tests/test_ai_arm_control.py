@@ -151,11 +151,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
         self.assertEqual(moved["requested_distance_cm"], 2)
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 6.5)
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.3)
 
-    async def test_pixel_difference_maps_to_centimeters_at_thirteen_px_per_cm(self):
+    async def test_pixel_difference_maps_to_centimeters_at_thirteen_point_three_px_per_cm(self):
         moved = await self.controller.move_by_pixel_error(
-            74,
+            73.4,
             100,
             100,
             100,
@@ -164,8 +164,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(moved["aligned"])
         self.assertEqual(moved["direction"], "left")
-        self.assertEqual(moved["pixel_error"], {"dx": -26.0, "dy": 0.0})
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 6.5)
+        self.assertEqual(moved["pixel_error"], {"dx": -26.6, "dy": 0.0})
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.3)
         self.assertAlmostEqual(
             moved["requested_distance_cm"], 2.0, places=6
         )
@@ -190,7 +190,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(moved["direction"], "right")
         self.assertAlmostEqual(
-            moved["requested_distance_cm"], 65.0 / 6.5, places=6
+            moved["requested_distance_cm"], 65.0 / 13.3, places=6
         )
         self.assertEqual(moved["pixel_error"], {"dx": 65.0, "dy": 0.0})
 
@@ -236,7 +236,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(moved["requires_new_target_pixel"])
         self.assertEqual(moved["target_pixel"], {"x": 220.0, "y": 100.0})
         self.assertEqual(moved["grasp_point_pixel"], {"x": 100.0, "y": 100.0})
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 6.5)
+        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.3)
         self.assertIn("grasp_point_before_cm", moved)
         self.assertIn("grasp_point_after_cm", moved)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)

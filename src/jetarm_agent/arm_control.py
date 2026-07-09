@@ -34,7 +34,7 @@ MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
 DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
 DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX = 120.0
-PIXEL_ALIGNMENT_PX_PER_CM = 6.5
+PIXEL_ALIGNMENT_PX_PER_CM = 13.3
 DEFAULT_DESCENT_RECALIBRATION_CM = 2.0
 FINAL_ALIGNMENT_THRESHOLD_CM = 2.0
 FINAL_GRASP_HEIGHT_CM = 1.0
@@ -1417,7 +1417,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "current visual grasp workflow; use control_jetarm_to_target_pixel "
                     "so the controller owns movement decisions. This tool moves one "
                     "small image-plane step from the grasp-point pixel toward the "
-                    "block-center pixel. Distance is abs(pixel_error)/13 cm capped by "
+                    f"block-center pixel. Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by "
                     "the per-command limit; speed remains in the 0.5..1.5 cm/s range."
                 ),
                 parameters={
@@ -1461,7 +1461,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "command, finds the target point in the latest image, and supplies "
                     "target_x/target_y. The controller reads FK height from joint "
                     "feedback, chooses tolerance by height, decides front/back/left/right "
-                    "alignment distance using 13 px per cm, and descends 2 cm when "
+                    f"alignment distance using {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm, and descends 2 cm when "
                     "aligned."
                 ),
                 parameters={
@@ -1683,7 +1683,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。
 6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为18px，>10且<=15cm为15px，>5且<=10cm为10px，<=5cm为8px。
-7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以13计算，例如目标点在抓取点左侧26px时抓取点向左移动2cm。
+7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以13.3计算，例如目标点在抓取点左侧26.6px时抓取点向左移动2cm。
 8. 已重合时，控制程序以2cm/s向下运动，并在下降过程中持续基于关节角度/FK解算抓取点位置。
 9. 每下降2cm或任一机械臂移动返回status=ok后，旧图像立即失效；必须重新调用get_rgb_camera_frame，再由Agent重新寻找目标点像素。
 10. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。

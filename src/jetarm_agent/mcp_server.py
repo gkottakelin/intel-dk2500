@@ -20,6 +20,7 @@ from .arm_control import (
     DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
     DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
     MAX_AGENT_MOVE_COMMAND_CM,
+    PIXEL_ALIGNMENT_PX_PER_CM,
     ArmControlConfig,
     JetArmToolController,
 )
@@ -423,7 +424,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "current visual grasp workflow; use control_jetarm_to_target_pixel so "
             "the controller owns movement decisions. This tool moves one small "
             "image-plane step using explicit block-center and grasp-point pixels. "
-            "Distance is abs(pixel_error)/13 cm capped by the command limit; speed "
+            f"Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by the command limit; speed "
             "is limited to 0.5..1.5 cm/s."
         ),
         structured_output=False,
@@ -455,7 +456,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
-            "alignment with 6.5 px per cm. When aligned, descends 2 cm. When one "
+            f"alignment with {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm. When aligned, descends 2 cm. When one "
             "more descent step would reach or pass the final-alignment threshold "
             "(2 cm), the controller returns aligned_hold instead; the caller "
             "should request a final alignment then descend to final_grasp_height_cm."
