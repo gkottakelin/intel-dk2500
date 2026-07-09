@@ -455,7 +455,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
-            "alignment with 13.3 px per cm. When aligned, descends 2 cm. When one "
+            "alignment with 6.5 px per cm. When aligned, descends 2 cm. When one "
             "more descent step would reach or pass the final-alignment threshold "
             "(2 cm), the controller returns aligned_hold instead; the caller "
             "should request a final alignment then descend to final_grasp_height_cm."

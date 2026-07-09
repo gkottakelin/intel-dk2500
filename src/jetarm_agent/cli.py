@@ -386,7 +386,7 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
             f"最终抓取高度={final_grasp_height_cm}cm"
         )
         print(
-            "手动像素修正: 抓取点像素固定；水平移动按13.3px/cm比例；"
+            "手动像素修正: 抓取点像素固定；水平移动按6.5px/cm比例；"
             f"下降每次2cm；高度≤{final_alignment_threshold_cm:g}cm时触发最终对准，"
             f"对准后下降至{final_grasp_height_cm:g}cm抓取。"
         )
