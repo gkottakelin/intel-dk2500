@@ -425,7 +425,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "the controller owns movement decisions. This tool moves one small "
             "image-plane step using explicit block-center and grasp-point pixels. "
             f"Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by the command limit; speed "
-            "is limited to 0.5..1.5 cm/s."
+            "is limited to 0.7..1.5 cm/s."
         ),
         structured_output=False,
     )

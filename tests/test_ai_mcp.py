@@ -158,7 +158,7 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aligned["mcp"], "move_jetarm_by_pixel_error")
         self.assertFalse(moved["aligned"])
         self.assertEqual(moved["direction"], "right")
-        self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
+        self.assertGreaterEqual(moved["speed_cm_s"], 0.7)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
         self.assertEqual(target_aligned["mcp"], "control_jetarm_to_target_pixel")
         self.assertEqual(target_aligned["agent_role"], "target_pixel_only")

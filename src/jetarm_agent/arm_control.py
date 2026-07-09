@@ -29,7 +29,7 @@ MAX_TCP_SPEED_CM_S = 5.0
 MAX_AGENT_MOVE_COMMAND_CM = 2.0
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
-MIN_PIXEL_ALIGNMENT_SPEED_CM_S = 0.5
+MIN_PIXEL_ALIGNMENT_SPEED_CM_S = 0.7
 MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
 DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
@@ -1418,7 +1418,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "so the controller owns movement decisions. This tool moves one "
                     "small image-plane step from the grasp-point pixel toward the "
                     f"block-center pixel. Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by "
-                    "the per-command limit; speed remains in the 0.5..1.5 cm/s range."
+                    "the per-command limit; speed remains in the 0.7..1.5 cm/s range."
                 ),
                 parameters={
                     "type": "object",

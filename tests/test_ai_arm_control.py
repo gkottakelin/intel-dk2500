@@ -148,7 +148,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aligned["motion_command_count"], 0)
         self.assertFalse(moved["aligned"])
         self.assertEqual(moved["direction"], "right")
-        self.assertGreaterEqual(moved["speed_cm_s"], 0.5)
+        self.assertGreaterEqual(moved["speed_cm_s"], 0.7)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
         self.assertEqual(moved["requested_distance_cm"], 2)
         self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 16.0)
