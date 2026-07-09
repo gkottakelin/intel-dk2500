@@ -50,6 +50,7 @@ class ArmControlConfig:
     terminal_config_path: Path = DEFAULT_TERMINAL_CONFIG
     max_distance_cm: float = MAX_AGENT_MOVE_COMMAND_CM
     allow_extended_distance: bool = False
+    fixed_pixel_alignment_distance_cm: float | None = None
     default_speed_cm_s: float = DEFAULT_TCP_SPEED_CM_S
     min_speed_cm_s: float = MIN_TCP_SPEED_CM_S
     max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
@@ -68,6 +69,16 @@ class ArmControlConfig:
                 f"max_distance_cm不能超过{MAX_AGENT_MOVE_COMMAND_CM:g}；"
                 f"Agent每条移动命令必须严格小于{MAX_AGENT_MOVE_COMMAND_CM:g}cm"
             )
+        if self.fixed_pixel_alignment_distance_cm is not None:
+            fixed_distance = float(self.fixed_pixel_alignment_distance_cm)
+            if not math.isfinite(fixed_distance) or fixed_distance <= 0:
+                raise ArmControlError(
+                    "fixed_pixel_alignment_distance_cm must be greater than 0"
+                )
+            if fixed_distance > self.max_distance_cm:
+                raise ArmControlError(
+                    "fixed_pixel_alignment_distance_cm must be <= max_distance_cm"
+                )
         if not 0 < self.min_speed_cm_s <= self.default_speed_cm_s <= self.max_speed_cm_s:
             raise ArmControlError("TCP速度配置必须满足0 < 最小值 <= 默认值 <= 最大值")
         if self.max_motor_duration_s <= 0:
@@ -441,6 +452,14 @@ class JetArmToolController:
             "up_z": round(float(tcp_cm[2]), 3),
         }
 
+    @staticmethod
+    def _grasp_point_xyz_cm(grasp_point_base_cm: Mapping[str, float]) -> dict[str, float]:
+        return {
+            "x": round(float(grasp_point_base_cm["left_y"]), 3),
+            "y": round(-float(grasp_point_base_cm["forward_x"]), 3),
+            "z": round(float(grasp_point_base_cm["up_z"]), 3),
+        }
+
     async def _move_tcp_segment(
         self,
         direction: str,
@@ -479,15 +498,17 @@ class JetArmToolController:
                     self._refresh_hardware_positions()
                 if collect_tcp_samples:
                     sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
+                    sample_base_cm = {
+                        "forward_x": round(float(sample_tcp[0]), 3),
+                        "left_y": round(float(sample_tcp[1]), 3),
+                        "up_z": round(float(sample_tcp[2]), 3),
+                    }
                     tcp_samples.append(
                         {
                             "step": steps,
                             "source": "joint_feedback_fk",
-                            "tcp_cm": {
-                                "forward_x": round(float(sample_tcp[0]), 3),
-                                "left_y": round(float(sample_tcp[1]), 3),
-                                "up_z": round(float(sample_tcp[2]), 3),
-                            },
+                            "tcp_cm": sample_base_cm,
+                            "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
                         }
                     )
         finally:
@@ -501,6 +522,16 @@ class JetArmToolController:
         estimated_distance = sum(
             float(delta_cm[index]) * direction_unit[index] for index in range(3)
         )
+        grasp_before_cm = {
+            "forward_x": round(float(start_tcp[0] * 100.0), 3),
+            "left_y": round(float(start_tcp[1] * 100.0), 3),
+            "up_z": round(float(start_tcp[2] * 100.0), 3),
+        }
+        grasp_after_cm = {
+            "forward_x": round(float(end_tcp[0] * 100.0), 3),
+            "left_y": round(float(end_tcp[1] * 100.0), 3),
+            "up_z": round(float(end_tcp[2] * 100.0), 3),
+        }
         return {
             "status": "ok",
             "mode": self.config.mode,
@@ -508,16 +539,10 @@ class JetArmToolController:
             "requested_distance_cm": distance_cm,
             "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
-            "grasp_point_before_cm": {
-                "forward_x": round(float(start_tcp[0] * 100.0), 3),
-                "left_y": round(float(start_tcp[1] * 100.0), 3),
-                "up_z": round(float(start_tcp[2] * 100.0), 3),
-            },
-            "grasp_point_after_cm": {
-                "forward_x": round(float(end_tcp[0] * 100.0), 3),
-                "left_y": round(float(end_tcp[1] * 100.0), 3),
-                "up_z": round(float(end_tcp[2] * 100.0), 3),
-            },
+            "grasp_point_before_cm": grasp_before_cm,
+            "grasp_point_after_cm": grasp_after_cm,
+            "grasp_point_xyz_before_cm": self._grasp_point_xyz_cm(grasp_before_cm),
+            "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(grasp_after_cm),
             "estimated_delta_cm": {
                 "forward_x": round(float(delta_cm[0]), 3),
                 "left_y": round(float(delta_cm[1]), 3),
@@ -616,6 +641,9 @@ class JetArmToolController:
         if tolerance < 0:
             raise ArmControlError("tolerance_px must be greater than or equal to 0")
 
+        self._refresh_hardware_positions()
+        current_tcp_cm = self._current_tcp_cm()
+        current_xyz_cm = self._grasp_point_xyz_cm(current_tcp_cm)
         dx = block_x - grasp_x
         dy = block_y - grasp_y
         if abs(dx) <= tolerance and abs(dy) <= tolerance:
@@ -626,6 +654,10 @@ class JetArmToolController:
                 "aligned": True,
                 "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
                 "tolerance_px": tolerance,
+                "grasp_point_before_cm": current_tcp_cm,
+                "grasp_point_after_cm": current_tcp_cm,
+                "grasp_point_xyz_before_cm": current_xyz_cm,
+                "grasp_point_xyz_after_cm": current_xyz_cm,
                 "motion_command_count": 0,
             }
 
@@ -639,7 +671,16 @@ class JetArmToolController:
             pixel_axis = "y"
 
         speed = self._pixel_alignment_speed(axis_error, tolerance, saturation)
-        distance = min(abs(axis_error) / PIXEL_ALIGNMENT_PX_PER_CM, self.config.max_distance_cm)
+        fixed_distance = self.config.fixed_pixel_alignment_distance_cm
+        if fixed_distance is None:
+            distance = min(
+                abs(axis_error) / PIXEL_ALIGNMENT_PX_PER_CM,
+                self.config.max_distance_cm,
+            )
+            distance_mode = "pixel_scale"
+        else:
+            distance = float(fixed_distance)
+            distance_mode = "fixed"
         result = await self._move_tcp_segment(direction, distance, speed)
         return {
             **result,
@@ -647,11 +688,15 @@ class JetArmToolController:
             "aligned": False,
             "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
             "pixel_axis": pixel_axis,
-            "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+            "pixel_to_motion_scale_px_per_cm": (
+                PIXEL_ALIGNMENT_PX_PER_CM if fixed_distance is None else None
+            ),
             "tolerance_px": tolerance,
             "speed_saturation_px": saturation,
             "step_duration_s": duration,
             "command_limit_cm": self.config.max_distance_cm,
+            "pixel_alignment_distance_mode": distance_mode,
+            "fixed_pixel_alignment_distance_cm": fixed_distance,
             "motion_command_count": 1,
         }
 
@@ -676,6 +721,7 @@ class JetArmToolController:
 
         self._refresh_hardware_positions()
         tcp_before = self._current_tcp_cm()
+        xyz_before = self._grasp_point_xyz_cm(tcp_before)
         height_cm = tcp_before["up_z"]
         tolerance = self._pixel_tolerance_for_height(height_cm)
         target_px = self._validate_pixel_number(target_x, "target_x")
@@ -705,10 +751,14 @@ class JetArmToolController:
                 "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
                 "grasp_point_before_cm": tcp_before,
                 "grasp_point_after_cm": result.get("grasp_point_after_cm"),
+                "grasp_point_xyz_before_cm": xyz_before,
+                "grasp_point_xyz_after_cm": result.get("grasp_point_xyz_after_cm"),
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
-                "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "pixel_to_motion_scale_px_per_cm": result.get(
+                    "pixel_to_motion_scale_px_per_cm"
+                ),
                 "requires_new_target_pixel": True,
             }
 
@@ -726,6 +776,8 @@ class JetArmToolController:
                 "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
                 "grasp_point_before_cm": tcp_before,
                 "grasp_point_after_cm": tcp_before,
+                "grasp_point_xyz_before_cm": xyz_before,
+                "grasp_point_xyz_after_cm": xyz_before,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
@@ -745,6 +797,7 @@ class JetArmToolController:
         )
         self._refresh_hardware_positions()
         tcp_after = self._current_tcp_cm()
+        xyz_after = self._grasp_point_xyz_cm(tcp_after)
         return {
             **result,
             "action": "controller_pixel_align_and_descend",
@@ -756,6 +809,8 @@ class JetArmToolController:
             "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
             "grasp_point_before_cm": tcp_before,
             "grasp_point_after_cm": tcp_after,
+            "grasp_point_xyz_before_cm": xyz_before,
+            "grasp_point_xyz_after_cm": xyz_after,
             "height_before_cm": height_cm,
             "height_after_cm": tcp_after["up_z"],
             "height_source": "joint_feedback_fk",
@@ -900,6 +955,7 @@ class JetArmToolController:
         return {
             "joint_positions": dict(self.runtime.positions),
             "grasp_point_base_cm": grasp_point,
+            "grasp_point_xyz_cm": self._grasp_point_xyz_cm(grasp_point),
             "camera": self._camera_pose(),
         }
 
@@ -922,6 +978,13 @@ class JetArmToolController:
                 "x_positive": "arm_forward",
                 "y_positive": "arm_left",
                 "z_positive": "up",
+                "units": "cm",
+            },
+            "grasp_point_xyz_frame": {
+                "name": "manual_grasp_point_xyz",
+                "x": "base.left_y; moving left decreases x",
+                "y": "-base.forward_x; moving forward decreases y",
+                "z": "base.up_z",
                 "units": "cm",
             },
             "agent_direction_frames": {
@@ -955,6 +1018,12 @@ class JetArmToolController:
                 "pixel_alignment_default_step_duration_s": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
                 "pixel_alignment_speed_saturation_px": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
                 "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "pixel_alignment_distance_mode": (
+                    "fixed"
+                    if self.config.fixed_pixel_alignment_distance_cm is not None
+                    else "pixel_scale"
+                ),
+                "fixed_pixel_alignment_distance_cm": self.config.fixed_pixel_alignment_distance_cm,
                 "descent_speed_cm_s": 2.0,
                 "pixel_recalculation_descent_interval_cm": DEFAULT_DESCENT_RECALIBRATION_CM,
                 "height_tolerance_bands_px": [
@@ -987,6 +1056,7 @@ class JetArmToolController:
             "serial_port": self.serial_port,
             "joint_positions": arm_pose["joint_positions"],
             "tcp_cm": arm_pose["grasp_point_base_cm"],
+            "grasp_point_xyz_cm": arm_pose["grasp_point_xyz_cm"],
             "arm_pose": arm_pose,
             "arm_parameters": self.arm_parameters(),
             "grip_locked": bool(self.runtime.j6_grip_locked),

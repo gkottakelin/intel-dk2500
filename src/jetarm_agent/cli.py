@@ -96,12 +96,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="manual-pixel-test使用的抓取点像素y，默认图像中心",
     )
-    parser.add_argument(
-        "--manual-max-distance-cm",
-        type=float,
-        default=100.0,
-        help="manual-pixel-test单次像素换算移动上限，默认100cm，不使用Agent的2cm限制",
-    )
     return parser
 
 
@@ -263,16 +257,16 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     decision = result.get("controller_decision")
     error = result.get("pixel_error", {})
     tolerance = result.get("dynamic_tolerance_px")
-    grasp_before = result.get("grasp_point_before_cm")
-    grasp_after = result.get("grasp_point_after_cm")
+    grasp_xyz_before = result.get("grasp_point_xyz_before_cm")
+    grasp_xyz_after = result.get("grasp_point_xyz_after_cm")
     if decision == "horizontal_align":
         print(
             "控制结果: 水平对准 | "
             f"方向={result.get('direction')} "
-            f"距离={result.get('requested_distance_cm')}cm "
+            f"固定步长={result.get('requested_distance_cm')}cm "
             f"速度={result.get('speed_cm_s')}cm/s "
             f"误差={error} 容差={tolerance}px "
-            f"抓取点={grasp_before} -> {grasp_after}"
+            f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
         )
         return
     if decision == "descend_after_alignment":
@@ -282,16 +276,13 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"速度={result.get('speed_cm_s')}cm/s "
             f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
             f"误差={error} 容差={tolerance}px "
-            f"抓取点={grasp_before} -> {grasp_after}"
+            f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
         )
         return
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
 
 
 def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConfig:
-    manual_max_distance_cm = float(args.manual_max_distance_cm)
-    if not math.isfinite(manual_max_distance_cm) or manual_max_distance_cm <= 0:
-        raise ConfigurationError("manual-max-distance-cm必须是大于0的有限数字")
     device_path = Path(args.device_config)
     saved_devices = RuntimeDeviceConfig.load(device_path, required=False)
     saved_has_config = device_path.is_file()
@@ -325,8 +316,8 @@ def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConf
         mode=arm_mode,
         serial_port=arm_port,
         terminal_config_path=arm_config_path,
-        max_distance_cm=manual_max_distance_cm,
-        allow_extended_distance=True,
+        max_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
+        fixed_pixel_alignment_distance_cm=MAX_AGENT_MOVE_COMMAND_CM,
     )
 
 
@@ -377,21 +368,21 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
         print(f"手动像素闭环测试（{mode_text}；不调用API，不接相机）")
         print(
             f"模拟图像: {args.manual_image_width}x{args.manual_image_height}, "
-            f"抓取点像素=({grasp_x:g}, {grasp_y:g})"
+            f"固定抓取点像素=({grasp_x:g}, {grasp_y:g})"
         )
         print(
             f"J6已保持松开: {release['target_position']}；"
-            f"初始抓取点坐标={state['tcp_cm']}；"
+            f"初始抓取点XYZ={state['grasp_point_xyz_cm']}；"
             f"抓取高度阈值={final_height_cm}cm"
         )
-        print(f"手动测试单次移动上限={arm_config.max_distance_cm:g}cm；不使用Agent的2cm限制。")
+        print("手动像素修正: 抓取点像素固定；未对齐时每次水平移动固定2cm。")
         print("输入目标点像素，格式如: 450 230 或 450,230。输入 q 退出。")
 
         round_index = 1
         while True:
             state = await controller.state()
             print(
-                f"\n[第{round_index}轮] 当前抓取点坐标={state['tcp_cm']}，"
+                f"\n[第{round_index}轮] 当前抓取点XYZ={state['grasp_point_xyz_cm']}，"
                 "旧图像视为已失效，请输入新图中的目标点像素。"
             )
             try:
