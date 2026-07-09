@@ -34,7 +34,10 @@ MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
 DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S = 0.4
 DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX = 120.0
-PIXEL_ALIGNMENT_PX_PER_CM = 16.0
+PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM = 2.0
+PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM = 50.0
+PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM = 25.0
+PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM = 18.0
 DEFAULT_DESCENT_RECALIBRATION_CM = 2.0
 FINAL_ALIGNMENT_THRESHOLD_CM = 2.0
 FINAL_GRASP_HEIGHT_CM = 1.0
@@ -44,6 +47,33 @@ SleepFunction = Callable[[float], Awaitable[None]]
 
 class ArmControlError(RuntimeError):
     """Raised when a requested arm action violates safety or cannot execute."""
+
+
+def pixel_alignment_px_per_cm_for_height(height_cm: object) -> float:
+    if isinstance(height_cm, bool):
+        raise ArmControlError("height_cm must be a number")
+    try:
+        height = float(height_cm)
+    except (TypeError, ValueError) as exc:
+        raise ArmControlError("height_cm must be a number") from exc
+    if not math.isfinite(height):
+        raise ArmControlError("height_cm must be finite")
+
+    slope = (
+        PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM
+        - PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM
+    ) / (
+        PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM
+        - PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM
+    )
+    px_per_cm = PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM + (
+        height - PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM
+    ) * slope
+    if px_per_cm <= 0:
+        raise ArmControlError(
+            "height_cm is outside the calibrated positive pixel-scale range"
+        )
+    return px_per_cm
 
 
 @dataclass(frozen=True)
@@ -692,6 +722,8 @@ class JetArmToolController:
         self._refresh_hardware_positions()
         current_tcp_cm = self._current_tcp_cm()
         current_xyz_cm = self._grasp_point_xyz_cm(current_tcp_cm)
+        height_cm = current_tcp_cm["up_z"]
+        pixel_scale_px_per_cm = pixel_alignment_px_per_cm_for_height(height_cm)
         dx = block_x - grasp_x
         dy = block_y - grasp_y
         if abs(dx) <= tolerance and abs(dy) <= tolerance:
@@ -706,6 +738,10 @@ class JetArmToolController:
                 "grasp_point_after_cm": current_tcp_cm,
                 "grasp_point_xyz_before_cm": current_xyz_cm,
                 "grasp_point_xyz_after_cm": current_xyz_cm,
+                "height_cm": height_cm,
+                "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
+                "pixel_to_motion_scale_height_cm": height_cm,
+                "pixel_to_motion_scale_model": "linear_height_cm",
                 "motion_command_count": 0,
             }
 
@@ -722,7 +758,7 @@ class JetArmToolController:
         fixed_distance = self.config.fixed_pixel_alignment_distance_cm
         if fixed_distance is None:
             distance = min(
-                abs(axis_error) / PIXEL_ALIGNMENT_PX_PER_CM,
+                abs(axis_error) / pixel_scale_px_per_cm,
                 self.config.max_distance_cm,
             )
             distance_mode = "pixel_scale"
@@ -737,8 +773,10 @@ class JetArmToolController:
             "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
             "pixel_axis": pixel_axis,
             "pixel_to_motion_scale_px_per_cm": (
-                PIXEL_ALIGNMENT_PX_PER_CM if fixed_distance is None else None
+                round(pixel_scale_px_per_cm, 6) if fixed_distance is None else None
             ),
+            "pixel_to_motion_scale_height_cm": height_cm,
+            "pixel_to_motion_scale_model": "linear_height_cm",
             "tolerance_px": tolerance,
             "speed_saturation_px": saturation,
             "step_duration_s": duration,
@@ -779,6 +817,7 @@ class JetArmToolController:
         xyz_before = self._grasp_point_xyz_cm(tcp_before)
         height_cm = tcp_before["up_z"]
         tolerance = self._pixel_tolerance_for_height(height_cm)
+        pixel_scale_px_per_cm = pixel_alignment_px_per_cm_for_height(height_cm)
         target_px = self._validate_pixel_number(target_x, "target_x")
         target_py = self._validate_pixel_number(target_y, "target_y")
         grasp_px = self._validate_pixel_number(grasp_point_x, "grasp_point_x")
@@ -814,6 +853,12 @@ class JetArmToolController:
                 "pixel_to_motion_scale_px_per_cm": result.get(
                     "pixel_to_motion_scale_px_per_cm"
                 ),
+                "pixel_to_motion_scale_height_cm": result.get(
+                    "pixel_to_motion_scale_height_cm"
+                ),
+                "pixel_to_motion_scale_model": result.get(
+                    "pixel_to_motion_scale_model"
+                ),
                 "requires_new_target_pixel": True,
             }
 
@@ -836,7 +881,9 @@ class JetArmToolController:
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
-                "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
+                "pixel_to_motion_scale_height_cm": height_cm,
+                "pixel_to_motion_scale_model": "linear_height_cm",
                 "motion_command_count": 0,
                 "requires_new_target_pixel": False,
             }
@@ -863,7 +910,9 @@ class JetArmToolController:
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
-                "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
+                "pixel_to_motion_scale_height_cm": height_cm,
+                "pixel_to_motion_scale_model": "linear_height_cm",
                 "final_alignment_threshold_cm": final_alignment_threshold_cm,
                 "final_grasp_height_cm": final_grasp_height_cm,
                 "remaining_descent_to_final_cm": round(remaining_to_final, 3),
@@ -900,7 +949,9 @@ class JetArmToolController:
             "height_after_cm": tcp_after["up_z"],
             "height_source": "joint_feedback_fk",
             "dynamic_tolerance_px": tolerance,
-            "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+            "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
+            "pixel_to_motion_scale_height_cm": height_cm,
+            "pixel_to_motion_scale_model": "linear_height_cm",
             "descent_recalibration_interval_cm": descent,
             "final_alignment_threshold_cm": final_alignment_threshold_cm,
             "final_grasp_height_cm": final_grasp_height_cm,
@@ -1163,7 +1214,20 @@ class JetArmToolController:
                 "pixel_alignment_max_speed_cm_s": MAX_PIXEL_ALIGNMENT_SPEED_CM_S,
                 "pixel_alignment_default_step_duration_s": DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
                 "pixel_alignment_speed_saturation_px": DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
-                "pixel_to_motion_scale_px_per_cm": PIXEL_ALIGNMENT_PX_PER_CM,
+                "pixel_to_motion_scale_model": "linear_height_cm",
+                "pixel_to_motion_scale_reference_points": [
+                    {
+                        "height_cm": PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM,
+                        "px_per_cm": PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM,
+                    },
+                    {
+                        "height_cm": PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM,
+                        "px_per_cm": PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM,
+                    },
+                ],
+                "pixel_to_motion_scale_formula": (
+                    "px_per_cm = 50 + (height_cm - 2) * (18 - 50) / (25 - 2)"
+                ),
                 "pixel_alignment_distance_mode": (
                     "fixed"
                     if self.config.fixed_pixel_alignment_distance_cm is not None
@@ -1197,6 +1261,11 @@ class JetArmToolController:
     async def state(self) -> dict[str, Any]:
         self._refresh_hardware_positions()
         arm_pose = self._arm_pose()
+        arm_parameters = self.arm_parameters()
+        current_height_cm = arm_pose["grasp_point_base_cm"]["up_z"]
+        arm_parameters["vision_guided_grasp"][
+            "current_pixel_to_motion_scale_px_per_cm"
+        ] = round(pixel_alignment_px_per_cm_for_height(current_height_cm), 6)
         return {
             "status": "ok",
             "mode": self.config.mode,
@@ -1205,7 +1274,7 @@ class JetArmToolController:
             "tcp_cm": arm_pose["grasp_point_base_cm"],
             "grasp_point_xyz_cm": arm_pose["grasp_point_xyz_cm"],
             "arm_pose": arm_pose,
-            "arm_parameters": self.arm_parameters(),
+            "arm_parameters": arm_parameters,
             "grip_locked": bool(self.runtime.j6_grip_locked),
         }
 
@@ -1417,7 +1486,8 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "current visual grasp workflow; use control_jetarm_to_target_pixel "
                     "so the controller owns movement decisions. This tool moves one "
                     "small image-plane step from the grasp-point pixel toward the "
-                    f"block-center pixel. Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by "
+                    "block-center pixel. Distance is abs(pixel_error) divided by the "
+                    "current height-linear px/cm scale (2 cm -> 50 px/cm; 25 cm -> 18 px/cm), capped by "
                     "the per-command limit; speed remains in the 0.7..1.5 cm/s range."
                 ),
                 parameters={
@@ -1461,7 +1531,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "command, finds the target point in the latest image, and supplies "
                     "target_x/target_y. The controller reads FK height from joint "
                     "feedback, chooses tolerance by height (40/25/13/8 px), decides front/back/left/right "
-                    f"alignment distance using {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm, and descends 2 cm when "
+                    "alignment distance using a height-linear px/cm scale (2 cm -> 50; 25 cm -> 18), and descends 2 cm when "
                     "aligned."
                 ),
                 parameters={
@@ -1683,7 +1753,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。
 6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为40px，>10且<=15cm为25px，>5且<=10cm为13px，<=5cm为8px。
-7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以16计算，例如目标点在抓取点左侧32px时抓取点向左移动2cm。
+7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以当前高度对应的线性比例计算：高度2cm时50px/cm，高度25cm时18px/cm，其他高度线性插值/外推。
 8. 已重合时，控制程序以2cm/s向下运动，并在下降过程中持续基于关节角度/FK解算抓取点位置。
 9. 每下降2cm或任一机械臂移动返回status=ok后，旧图像立即失效；必须重新调用get_rgb_camera_frame，再由Agent重新寻找目标点像素。
 10. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。

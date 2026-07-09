@@ -20,7 +20,10 @@ from .arm_control import (
     DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
     DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
     MAX_AGENT_MOVE_COMMAND_CM,
-    PIXEL_ALIGNMENT_PX_PER_CM,
+    PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM,
+    PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM,
+    PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM,
+    PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM,
     ArmControlConfig,
     JetArmToolController,
 )
@@ -424,7 +427,9 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "current visual grasp workflow; use control_jetarm_to_target_pixel so "
             "the controller owns movement decisions. This tool moves one small "
             "image-plane step using explicit block-center and grasp-point pixels. "
-            f"Distance is abs(pixel_error)/{PIXEL_ALIGNMENT_PX_PER_CM:g} cm capped by the command limit; speed "
+            "Distance is abs(pixel_error) divided by the current height-linear "
+            f"px/cm scale ({PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM:g}; "
+            f"{PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM:g}) capped by the command limit; speed "
             "is limited to 0.7..1.5 cm/s."
         ),
         structured_output=False,
@@ -456,7 +461,9 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (40/25/13/8 px), performs front/back/left/right "
-            f"alignment with {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm. When aligned, descends 2 cm. When one "
+            "alignment with a height-linear px/cm scale "
+            f"({PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM:g}; "
+            f"{PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM:g}). When aligned, descends 2 cm. When one "
             "more descent step would reach or pass the final-alignment threshold "
             "(2 cm), the controller returns aligned_hold instead; the caller "
             "should request a final alignment then descend to final_grasp_height_cm."

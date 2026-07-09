@@ -18,6 +18,7 @@ try:
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
         parse_compact_arm_command,
+        pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
     )
     from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
@@ -42,6 +43,7 @@ except ModuleNotFoundError:
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
         parse_compact_arm_command,
+        pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
     )
     from src.jetarm_agent.config import AgentSettings, ConfigurationError
@@ -151,9 +153,20 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(moved["speed_cm_s"], 0.7)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
         self.assertEqual(moved["requested_distance_cm"], 2)
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 16.0)
+        self.assertAlmostEqual(
+            moved["pixel_to_motion_scale_px_per_cm"],
+            pixel_alignment_px_per_cm_for_height(
+                moved["pixel_to_motion_scale_height_cm"]
+            ),
+            places=6,
+        )
 
-    async def test_pixel_difference_maps_to_centimeters_at_sixteen_px_per_cm(self):
+    def test_pixel_scale_is_linear_by_height(self):
+        self.assertEqual(pixel_alignment_px_per_cm_for_height(2), 50.0)
+        self.assertEqual(pixel_alignment_px_per_cm_for_height(25), 18.0)
+        self.assertAlmostEqual(pixel_alignment_px_per_cm_for_height(13.5), 34.0)
+
+    async def test_pixel_difference_maps_to_centimeters_by_current_height(self):
         moved = await self.controller.move_by_pixel_error(
             68,
             100,
@@ -165,9 +178,12 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(moved["aligned"])
         self.assertEqual(moved["direction"], "left")
         self.assertEqual(moved["pixel_error"], {"dx": -32.0, "dy": 0.0})
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 16.0)
+        scale = pixel_alignment_px_per_cm_for_height(
+            moved["pixel_to_motion_scale_height_cm"]
+        )
+        self.assertAlmostEqual(moved["pixel_to_motion_scale_px_per_cm"], scale, places=6)
         self.assertAlmostEqual(
-            moved["requested_distance_cm"], 2.0, places=6
+            moved["requested_distance_cm"], 32.0 / scale, places=6
         )
 
     async def test_manual_extended_pixel_distance_is_not_capped_at_two_cm(self):
@@ -189,8 +205,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(moved["direction"], "right")
+        scale = pixel_alignment_px_per_cm_for_height(
+            moved["pixel_to_motion_scale_height_cm"]
+        )
         self.assertAlmostEqual(
-            moved["requested_distance_cm"], 65.0 / 16.0, places=6
+            moved["requested_distance_cm"], 65.0 / scale, places=6
         )
         self.assertEqual(moved["pixel_error"], {"dx": 65.0, "dy": 0.0})
 
@@ -228,7 +247,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aligned_hold["height_source"], "joint_feedback_fk")
         self.assertIn("grasp_point_before_cm", aligned_hold)
         self.assertIn("grasp_point_after_cm", aligned_hold)
-        self.assertIn(aligned_hold["dynamic_tolerance_px"], {18.0, 15.0, 10.0, 8.0})
+        self.assertIn(aligned_hold["dynamic_tolerance_px"], {40.0, 25.0, 13.0, 8.0})
 
         self.assertEqual(moved["controller_decision"], "horizontal_align")
         self.assertFalse(moved["aligned"])
@@ -236,7 +255,13 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(moved["requires_new_target_pixel"])
         self.assertEqual(moved["target_pixel"], {"x": 220.0, "y": 100.0})
         self.assertEqual(moved["grasp_point_pixel"], {"x": 100.0, "y": 100.0})
-        self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 16.0)
+        self.assertAlmostEqual(
+            moved["pixel_to_motion_scale_px_per_cm"],
+            pixel_alignment_px_per_cm_for_height(
+                moved["pixel_to_motion_scale_height_cm"]
+            ),
+            places=6,
+        )
         self.assertIn("grasp_point_before_cm", moved)
         self.assertIn("grasp_point_after_cm", moved)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
@@ -248,7 +273,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(descended["descent_recalibration_interval_cm"], 2.0)
         self.assertTrue(descended["requires_new_target_pixel"])
         self.assertTrue(descended["tcp_samples_cm"])
-        self.assertEqual(descended["tcp_samples_cm"][0]["source"], "joint_feedback_fk")
+        self.assertEqual(descended["tcp_samples_cm"][0]["source"], "command_integrated_fk")
         self.assertIn("grasp_point_before_cm", descended)
         self.assertIn("grasp_point_after_cm", descended)
 
