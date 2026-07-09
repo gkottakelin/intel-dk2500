@@ -26,8 +26,8 @@ camera_mount:
     units: m
     source: user_sketch_2026_07_09
     camera_only_offset_along_main_chain: 0.04
-    camera_normal_offset_from_main_chain: 0.055
-    note: Partial physical measurement only; not a calibrated camera_to_tool0 transform.
+    camera_normal_offset_from_main_chain: -0.055
+    note: Partial signed physical measurement only; not a calibrated camera_to_tool0 transform.
 
 frames:
   color_frame: camera_color_optical_frame

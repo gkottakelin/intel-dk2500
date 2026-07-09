@@ -54,6 +54,7 @@ class CameraVectorTerminalTest(unittest.TestCase):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
 
+        self.assertGreater(frame.up[2], 0.9)
         runtime.set_vertical_direction(1)
         up_velocity = runtime.cartesian_velocity()
         runtime.set_vertical_direction(-1)
