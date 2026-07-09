@@ -166,6 +166,31 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moved["pixel_error"], {"dx": -26.0, "dy": 0.0})
         self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.0)
 
+    async def test_manual_extended_pixel_distance_is_not_capped_at_two_cm(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100,
+                allow_extended_distance=True,
+            )
+        )
+        self.addAsyncCleanup(self._close_controller, controller)
+
+        moved = await controller.move_by_pixel_error(
+            165,
+            100,
+            100,
+            100,
+            tolerance_px=10,
+        )
+
+        self.assertEqual(moved["direction"], "right")
+        self.assertEqual(moved["requested_distance_cm"], 5.0)
+        self.assertEqual(moved["pixel_error"], {"dx": 65.0, "dy": 0.0})
+
+    async def _close_controller(self, controller):
+        controller.close()
+
     async def test_controller_owned_target_pixel_workflow(self):
         aligned_hold = await self.controller.control_to_target_pixel(
             100,
@@ -195,6 +220,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(aligned_hold["aligned"])
         self.assertFalse(aligned_hold["requires_new_target_pixel"])
         self.assertEqual(aligned_hold["height_source"], "joint_feedback_fk")
+        self.assertIn("grasp_point_before_cm", aligned_hold)
+        self.assertIn("grasp_point_after_cm", aligned_hold)
         self.assertIn(aligned_hold["dynamic_tolerance_px"], {18.0, 15.0, 10.0, 8.0})
 
         self.assertEqual(moved["controller_decision"], "horizontal_align")
@@ -204,6 +231,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moved["target_pixel"], {"x": 220.0, "y": 100.0})
         self.assertEqual(moved["grasp_point_pixel"], {"x": 100.0, "y": 100.0})
         self.assertEqual(moved["pixel_to_motion_scale_px_per_cm"], 13.0)
+        self.assertIn("grasp_point_before_cm", moved)
+        self.assertIn("grasp_point_after_cm", moved)
         self.assertLessEqual(moved["speed_cm_s"], 1.5)
 
         self.assertEqual(descended["controller_decision"], "descend_after_alignment")
@@ -214,6 +243,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(descended["requires_new_target_pixel"])
         self.assertTrue(descended["tcp_samples_cm"])
         self.assertEqual(descended["tcp_samples_cm"][0]["source"], "joint_feedback_fk")
+        self.assertIn("grasp_point_before_cm", descended)
+        self.assertIn("grasp_point_after_cm", descended)
 
     def test_manual_pixel_input_parser(self):
         self.assertEqual(_parse_manual_target_pixel("450 230"), (450.0, 230.0))
@@ -238,12 +269,15 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 arm_mode=None,
                 arm_port=None,
                 arm_config=None,
+                manual_max_distance_cm=100,
             )
 
             config = _resolve_manual_pixel_arm_config(args)
 
         self.assertEqual(config.mode, "hardware")
         self.assertEqual(config.serial_port, "/dev/ttyUSB0")
+        self.assertEqual(config.max_distance_cm, 100)
+        self.assertTrue(config.allow_extended_distance)
 
     def test_manual_pixel_hardware_without_port_delegates_to_terminal_discovery(self):
         args = SimpleNamespace(
@@ -251,6 +285,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             arm_mode="hardware",
             arm_port=None,
             arm_config=None,
+            manual_max_distance_cm=100,
         )
 
         config = _resolve_manual_pixel_arm_config(args)
@@ -258,12 +293,17 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.mode, "hardware")
         self.assertIsNone(config.serial_port)
 
+    def test_default_arm_config_still_rejects_over_two_cm_limit(self):
+        with self.assertRaisesRegex(ArmControlError, "不能超过2"):
+            ArmControlConfig(max_distance_cm=100).validate()
+
     def test_manual_pixel_arm_config_rejects_off_mode(self):
         args = SimpleNamespace(
             device_config=str(PROJECT_ROOT / "missing-devices.json"),
             arm_mode="off",
             arm_port=None,
             arm_config=None,
+            manual_max_distance_cm=100,
         )
 
         with self.assertRaisesRegex(ConfigurationError, "不能使用off"):

@@ -49,6 +49,7 @@ class ArmControlConfig:
     serial_port: str | None = None
     terminal_config_path: Path = DEFAULT_TERMINAL_CONFIG
     max_distance_cm: float = MAX_AGENT_MOVE_COMMAND_CM
+    allow_extended_distance: bool = False
     default_speed_cm_s: float = DEFAULT_TCP_SPEED_CM_S
     min_speed_cm_s: float = MIN_TCP_SPEED_CM_S
     max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
@@ -57,9 +58,12 @@ class ArmControlConfig:
     def validate(self) -> None:
         if self.mode not in {"dry-run", "hardware"}:
             raise ArmControlError(f"机械臂模式必须是dry-run或hardware，收到: {self.mode}")
-        if self.max_distance_cm <= 0:
-            raise ArmControlError("max_distance_cm必须大于0")
-        if self.max_distance_cm > MAX_AGENT_MOVE_COMMAND_CM:
+        if not math.isfinite(self.max_distance_cm) or self.max_distance_cm <= 0:
+            raise ArmControlError("max_distance_cm必须是大于0的有限数字")
+        if (
+            self.max_distance_cm > MAX_AGENT_MOVE_COMMAND_CM
+            and not self.allow_extended_distance
+        ):
             raise ArmControlError(
                 f"max_distance_cm不能超过{MAX_AGENT_MOVE_COMMAND_CM:g}；"
                 f"Agent每条移动命令必须严格小于{MAX_AGENT_MOVE_COMMAND_CM:g}cm"
@@ -504,6 +508,16 @@ class JetArmToolController:
             "requested_distance_cm": distance_cm,
             "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
+            "grasp_point_before_cm": {
+                "forward_x": round(float(start_tcp[0] * 100.0), 3),
+                "left_y": round(float(start_tcp[1] * 100.0), 3),
+                "up_z": round(float(start_tcp[2] * 100.0), 3),
+            },
+            "grasp_point_after_cm": {
+                "forward_x": round(float(end_tcp[0] * 100.0), 3),
+                "left_y": round(float(end_tcp[1] * 100.0), 3),
+                "up_z": round(float(end_tcp[2] * 100.0), 3),
+            },
             "estimated_delta_cm": {
                 "forward_x": round(float(delta_cm[0]), 3),
                 "left_y": round(float(delta_cm[1]), 3),
@@ -689,6 +703,8 @@ class JetArmToolController:
                 "controller_decision": "horizontal_align",
                 "target_pixel": {"x": target_px, "y": target_py},
                 "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                "grasp_point_before_cm": tcp_before,
+                "grasp_point_after_cm": result.get("grasp_point_after_cm"),
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
@@ -708,6 +724,8 @@ class JetArmToolController:
                 "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
                 "target_pixel": {"x": target_px, "y": target_py},
                 "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                "grasp_point_before_cm": tcp_before,
+                "grasp_point_after_cm": tcp_before,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
@@ -736,6 +754,8 @@ class JetArmToolController:
             "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
             "target_pixel": {"x": target_px, "y": target_py},
             "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+            "grasp_point_before_cm": tcp_before,
+            "grasp_point_after_cm": tcp_after,
             "height_before_cm": height_cm,
             "height_after_cm": tcp_after["up_z"],
             "height_source": "joint_feedback_fk",
