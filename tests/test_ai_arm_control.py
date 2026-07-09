@@ -362,7 +362,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                     "height_tolerance_bands_px"
                 ]
             ],
-            [18, 15, 10, 8],
+            [40, 25, 13, 8],
         )
         home_servo_ids = {
             servo_id

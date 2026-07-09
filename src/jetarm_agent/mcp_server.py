@@ -455,7 +455,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "Controller-owned target-pixel workflow. The Agent only returns the "
             "target pixel from the latest RGB image. The controller uses the "
             "latest grasp-point pixel, reads joint feedback/FK height, chooses "
-            "height-based tolerance (18/15/10/8 px), performs front/back/left/right "
+            "height-based tolerance (40/25/13/8 px), performs front/back/left/right "
             f"alignment with {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm. When aligned, descends 2 cm. When one "
             "more descent step would reach or pass the final-alignment threshold "
             "(2 cm), the controller returns aligned_hold instead; the caller "

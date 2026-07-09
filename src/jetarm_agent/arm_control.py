@@ -440,11 +440,11 @@ class JetArmToolController:
     @staticmethod
     def _pixel_tolerance_for_height(height_cm: float) -> float:
         if height_cm > 15.0:
-            return 18.0
+            return 40.0
         if height_cm > 10.0:
-            return 15.0
+            return 25.0
         if height_cm > 5.0:
-            return 10.0
+            return 13.0
         return 8.0
 
     def _current_tcp_cm(self) -> dict[str, float]:
@@ -1173,9 +1173,9 @@ class JetArmToolController:
                 "descent_speed_cm_s": 2.0,
                 "pixel_recalculation_descent_interval_cm": DEFAULT_DESCENT_RECALIBRATION_CM,
                 "height_tolerance_bands_px": [
-                    {"height_cm": ">15", "tolerance_px": 18},
-                    {"height_cm": ">10 and <=15", "tolerance_px": 15},
-                    {"height_cm": ">5 and <=10", "tolerance_px": 10},
+                    {"height_cm": ">15", "tolerance_px": 40},
+                    {"height_cm": ">10 and <=15", "tolerance_px": 25},
+                    {"height_cm": ">5 and <=10", "tolerance_px": 13},
                     {"height_cm": "<=5", "tolerance_px": 8},
                 ],
                 "final_alignment_threshold_cm": FINAL_ALIGNMENT_THRESHOLD_CM,
@@ -1460,7 +1460,7 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "Controller-owned target-pixel workflow. The Agent only parses the "
                     "command, finds the target point in the latest image, and supplies "
                     "target_x/target_y. The controller reads FK height from joint "
-                    "feedback, chooses tolerance by height, decides front/back/left/right "
+                    "feedback, chooses tolerance by height (40/25/13/8 px), decides front/back/left/right "
                     f"alignment distance using {PIXEL_ALIGNMENT_PX_PER_CM:g} px per cm, and descends 2 cm when "
                     "aligned."
                 ),
@@ -1682,7 +1682,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
 5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。
-6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为18px，>10且<=15cm为15px，>5且<=10cm为10px，<=5cm为8px。
+6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为40px，>10且<=15cm为25px，>5且<=10cm为13px，<=5cm为8px。
 7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以13.3计算，例如目标点在抓取点左侧26.6px时抓取点向左移动2cm。
 8. 已重合时，控制程序以2cm/s向下运动，并在下降过程中持续基于关节角度/FK解算抓取点位置。
 9. 每下降2cm或任一机械臂移动返回status=ok后，旧图像立即失效；必须重新调用get_rgb_camera_frame，再由Agent重新寻找目标点像素。
