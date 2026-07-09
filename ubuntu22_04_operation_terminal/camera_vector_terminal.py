@@ -418,7 +418,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         weight = max(0.0, float(self.camera_config.line_angle_hold_weight_m))
         if self._locked_line_angle_rad is None or weight <= 0.0:
             return super()._solve_next_positions(target_delta)
-        line_weight = weight if self._height_hold_active else min(weight, 0.2)
+        line_weight = weight if self._height_hold_active else max(weight * 0.5, 0.5)
 
         jacobian = self.model.jacobian(self.positions)
         height_weight = HEIGHT_HOLD_ERROR_WEIGHT if self._height_hold_active else 1.0
@@ -494,7 +494,7 @@ class CameraRelativeManualServoRuntime(ManualServoRuntime):
         line_weight = (
             self.camera_config.line_angle_hold_weight_m
             if self._height_hold_active
-            else min(self.camera_config.line_angle_hold_weight_m, 0.2)
+            else max(self.camera_config.line_angle_hold_weight_m * 0.5, 0.5)
         )
         line_angle_error = abs(self._line_angle_error_rad(positions))
         yaw_error = abs(self._yaw_error_rad(positions))
