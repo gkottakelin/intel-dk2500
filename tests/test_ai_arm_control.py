@@ -412,12 +412,21 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["controller_decision"], "horizontal_align")
             self.assertEqual(result["direction"], "right")
             self.assertEqual(
+                result["motion_loop"],
+                "camera_vector_terminal_v2_terminal_input",
+            )
+            self.assertEqual(result["terminal_input"]["direction"], "right")
+            self.assertAlmostEqual(
+                result["terminal_hold_duration_s"],
+                result["requested_distance_cm"] / result["speed_cm_s"],
+            )
+            self.assertEqual(
                 state["arm_parameters"]["agent_direction_frames"]["implementation"],
                 "ubuntu22_04_operation_terminal.camera_vector_terminal_v2",
             )
             self.assertEqual(
                 state["arm_parameters"]["agent_direction_frames"]["forward"],
-                "camera_to_grasp_line_xy_projection",
+                "grasp_to_camera_line_xy_projection",
             )
         finally:
             controller.close()

@@ -529,91 +529,119 @@ class JetArmToolController:
         tick loop, exactly as the camera_vector GUI terminal does."""
 
         self._refresh_hardware_positions()
-        reset_pose_relaxation = getattr(
-            self.runtime, "reset_pose_relaxation_status", None
-        )
-        if callable(reset_pose_relaxation):
-            reset_pose_relaxation()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
-        requested_speed_m_s = speed_cm_s / 100.0
-        planner_speed_m_s, direction_unit = self._set_cartesian_direction(direction)
-        camera_reference_before_move = self._camera_pose()
-
         horizontal_directions = {"forward", "backward", "left", "right"}
-
-        # Scale joystick values to match the requested speed.  The terminal
-        # sets them to ±1 (full speed); we multiply by speed / max_speed so
-        # that cartesian_velocity() returns the requested speed exactly.
-        speed_m_s = speed_cm_s / 100.0
-        speed_ratio = speed_m_s / planner_speed_m_s
-        if direction in horizontal_directions:
-            self.runtime.joystick_x *= speed_ratio
-            self.runtime.joystick_y *= speed_ratio
-        else:
-            self.runtime.vertical_direction *= speed_ratio
-
         duration_s = distance_cm / speed_cm_s
         tick_interval = self.settings.tick_s
-
         steps = 0
         tcp_samples: list[dict[str, Any]] = []
-        try:
-            if self.config.mode == "hardware":
-                # Real-clock tick() loop, matching the GUI terminal.
-                self.runtime.last_step_at = None
-                self.runtime.tick()  # first tick: initialise timestamp only
+        terminal_input_status: dict[str, Any] | None = None
 
-                deadline = time.monotonic() + duration_s
-                while time.monotonic() < deadline:
-                    self.runtime.tick()
-                    steps += 1
-                    await self.sleep(tick_interval)
-                    if collect_tcp_samples:
-                        sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
-                        sample_base_cm = {
-                            "forward_x": round(float(sample_tcp[0]), 3),
-                            "left_y": round(float(sample_tcp[1]), 3),
-                            "up_z": round(float(sample_tcp[2]), 3),
-                        }
-                        tcp_samples.append(
-                            {
-                                "step": steps,
-                                "source": "command_integrated_fk",
-                                "tcp_cm": sample_base_cm,
-                                "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
-                            }
-                        )
+        def append_current_tcp_sample(source: str) -> None:
+            if not collect_tcp_samples:
+                return
+            sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
+            sample_base_cm = {
+                "forward_x": round(float(sample_tcp[0]), 3),
+                "left_y": round(float(sample_tcp[1]), 3),
+                "up_z": round(float(sample_tcp[2]), 3),
+            }
+            tcp_samples.append(
+                {
+                    "step": steps,
+                    "source": source,
+                    "tcp_cm": sample_base_cm,
+                    "grasp_point_xyz_cm": self._grasp_point_xyz_cm(
+                        sample_base_cm
+                    ),
+                }
+            )
+
+        if self.config.camera_vector_version == "v2":
+            execute_terminal_motion = getattr(
+                self.terminal, "execute_terminal_motion", None
+            )
+            if not callable(execute_terminal_motion):
+                raise ArmControlError(
+                    "camera_vector_terminal_v2缺少execute_terminal_motion"
+                )
+            camera_reference_before_move = self._camera_pose()
+            terminal_result = await execute_terminal_motion(
+                self.runtime,
+                direction=direction,
+                speed_cm_s=speed_cm_s,
+                duration_s=duration_s,
+                real_time=self.config.mode == "hardware",
+                sleep=self.sleep,
+                collect_tcp_samples=collect_tcp_samples,
+            )
+            terminal_input_status = dict(terminal_result["terminal_input"])
+            direction_unit = tuple(
+                float(value)
+                for value in terminal_input_status["direction_unit_base"]
+            )
+            steps = int(terminal_result["steps"])
+            for step_index, raw_tcp_m in enumerate(
+                terminal_result.get("tcp_samples_m", []), start=1
+            ):
+                sample_tcp = [float(value) * 100.0 for value in raw_tcp_m]
+                sample_base_cm = {
+                    "forward_x": round(sample_tcp[0], 3),
+                    "left_y": round(sample_tcp[1], 3),
+                    "up_z": round(sample_tcp[2], 3),
+                }
+                tcp_samples.append(
+                    {
+                        "step": step_index,
+                        "source": "v2_terminal_input_integrated_fk",
+                        "tcp_cm": sample_base_cm,
+                        "grasp_point_xyz_cm": self._grasp_point_xyz_cm(
+                            sample_base_cm
+                        ),
+                    }
+                )
+        else:
+            requested_speed_m_s = speed_cm_s / 100.0
+            planner_speed_m_s, direction_unit = self._set_cartesian_direction(
+                direction
+            )
+            camera_reference_before_move = self._camera_pose()
+
+            speed_m_s = speed_cm_s / 100.0
+            speed_ratio = speed_m_s / planner_speed_m_s
+            if direction in horizontal_directions:
+                self.runtime.joystick_x *= speed_ratio
+                self.runtime.joystick_y *= speed_ratio
             else:
-                # Dry-run: fixed-dt stepping with run_time_s for backward
-                # compatibility (run_time_ms varies with speed).
-                remaining_s = duration_s
-                while remaining_s > 1e-9:
-                    dt = min(tick_interval, remaining_s)
-                    execution_dt = dt * planner_speed_m_s / requested_speed_m_s
-                    if not self.runtime.step_cartesian(
-                        dt, run_time_s=execution_dt
-                    ):
-                        break
-                    steps += 1
-                    remaining_s -= dt
-                    await self.sleep(0)
-                    if collect_tcp_samples:
-                        sample_tcp = self.runtime.model.tcp(self.runtime.positions) * 100.0
-                        sample_base_cm = {
-                            "forward_x": round(float(sample_tcp[0]), 3),
-                            "left_y": round(float(sample_tcp[1]), 3),
-                            "up_z": round(float(sample_tcp[2]), 3),
-                        }
-                        tcp_samples.append(
-                            {
-                                "step": steps,
-                                "source": "command_integrated_fk",
-                                "tcp_cm": sample_base_cm,
-                                "grasp_point_xyz_cm": self._grasp_point_xyz_cm(sample_base_cm),
-                            }
+                self.runtime.vertical_direction *= speed_ratio
+
+            try:
+                if self.config.mode == "hardware":
+                    self.runtime.last_step_at = None
+                    self.runtime.tick()
+                    deadline = time.monotonic() + duration_s
+                    while time.monotonic() < deadline:
+                        self.runtime.tick()
+                        steps += 1
+                        await self.sleep(tick_interval)
+                        append_current_tcp_sample("command_integrated_fk")
+                else:
+                    remaining_s = duration_s
+                    while remaining_s > 1e-9:
+                        dt = min(tick_interval, remaining_s)
+                        execution_dt = (
+                            dt * planner_speed_m_s / requested_speed_m_s
                         )
-        finally:
-            self._stop_cartesian()
+                        if not self.runtime.step_cartesian(
+                            dt, run_time_s=execution_dt
+                        ):
+                            break
+                        steps += 1
+                        remaining_s -= dt
+                        await self.sleep(0)
+                        append_current_tcp_sample("command_integrated_fk")
+            finally:
+                self._stop_cartesian()
 
         if self.config.mode == "hardware":
             await self.sleep(0.05)
@@ -672,7 +700,13 @@ class JetArmToolController:
             "requested_distance_cm": distance_cm,
             "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
-            "motion_loop": "camera_vector_continuous_command",
+            "motion_loop": (
+                "camera_vector_terminal_v2_terminal_input"
+                if self.config.camera_vector_version == "v2"
+                else "camera_vector_continuous_command"
+            ),
+            "terminal_input": terminal_input_status,
+            "terminal_hold_duration_s": duration_s,
             "feedback_read_policy": (
                 "before_and_after_motion"
                 if self.config.mode == "hardware"
@@ -698,7 +732,7 @@ class JetArmToolController:
             ),
             "horizontal_motion_frame": (
                 (
-                    "camera_to_grasp_line_xy_projection"
+                    "grasp_to_camera_line_xy_projection"
                     if self.config.camera_vector_version == "v2"
                     else "grasp_point_xyz_xy"
                 )
@@ -1347,7 +1381,7 @@ class JetArmToolController:
     def arm_parameters(self) -> dict[str, Any]:
         uses_v2_camera_frame = self.config.camera_vector_version == "v2"
         horizontal_frame = (
-            "camera_to_grasp_line_xy_projection"
+            "grasp_to_camera_line_xy_projection"
             if uses_v2_camera_frame
             else "base_horizontal_xy"
         )
@@ -1358,7 +1392,7 @@ class JetArmToolController:
         )
         if uses_v2_camera_frame:
             direction_descriptions = {
-                "forward": "camera_to_grasp_line_xy_projection",
+                "forward": "grasp_to_camera_line_xy_projection",
                 "backward": "opposite_of_forward",
                 "left": "world_up_cross_forward",
                 "right": "opposite_of_left",

@@ -1,3 +1,4 @@
+import asyncio
 import math
 import sys
 import unittest
@@ -16,7 +17,10 @@ from camera_vector_terminal_v2 import (  # noqa: E402
     CameraVectorV2Runtime,
     HorizontalDirectionUndefined,
     _unit,
+    apply_terminal_motion_input,
     build_camera_vector_v2_frame,
+    execute_terminal_motion,
+    release_terminal_motion_input,
 )
 from jetarm_terminal import DryRunServoController, TerminalSettings  # noqa: E402
 
@@ -37,10 +41,10 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         runtime.initialize(use_home_positions=True)
         return runtime, controller
 
-    def test_forward_is_horizontal_camera_to_grasp_projection(self):
+    def test_forward_is_horizontal_grasp_to_camera_projection(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
-        expected = frame.down.copy()
+        expected = frame.up.copy()
         expected[2] = 0.0
         expected /= np.linalg.norm(expected)
 
@@ -61,6 +65,52 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         self.assertFalse(np.allclose(before, after))
         self.assertAlmostEqual(float(before[2]), 0.0, places=9)
         self.assertAlmostEqual(float(after[2]), 0.0, places=9)
+
+    def test_terminal_input_applies_requested_speed_to_swapped_forward(self):
+        runtime, _controller = self.make_runtime()
+        frame = runtime.camera_relative_frame()
+
+        status = apply_terminal_motion_input(runtime, "forward", 1.0)
+
+        self.assertAlmostEqual(status["input_ratio"], 0.2)
+        self.assertAlmostEqual(runtime.joystick_x, 0.0)
+        self.assertAlmostEqual(runtime.joystick_y, -0.2)
+        np.testing.assert_allclose(
+            runtime.cartesian_velocity(),
+            frame.forward * 0.01,
+        )
+        release_terminal_motion_input(runtime)
+        self.assertEqual(runtime.joystick_x, 0.0)
+        self.assertEqual(runtime.joystick_y, 0.0)
+
+    def test_shared_terminal_executor_converts_speed_and_time_to_distance(self):
+        runtime, _controller = self.make_runtime()
+        before = runtime.model.tcp(runtime.positions)
+
+        result = asyncio.run(
+            execute_terminal_motion(
+                runtime,
+                direction="left",
+                speed_cm_s=1.0,
+                duration_s=2.5,
+                real_time=False,
+                collect_tcp_samples=True,
+            )
+        )
+
+        after = runtime.model.tcp(runtime.positions)
+        self.assertEqual(
+            result["execution_path"],
+            "camera_vector_terminal_v2_terminal_input",
+        )
+        self.assertEqual(result["requested_distance_cm"], 2.5)
+        self.assertEqual(result["terminal_input"]["direction"], "left")
+        self.assertEqual(result["terminal_input"]["speed_cm_s"], 1.0)
+        self.assertTrue(result["tcp_samples_m"])
+        self.assertGreater(
+            float(np.dot(after - before, runtime.camera_relative_frame().left)),
+            0.0,
+        )
 
     def test_horizontal_forward_holds_height_and_line_inclination(self):
         runtime, _controller = self.make_runtime()

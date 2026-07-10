@@ -4,7 +4,7 @@ V2 defines the control frame from the current camera/grasp-point line:
 
 - up: grasp point -> camera
 - down: camera -> grasp point
-- forward: the camera -> grasp line projected onto the base XY plane
+- forward: the grasp -> camera line projected onto the base XY plane
 - backward: opposite to forward
 - left/right: horizontal axes perpendicular to forward
 
@@ -18,11 +18,14 @@ translation.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import itertools
+import json
 import math
 import sys
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
 
@@ -54,6 +57,15 @@ HORIZONTAL_PROJECTION_EPSILON = 1e-4
 IK_POSITION_TOLERANCE_M = 0.004
 IK_INCLINATION_TOLERANCE_RAD = math.radians(1.0)
 INITIAL_J6_POSITION = 400
+TERMINAL_MOTION_DIRECTIONS = (
+    "forward",
+    "backward",
+    "left",
+    "right",
+    "up",
+    "down",
+)
+SleepFunction = Callable[[float], Awaitable[None]]
 
 
 class HorizontalDirectionUndefined(ValueError):
@@ -79,8 +91,8 @@ def build_camera_vector_v2_frame(
     source = build_camera_relative_frame(settings, positions, camera_config)
     up = source.up
     down = -up
-    horizontal_camera_to_grasp = np.array((down[0], down[1], 0.0), dtype=float)
-    forward = _unit(horizontal_camera_to_grasp)
+    horizontal_grasp_to_camera = np.array((up[0], up[1], 0.0), dtype=float)
+    forward = _unit(horizontal_grasp_to_camera)
     left = _unit(np.cross(WORLD_UP, forward))
     return CameraRelativeFrame(
         up=up,
@@ -391,6 +403,136 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
         )
 
 
+def apply_terminal_motion_input(
+    runtime: CameraVectorV2Runtime,
+    direction: str,
+    speed_cm_s: float,
+) -> dict[str, object]:
+    """Apply the same normalized input used by the V2 terminal controls."""
+
+    if direction not in TERMINAL_MOTION_DIRECTIONS:
+        raise ValueError(f"unsupported V2 terminal direction: {direction}")
+    speed = float(speed_cm_s)
+    if not math.isfinite(speed) or speed <= 0.0:
+        raise ValueError("motion speed must be a positive finite number")
+
+    horizontal = direction in {"forward", "backward", "left", "right"}
+    maximum_speed_cm_s = (
+        runtime.settings.max_horizontal_speed_m_s
+        if horizontal
+        else runtime.settings.vertical_speed_m_s
+    ) * 100.0
+    if speed > maximum_speed_cm_s:
+        raise ValueError(
+            f"motion speed cannot exceed {maximum_speed_cm_s:g} cm/s"
+        )
+    input_ratio = speed / maximum_speed_cm_s
+
+    runtime.set_vertical_direction(0.0)
+    runtime.center_joystick()
+    if direction == "forward":
+        runtime.set_joystick(0.0, -input_ratio)
+    elif direction == "backward":
+        runtime.set_joystick(0.0, input_ratio)
+    elif direction == "left":
+        runtime.set_joystick(-input_ratio, 0.0)
+    elif direction == "right":
+        runtime.set_joystick(input_ratio, 0.0)
+    elif direction == "up":
+        runtime.set_vertical_direction(input_ratio)
+    else:
+        runtime.set_vertical_direction(-input_ratio)
+
+    frame = runtime.active_camera_relative_frame()
+    vector = getattr(frame, direction)
+    return {
+        "direction": direction,
+        "speed_cm_s": speed,
+        "maximum_speed_cm_s": maximum_speed_cm_s,
+        "input_ratio": input_ratio,
+        "joystick_x": float(runtime.joystick_x),
+        "joystick_y": float(runtime.joystick_y),
+        "vertical_direction": float(runtime.vertical_direction),
+        "direction_unit_base": [float(value) for value in vector],
+    }
+
+
+def release_terminal_motion_input(runtime: CameraVectorV2Runtime) -> None:
+    """Release V2 terminal controls exactly like mouse/button release."""
+
+    runtime.set_vertical_direction(0.0)
+    runtime.center_joystick()
+
+
+async def execute_terminal_motion(
+    runtime: CameraVectorV2Runtime,
+    *,
+    direction: str,
+    speed_cm_s: float,
+    duration_s: float,
+    real_time: bool,
+    sleep: SleepFunction = asyncio.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    collect_tcp_samples: bool = False,
+) -> dict[str, object]:
+    """Hold one V2 terminal input for a requested duration.
+
+    This is the shared execution path used by both ``run_camera_vector_v2.sh``
+    motion arguments and the manual pixel-test V2 adapter.
+    """
+
+    duration = float(duration_s)
+    if not math.isfinite(duration) or duration <= 0.0:
+        raise ValueError("motion duration must be a positive finite number")
+    runtime.reset_pose_relaxation_status()
+    terminal_input = apply_terminal_motion_input(runtime, direction, speed_cm_s)
+    tick_interval = float(runtime.settings.tick_s)
+    steps = 0
+    samples_m: list[list[float]] = []
+
+    def collect_sample() -> None:
+        if not collect_tcp_samples:
+            return
+        tcp = runtime.model.tcp(runtime.positions)
+        samples_m.append([float(value) for value in tcp])
+
+    try:
+        if real_time:
+            runtime.last_step_at = runtime.monotonic()
+            deadline = monotonic() + duration
+            while True:
+                remaining = deadline - monotonic()
+                if remaining <= 0.0:
+                    break
+                await sleep(min(tick_interval, remaining))
+                runtime.tick()
+                steps += 1
+                collect_sample()
+        else:
+            remaining = duration
+            while remaining > 1e-9:
+                dt = min(tick_interval, remaining)
+                runtime.step_cartesian(dt, run_time_s=dt)
+                steps += 1
+                remaining -= dt
+                collect_sample()
+                await sleep(0.0)
+    finally:
+        release_terminal_motion_input(runtime)
+
+    return {
+        "status": "ok",
+        "execution_path": "camera_vector_terminal_v2_terminal_input",
+        "terminal_input": terminal_input,
+        "duration_s": duration,
+        "requested_distance_cm": float(speed_cm_s) * duration,
+        "steps": steps,
+        "tcp_samples_m": samples_m,
+        "camera_pose_constraint": runtime.pose_relaxation_status(),
+        "joint_positions": dict(runtime.positions),
+    }
+
+
 class CameraVectorV2App(CameraVectorTerminalApp):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -419,12 +561,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", default=None, help="serial device, for example /dev/ttyUSB0")
     parser.add_argument("--baudrate", type=int, default=None, help="override configured baudrate")
     parser.add_argument("--timeout", type=float, default=None, help="override serial timeout in seconds")
-    parser.add_argument("--dry-run", action="store_true", help="open the UI without a real serial device")
+    parser.add_argument("--dry-run", action="store_true", help="run without a real serial device")
     parser.add_argument("--list-ports", action="store_true", help="list detected USB serial devices and exit")
     parser.add_argument(
         "--diagnose-ports",
         action="store_true",
         help="diagnose USB-visible devices that have no Linux tty node",
+    )
+    parser.add_argument(
+        "--motion-direction",
+        choices=TERMINAL_MOTION_DIRECTIONS,
+        default=None,
+        help="headless terminal input direction",
+    )
+    parser.add_argument(
+        "--motion-speed-cm-s",
+        type=float,
+        default=None,
+        help="headless terminal input speed in cm/s",
+    )
+    parser.add_argument(
+        "--motion-duration-s",
+        type=float,
+        default=None,
+        help="headless terminal input hold duration in seconds",
     )
     return parser
 
@@ -449,6 +609,53 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         settings = TerminalSettings.from_file(args.config)
         camera_config = CameraLineConfig.from_file(args.config)
+        motion_values = (
+            args.motion_direction,
+            args.motion_speed_cm_s,
+            args.motion_duration_s,
+        )
+        motion_requested = any(value is not None for value in motion_values)
+        if motion_requested and not all(value is not None for value in motion_values):
+            raise ValueError(
+                "--motion-direction, --motion-speed-cm-s and "
+                "--motion-duration-s must be provided together"
+            )
+
+        if motion_requested:
+            logger = print
+            selected_port: Optional[str] = None
+            if args.dry_run:
+                controller: Any = DryRunServoController(settings, logger=logger)
+            else:
+                selected_port = select_linux_serial_port(args.port)
+                controller = BusServoController(
+                    selected_port,
+                    args.baudrate or settings.baudrate,
+                    args.timeout if args.timeout is not None else settings.timeout_s,
+                )
+            runtime = CameraVectorV2Runtime(
+                controller,
+                settings,
+                camera_config=camera_config,
+                logger=logger,
+            )
+            try:
+                runtime.initialize(use_home_positions=args.dry_run)
+                result = asyncio.run(
+                    execute_terminal_motion(
+                        runtime,
+                        direction=args.motion_direction,
+                        speed_cm_s=args.motion_speed_cm_s,
+                        duration_s=args.motion_duration_s,
+                        real_time=not args.dry_run,
+                        collect_tcp_samples=True,
+                    )
+                )
+            finally:
+                runtime.close()
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+
         if tk is None:
             raise RuntimeError("Tkinter is not installed")
         root = tk.Tk()
