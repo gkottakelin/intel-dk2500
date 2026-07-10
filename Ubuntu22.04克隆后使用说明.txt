@@ -1,0 +1,432 @@
+JetArm 项目 Ubuntu 22.04 使用说明
+================================
+
+一、项目简介
+------------
+
+本项目包含：
+
+1. JetArm 机械臂串口控制程序
+2. Ubuntu 22.04 操作终端
+3. Gemini RGB-D 相机程序
+4. AI 自然语言控制终端
+5. MCP 工具服务
+6. ROS 2 Humble 机械臂模型与 RViz 显示
+7. 单元测试和运动学验证代码
+
+Ubuntu 22.04 推荐使用 Python 3.10。
+
+注意：Ubuntu 下不要直接安装根目录的 requirements.txt。该文件包含
+Windows/Python 3.12 相关依赖。Ubuntu 主要使用：
+
+- requirements-ai.txt
+- ubuntu22_04_operation_terminal/
+- ubuntu22_04_gemini_camera/
+
+
+二、克隆项目
+------------
+
+安装 Git：
+
+    sudo apt update
+    sudo apt install -y git
+
+使用 HTTPS 克隆：
+
+    git clone https://github.com/gkottakelin/intel-dk2500.git
+    cd intel-dk2500
+
+如果已经配置 GitHub SSH，也可以使用：
+
+    git clone git@github.com:gkottakelin/intel-dk2500.git
+    cd intel-dk2500
+
+确认当前目录正确：
+
+    ls
+
+应能看到以下目录或文件：
+
+    src
+    config
+    tests
+    ubuntu22_04_operation_terminal
+    ubuntu22_04_gemini_camera
+    requirements-ai.txt
+    README.md
+
+
+三、安装基础依赖
+----------------
+
+    sudo apt update
+    sudo apt install -y \
+        python3 \
+        python3-venv \
+        python3-tk \
+        python3-numpy \
+        python3-serial \
+        fonts-noto-cjk
+
+将当前用户加入串口用户组：
+
+    sudo usermod -aG dialout "$USER"
+
+执行后注销并重新登录，或者临时执行：
+
+    newgrp dialout
+
+检查串口设备：
+
+    ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+    ls -l /dev/serial/by-id/ 2>/dev/null
+
+推荐使用 /dev/serial/by-id/ 下的稳定设备路径，避免 USB 设备编号变化。
+
+
+四、运行 Ubuntu 机械臂操作终端
+------------------------------
+
+4.1 创建运行环境
+
+    cd ubuntu22_04_operation_terminal
+    bash setup.sh
+
+该脚本会创建：
+
+    ubuntu22_04_operation_terminal/.venv/
+
+4.2 首次运行模拟模式
+
+首次运行建议先使用模拟模式，不连接真实机械臂：
+
+    bash run.sh --dry-run
+
+模拟模式可用于检查界面和控制逻辑。
+
+4.3 查看串口
+
+    bash run.sh --list-ports
+
+如果没有检测到串口，运行：
+
+    bash run.sh --diagnose-ports
+
+4.4 连接真实机械臂
+
+指定串口运行：
+
+    bash run.sh --port /dev/ttyUSB0
+
+推荐使用稳定路径：
+
+    bash run.sh --port /dev/serial/by-id/usb-你的设备名称
+
+不指定 --port 时，程序会弹出串口选择界面：
+
+    bash run.sh
+
+操作终端配置文件：
+
+    ubuntu22_04_operation_terminal/config/terminal.json
+
+该文件包含串口、波特率、舵机 ID、关节限位和 Home 姿态等参数。
+
+
+五、配置和运行 AI 自然语言控制终端
+------------------------------------
+
+5.1 创建 AI 虚拟环境
+
+在项目根目录执行：
+
+    cd /path/to/intel-dk2500
+    python3 -m venv .venv-ai
+    source .venv-ai/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements-ai.txt
+
+以后重新打开终端时，需要重新激活环境：
+
+    cd /path/to/intel-dk2500
+    source .venv-ai/bin/activate
+
+5.2 配置 API Key
+
+复制环境变量模板：
+
+    cp .env.example .env
+    nano .env
+
+填写以下内容：
+
+    MOONSHOT_API_KEY=你的Kimi_API_Key
+    JETARM_API_BASE_URL=https://api.moonshot.cn/v1
+    JETARM_API_MODEL=kimi-k2.6
+
+设置文件权限：
+
+    chmod 600 .env
+
+不要将真实 API Key 提交到 Git。
+
+5.3 运行 AI 对话终端
+
+    python3 -m src.jetarm_agent
+
+只发送一条消息后退出：
+
+    python3 -m src.jetarm_agent --once "你好，请介绍一下你能做什么"
+
+5.4 运行 AI 工具调用测试
+
+该测试需要 API Key，但不会访问相机和真实机械臂：
+
+    python3 -m src.jetarm_agent --tool-test
+
+运行本地自动化测试：
+
+    python3 -m unittest \
+        tests.test_ai_agent \
+        tests.test_ai_arm_control \
+        tests.test_ai_camera \
+        tests.test_ai_mcp
+
+
+六、配置真实机械臂和相机
+------------------------
+
+首次使用 AI 控制机械臂时，运行设备配置程序：
+
+    source .venv-ai/bin/activate
+    python3 -m src.jetarm_agent.device_config
+
+程序可以配置：
+
+1. 机械臂模式
+2. 机械臂串口
+3. Gemini 相机序列号或 UID
+4. 操作终端配置文件
+
+配置结果保存到：
+
+    config/devices.json
+
+该文件是本机配置文件，默认不会提交到 Git。
+
+如果暂时不连接真实硬件，可以使用无界面模拟配置：
+
+    python3 -m src.jetarm_agent.device_config \
+        --no-gui \
+        --arm-mode dry-run
+
+配置完成后启动 Agent：
+
+    python3 -m src.jetarm_agent
+
+常用交互命令：
+
+    /help
+    /tool-test
+    /camera
+    /workflow
+    /arm-status
+    /arm-stop
+    /arm-home
+    /exit
+
+
+七、运行 Gemini 相机程序
+------------------------
+
+Gemini 相机程序要求：
+
+1. Ubuntu 22.04
+2. Intel/AMD x86_64
+3. USB 3.0
+4. 桌面环境或可用的图形显示
+5. Orbbec Gemini 相机
+
+安装依赖：
+
+    cd ubuntu22_04_gemini_camera
+    sudo apt update
+    sudo apt install -y \
+        python3 \
+        python3-venv \
+        python3-tk \
+        python3-numpy \
+        python3-opencv \
+        libusb-1.0-0 \
+        usbutils \
+        fonts-noto-cjk
+
+创建环境：
+
+    bash setup.sh
+
+安装 USB 权限规则：
+
+    sudo bash install_udev_rules.sh
+
+拔出并重新插入相机，然后检查设备：
+
+    lsusb | grep -i 2bc5
+    bash run.sh --diagnose
+
+列出相机：
+
+    bash run.sh --list-devices
+
+使用第一个相机：
+
+    bash run.sh --first-device
+
+指定相机序列号：
+
+    bash run.sh --serial 你的相机序列号
+
+查看相机内参：
+
+    bash run.sh \
+        --serial 你的相机序列号 \
+        --read-intrinsics
+
+启动相机查看器：
+
+    bash run.sh
+
+查看器操作：
+
+- 鼠标点击彩色图可以查看对应位置的深度。
+- 按 s 保存图像和深度数据。
+- 按 q 或 Esc 退出。
+
+
+八、ROS 2 Humble 模型显示
+--------------------------
+
+如果已经安装 ROS 2 Humble，先加载环境：
+
+    source /opt/ros/humble/setup.bash
+
+安装显示相关组件：
+
+    sudo apt install -y \
+        ros-humble-desktop \
+        ros-humble-joint-state-publisher-gui
+
+构建 ROS 2 工作区：
+
+    cd ros2_ws
+    colcon build --packages-select jetarm_description
+    source install/setup.bash
+
+启动 RViz：
+
+    ros2 launch jetarm_description display.launch.py
+
+不使用关节滑块界面：
+
+    ros2 launch jetarm_description display.launch.py use_gui:=false
+
+
+九、运行完整测试
+----------------
+
+在项目根目录执行：
+
+    python3 -m unittest discover -s tests -v
+
+运动学命令行验证：
+
+    python3 src/arm_model.py \
+        --angle-deg J1=0 \
+        --angle-deg J2=0 \
+        --angle-deg J3=0 \
+        --angle-deg J4=0 \
+        --angle-deg J5=0 \
+        --json
+
+
+十、推荐启动顺序
+----------------
+
+第一次部署建议按以下顺序执行：
+
+1. 安装 Ubuntu 基础依赖。
+2. 克隆项目并进入项目根目录。
+3. 运行机械臂操作终端的 dry-run 模式。
+4. 运行完整单元测试。
+5. 安装并检查串口权限。
+6. 单独运行 Gemini 相机诊断程序。
+7. 连接真实机械臂，读取设备状态。
+8. 确认 Home 姿态、舵机 ID 和关节限位。
+9. 最后再启动 AI 自然语言控制。
+
+
+十一、安全注意事项
+--------------------
+
+1. 真实机械臂运行前必须清空工作空间。
+2. 首次运行必须先使用 --dry-run。
+3. 确认机械臂串口、舵机 ID、运动方向和限位。
+4. 机械臂运动时人员不要靠近工作范围。
+5. 必须准备可以立即断电的电源开关。
+6. 不要使用 sudo 运行机械臂程序。
+7. 修改关节限位或 Home 姿态后，必须重新运行测试。
+
+
+十二、常见问题
+--------------
+
+1. 串口权限不足
+
+错误类似：
+
+    Permission denied: /dev/ttyUSB0
+
+解决方法：
+
+    sudo usermod -aG dialout "$USER"
+
+注销并重新登录后再运行程序。
+
+2. 找不到串口
+
+    bash ubuntu22_04_operation_terminal/run.sh --list-ports
+    bash ubuntu22_04_operation_terminal/run.sh --diagnose-ports
+
+检查 USB 线、CH340 驱动、brltty 占用情况，以及机械臂是否已经上电。
+
+3. 找不到 Gemini 相机
+
+    lsusb | grep -i 2bc5
+    bash ubuntu22_04_gemini_camera/run.sh --diagnose
+
+确认已经安装 udev 规则，并关闭 Orbbec Viewer 等可能占用相机的程序。
+
+4. AI API Key 无效
+
+检查 .env 文件是否存在，并确认变量名称为：
+
+    MOONSHOT_API_KEY
+
+同时确认已经激活 .venv-ai 环境。
+
+5. 没有图形界面
+
+机械臂操作终端、设备配置程序和 Gemini 查看器都需要图形显示环境。
+Ubuntu Server 或 SSH 环境需要配置桌面、X11 转发或其他远程显示方案。
+
+
+十三、相关文档
+--------------
+
+- README.md
+- ubuntu22_04_operation_terminal/README.md
+- ubuntu22_04_gemini_camera/README.md
+- ros2_ws/src/jetarm_description/README.md
+- 环境配置.md
+- 项目环境配置与代码说明.md
