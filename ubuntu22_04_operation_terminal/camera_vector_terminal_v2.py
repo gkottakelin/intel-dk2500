@@ -4,8 +4,8 @@ V2 defines the control frame from the current camera/grasp-point line:
 
 - up: grasp point -> camera
 - down: camera -> grasp point
-- forward: the grasp -> camera line projected onto the base XY plane
-- backward: opposite to forward
+- forward: the camera -> grasp line projected onto the base XY plane
+- backward: the grasp -> camera line projected onto the base XY plane
 - left/right: horizontal axes perpendicular to forward
 
 The camera-line inclination is captured once for the runtime session (and reset
@@ -128,13 +128,17 @@ def build_camera_vector_v2_frame(
         )
     down = -up
     horizontal_grasp_to_camera = np.array((up[0], up[1], 0.0), dtype=float)
-    forward = _unit(horizontal_grasp_to_camera)
-    left = _unit(np.cross(WORLD_UP, forward))
+    # The real-arm front/back convention is the reverse of the original V2
+    # projection.  Swap only these two axes; left/right were already correct
+    # on hardware and must not be derived from the swapped forward vector.
+    backward = _unit(horizontal_grasp_to_camera)
+    forward = -backward
+    left = _unit(np.cross(WORLD_UP, backward))
     return CameraRelativeFrame(
         up=up,
         down=down,
         forward=forward,
-        backward=-forward,
+        backward=backward,
         left=left,
         right=-left,
     )

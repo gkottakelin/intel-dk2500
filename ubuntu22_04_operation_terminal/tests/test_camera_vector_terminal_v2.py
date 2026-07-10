@@ -41,15 +41,15 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         runtime.initialize(use_home_positions=True)
         return runtime, controller
 
-    def test_forward_is_horizontal_grasp_to_camera_projection(self):
+    def test_forward_is_horizontal_camera_to_grasp_projection(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
         expected = frame.up.copy()
         expected[2] = 0.0
         expected /= np.linalg.norm(expected)
 
-        np.testing.assert_allclose(frame.forward, expected)
-        np.testing.assert_allclose(frame.backward, -expected)
+        np.testing.assert_allclose(frame.forward, -expected)
+        np.testing.assert_allclose(frame.backward, expected)
         np.testing.assert_allclose(frame.left, np.cross((0.0, 0.0, 1.0), expected))
         np.testing.assert_allclose(frame.right, -frame.left)
         self.assertEqual(float(frame.forward[2]), 0.0)

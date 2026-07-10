@@ -531,7 +531,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 state["arm_parameters"]["agent_direction_frames"]["forward"],
-                "grasp_to_camera_line_xy_projection",
+                "camera_to_grasp_line_xy_projection",
             )
         finally:
             controller.close()
@@ -709,8 +709,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         direct = JetArmToolController(config)
         try:
             manual_result = await manual.control_to_target_pixel(
-                370,
-                147,
+                DEFAULT_MANUAL_GRASP_X,
+                197,
                 DEFAULT_MANUAL_GRASP_X,
                 DEFAULT_MANUAL_GRASP_Y,
             )
@@ -722,6 +722,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 real_time=False,
             )
 
+            self.assertEqual(manual_result["direction"], "backward")
+            self.assertEqual(
+                manual_result["terminal_input"]["direction"], "backward"
+            )
             self.assertEqual(
                 manual_result["v2_motion_plan"]["target_grasp_point_m"],
                 direct_result["target_grasp_point_m"],

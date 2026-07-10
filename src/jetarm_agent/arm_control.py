@@ -982,7 +982,7 @@ class JetArmToolController:
             ),
             "horizontal_motion_frame": (
                 (
-                    "grasp_to_camera_line_xy_projection"
+                    "camera_to_grasp_line_xy_projection"
                     if self.config.camera_vector_version == "v2"
                     else "grasp_point_xyz_xy"
                 )
@@ -1706,7 +1706,7 @@ class JetArmToolController:
     def arm_parameters(self) -> dict[str, Any]:
         uses_v2_camera_frame = self.config.camera_vector_version == "v2"
         horizontal_frame = (
-            "grasp_to_camera_line_xy_projection"
+            "camera_to_grasp_line_xy_projection"
             if uses_v2_camera_frame
             else "base_horizontal_xy"
         )
@@ -1717,9 +1717,9 @@ class JetArmToolController:
         )
         if uses_v2_camera_frame:
             direction_descriptions = {
-                "forward": "grasp_to_camera_line_xy_projection",
-                "backward": "opposite_of_forward",
-                "left": "world_up_cross_forward",
+                "forward": "camera_to_grasp_line_xy_projection",
+                "backward": "grasp_to_camera_line_xy_projection",
+                "left": "unchanged_hardware_left_axis",
                 "right": "opposite_of_left",
             }
         else:
