@@ -757,8 +757,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "收到status=ok后必须重新取图；视觉抓取应改用control_jetarm_to_target_pixel，"
             "由控制程序根据目标点像素决策运动。控制器不会自动切分。"
             " Camera-vector frame is authoritative: up is grasp-point to camera, "
-            "down is camera to grasp-point; forward/backward/left/right use the "
-            "grasp-point XYZ horizontal axes."
+            "down is camera to grasp-point; forward decreases actual grasp-point "
+            "XYZ Y, backward increases Y, left decreases X, and right increases X."
         ),
         structured_output=False,
     )

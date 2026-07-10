@@ -555,10 +555,36 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 state["arm_parameters"]["agent_direction_frames"]["forward"],
-                "camera_to_grasp_line_xy_projection",
+                "grasp_point_xyz_y_decreases",
             )
         finally:
             controller.close()
+
+    async def test_v2_forward_decreases_and_backward_increases_actual_grasp_y(self):
+        for direction, comparison in (
+            ("forward", lambda before, after: after < before),
+            ("backward", lambda before, after: after > before),
+        ):
+            with self.subTest(direction=direction):
+                controller = JetArmToolController(
+                    ArmControlConfig(
+                        mode="dry-run",
+                        max_distance_cm=100.0,
+                        allow_extended_distance=True,
+                        camera_vector_version="v2",
+                    )
+                )
+                try:
+                    result = await controller.move_tcp(direction, 1.0, 1.0)
+                    before_y = result["grasp_point_xyz_before_cm"]["y"]
+                    expected_y = result["grasp_point_xyz_expected_cm"]["y"]
+                    actual_y = result["grasp_point_xyz_after_cm"]["y"]
+
+                    self.assertEqual(result["status"], "ok")
+                    self.assertTrue(comparison(before_y, expected_y))
+                    self.assertTrue(comparison(before_y, actual_y))
+                finally:
+                    controller.close()
 
     def test_manual_v2_relaxed_horizontal_progress_rule(self):
         accepted = manual_v2_horizontal_progress_validation(

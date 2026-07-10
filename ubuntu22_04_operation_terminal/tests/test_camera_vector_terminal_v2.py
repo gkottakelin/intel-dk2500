@@ -41,32 +41,25 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         runtime.initialize(use_home_positions=True)
         return runtime, controller
 
-    def test_forward_is_horizontal_camera_to_grasp_projection(self):
+    def test_horizontal_directions_follow_displayed_grasp_xyz_axes(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
-        expected = frame.up.copy()
-        expected[2] = 0.0
-        expected /= np.linalg.norm(expected)
 
-        np.testing.assert_allclose(frame.forward, -expected)
-        np.testing.assert_allclose(frame.backward, expected)
-        np.testing.assert_allclose(frame.left, np.cross((0.0, 0.0, 1.0), expected))
-        np.testing.assert_allclose(frame.right, -frame.left)
-        self.assertEqual(float(frame.forward[2]), 0.0)
-        self.assertEqual(float(frame.left[2]), 0.0)
-        self.assertAlmostEqual(float(np.dot(frame.forward, frame.left)), 0.0, places=9)
+        np.testing.assert_allclose(frame.forward, np.array((1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(frame.backward, np.array((-1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(frame.left, np.array((0.0, -1.0, 0.0)))
+        np.testing.assert_allclose(frame.right, np.array((0.0, 1.0, 0.0)))
 
-    def test_planar_frame_rotates_with_camera_line_not_fixed_base_xy(self):
+    def test_horizontal_frame_does_not_rotate_with_camera_line(self):
         runtime, _controller = self.make_runtime()
         before = runtime.camera_relative_frame().forward
         runtime.positions["J1"] += 100
         after = runtime.camera_relative_frame().forward
 
-        self.assertFalse(np.allclose(before, after))
-        self.assertAlmostEqual(float(before[2]), 0.0, places=9)
-        self.assertAlmostEqual(float(after[2]), 0.0, places=9)
+        np.testing.assert_allclose(before, np.array((1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(after, before)
 
-    def test_terminal_input_applies_requested_speed_to_swapped_forward(self):
+    def test_terminal_input_applies_requested_speed_to_decreasing_grasp_y(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
 

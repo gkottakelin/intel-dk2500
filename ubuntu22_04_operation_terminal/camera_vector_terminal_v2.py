@@ -1,12 +1,14 @@
 """Camera-line-relative JetArm terminal with pose-constrained analytic IK.
 
-V2 defines the control frame from the current camera/grasp-point line:
+V2 defines vertical motion from the current camera/grasp-point line and
+horizontal motion from the displayed grasp-point XYZ coordinates:
 
 - up: grasp point -> camera
 - down: camera -> grasp point
-- forward: the camera -> grasp line projected onto the base XY plane
-- backward: the grasp -> camera line projected onto the base XY plane
-- left/right: horizontal axes perpendicular to forward
+- forward: displayed grasp-point Y decreases (base forward_x increases)
+- backward: displayed grasp-point Y increases (base forward_x decreases)
+- left: displayed grasp-point X decreases
+- right: displayed grasp-point X increases
 
 The camera-line inclination is captured once for the runtime session (and reset
 only by Home/initialization).  Each action first creates one absolute grasp-point
@@ -127,20 +129,21 @@ def build_camera_vector_v2_frame(
             + camera_config.grasp_to_camera_lateral_m * lateral_axis
         )
     down = -up
-    horizontal_grasp_to_camera = np.array((up[0], up[1], 0.0), dtype=float)
-    # The real-arm front/back convention is the reverse of the original V2
-    # projection.  Swap only these two axes; left/right were already correct
-    # on hardware and must not be derived from the swapped forward vector.
-    backward = _unit(horizontal_grasp_to_camera)
-    forward = -backward
-    left = _unit(np.cross(WORLD_UP, backward))
+    # Displayed manual grasp XYZ is mapped as:
+    #   X = base.left_y, Y = -base.forward_x, Z = base.up_z.
+    # Therefore forward must increase base.forward_x so displayed Y decreases;
+    # backward does the opposite.  These horizontal definitions are fixed in
+    # the grasp XYZ frame and intentionally do not rotate with the camera line.
+    forward = np.array((1.0, 0.0, 0.0), dtype=float)
+    backward = np.array((-1.0, 0.0, 0.0), dtype=float)
+    left = np.array((0.0, -1.0, 0.0), dtype=float)
     return CameraRelativeFrame(
         up=up,
         down=down,
         forward=forward,
         backward=backward,
         left=left,
-        right=-left,
+        right=np.array((0.0, 1.0, 0.0), dtype=float),
     )
 
 

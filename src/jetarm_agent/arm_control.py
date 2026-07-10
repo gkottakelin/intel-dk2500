@@ -1002,11 +1002,7 @@ class JetArmToolController:
                 else ("camera_view" if direction in {"up", "down"} else "base")
             ),
             "horizontal_motion_frame": (
-                (
-                    "camera_to_grasp_line_xy_projection"
-                    if self.config.camera_vector_version == "v2"
-                    else "grasp_point_xyz_xy"
-                )
+                "grasp_point_xyz_xy"
                 if horizontal_motion
                 else None
             ),
@@ -1746,7 +1742,7 @@ class JetArmToolController:
     def arm_parameters(self) -> dict[str, Any]:
         uses_v2_camera_frame = self.config.camera_vector_version == "v2"
         horizontal_frame = (
-            "camera_to_grasp_line_xy_projection"
+            "grasp_point_xyz_xy"
             if uses_v2_camera_frame
             else "base_horizontal_xy"
         )
@@ -1757,10 +1753,10 @@ class JetArmToolController:
         )
         if uses_v2_camera_frame:
             direction_descriptions = {
-                "forward": "camera_to_grasp_line_xy_projection",
-                "backward": "grasp_to_camera_line_xy_projection",
-                "left": "unchanged_hardware_left_axis",
-                "right": "opposite_of_left",
+                "forward": "grasp_point_xyz_y_decreases",
+                "backward": "grasp_point_xyz_y_increases",
+                "left": "grasp_point_xyz_x_decreases",
+                "right": "grasp_point_xyz_x_increases",
             }
         else:
             direction_descriptions = {
@@ -2368,14 +2364,15 @@ ARM_TOOL_SYSTEM_PROMPT = """
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取时，Agent只在最新RGB原图中识别用户指定物品，并把该物品中心作为target_x/target_y；像素原点必须是左上角(0,0)，X向右、Y向下。目标在抓取点上方时target_y必须小于抓取点y，下方时必须大于；禁止使用左下角原点、Y向上、缩放图或翻转图坐标。
 5. 抓取点像素必须由用户在Agent调用前输入；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未设置时不得猜测或使用图像中心。
-6. 每张最新图像只允许调用一次control_jetarm_to_target_pixel。除物品中心target_x/target_y外，必须声明target_vertical_relation=above、below或same_y用于坐标方向校验；只有目标中心与抓取点Y差绝对值不超过2px时才用same_y。该字段不是运动方向。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
-7. control_jetarm_to_target_pixel会按FK高度选择40/25/13/8px动态容差和高度线性像素比例，自行执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。
-8. 每次机械臂运动结束后旧图像立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标物品中心，再发送新的target_x/target_y。
-9. Home后的机械抓取结果为awaiting_visual_verification。Agent必须检查自动返回的最新图像并调用confirm_jetarm_grasp_result：只有确认目标物品已被抓起时传success=true；失败时传success=false，再用当前新图重新识别中心并继续，直到确认工具返回grasp_completed=true。
-10. 每步结果中的grasp_step_record严格记录目标点像素、原抓取点实际坐标、运动规划、预计抓取点坐标、实际抓取点坐标和摄像头-抓取点夹角；Agent总结时不得改写或虚构这些值。
-11. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
-12. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
-13. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
+6. V2水平运动以实际抓取点XYZ为准：forward必须使实际Y减小，backward必须使实际Y增加，left使X减小，right使X增加；上下仍沿摄像头—抓取点连线。
+7. 每张最新图像只允许调用一次control_jetarm_to_target_pixel。除物品中心target_x/target_y外，必须声明target_vertical_relation=above、below或same_y用于坐标方向校验；只有目标中心与抓取点Y差绝对值不超过2px时才用same_y。该字段不是运动方向。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
+8. control_jetarm_to_target_pixel会按FK高度选择40/25/13/8px动态容差和高度线性像素比例，自行执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。
+9. 每次机械臂运动结束后旧图像立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标物品中心，再发送新的target_x/target_y。
+10. Home后的机械抓取结果为awaiting_visual_verification。Agent必须检查自动返回的最新图像并调用confirm_jetarm_grasp_result：只有确认目标物品已被抓起时传success=true；失败时传success=false，再用当前新图重新识别中心并继续，直到确认工具返回grasp_completed=true。
+11. 每步结果中的grasp_step_record严格记录目标点像素、原抓取点实际坐标、运动规划、预计抓取点坐标、实际抓取点坐标和摄像头-抓取点夹角；Agent总结时不得改写或虚构这些值。
+12. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
+13. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
+14. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
 14. 当前只使用单路RGB相机，不得请求或声称使用深度流。
 15. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
 16. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
