@@ -97,6 +97,28 @@ class UbuntuTerminalTest(unittest.TestCase):
             [build_packet(3, 1, struct.pack("<HH", 1050, 1000))],
         )
 
+    def test_bus_controller_can_switch_j6_back_to_position_mode(self):
+        class FakePort:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def flush(self):
+                return None
+
+        fake = FakePort()
+        controller = BusServoController("/dev/null", 115200, 0.2)
+        controller._port = fake
+
+        controller.set_servo_mode(10)
+
+        self.assertEqual(
+            fake.writes,
+            [build_packet(10, 29, b"\x00\x00\x00\x00")],
+        )
+
     def test_cartesian_step_sends_j1_to_j4_commands(self):
         runtime, controller = self.make_runtime()
         runtime.set_joystick(0, -1)
@@ -129,7 +151,7 @@ class UbuntuTerminalTest(unittest.TestCase):
         self.assertEqual(controller.motor_calls[-2:], [(10, 300), (5, 0)])
         self.assertEqual(
             controller.move_calls[-5:],
-            [(1, 500, 1200), (2, 478, 1200), (3, 641, 1200), (4, 890, 1200), (5, 500, 1200)],
+            [(1, 500, 1200), (2, 410, 1200), (3, 800, 1200), (4, 800, 1200), (5, 500, 1200)],
         )
         self.assertNotIn((10, 360, 1200), controller.move_calls)
 

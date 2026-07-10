@@ -44,6 +44,7 @@ from jetarm_terminal import (
     select_linux_serial_port,
     serial_discovery_diagnostic,
     tk,
+    ttk,
 )
 
 
@@ -51,6 +52,7 @@ WORLD_UP = np.array((0.0, 0.0, 1.0), dtype=float)
 HORIZONTAL_PROJECTION_EPSILON = 1e-4
 IK_POSITION_TOLERANCE_M = 0.004
 IK_INCLINATION_TOLERANCE_RAD = math.radians(1.0)
+INITIAL_J6_POSITION = 400
 
 
 class HorizontalDirectionUndefined(ValueError):
@@ -138,6 +140,22 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
         self._locked_pitch_rad = None
         self._locked_height_m = None
         self.z_lock = False
+
+    def initialize_home_pose(self) -> None:
+        """Return J1-J5 home and set J6 to its initialization position."""
+
+        self.go_home()
+        j6_id = self.settings.servo_id("J6")
+        self.controller.set_servo_mode(j6_id)
+        self.j6_grip_locked = False
+        self.controller.move_servo(
+            j6_id,
+            INITIAL_J6_POSITION,
+            self.settings.home_run_time_ms,
+        )
+        self.logger(
+            f"初始化完成: J1-J5返回Home，J6位置={INITIAL_J6_POSITION}"
+        )
 
     def _solve_next_positions(self, target_delta: np.ndarray) -> dict[str, int]:
         if self._locked_pitch_rad is None:
@@ -284,6 +302,20 @@ class CameraVectorV2App(CameraVectorTerminalApp):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.root.title("JetArm camera-vector terminal V2")
+
+    def _vertical_panel(self, parent: Any) -> Any:
+        frame = super()._vertical_panel(parent)
+        ttk.Button(
+            frame,
+            text="初始化",
+            style="Action.TButton",
+            command=self._initialize_home_pose,
+        ).grid(row=4, column=0, sticky="ew", pady=(8, 0), ipady=10)
+        return frame
+
+    def _initialize_home_pose(self) -> None:
+        self._safe_call(self.runtime.initialize_home_pose)
+        self._update_grip_color()
 
 
 def build_parser() -> argparse.ArgumentParser:

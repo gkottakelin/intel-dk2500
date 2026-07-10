@@ -160,6 +160,12 @@ class BusServoController:
         params = b"\x01\x00" + struct.pack("<h", speed)
         self.write_command(servo_id, SERVO_OR_MOTOR_MODE_WRITE, params)
 
+    def set_servo_mode(self, servo_id: int) -> None:
+        """Switch a bus servo from motor mode to position-control mode."""
+
+        params = b"\x00\x00" + struct.pack("<h", 0)
+        self.write_command(servo_id, SERVO_OR_MOTOR_MODE_WRITE, params)
+
     def read_position(self, servo_id: int) -> int:
         reset = getattr(self.port, "reset_input_buffer", None)
         if callable(reset):
@@ -207,6 +213,7 @@ class DryRunServoController:
         self.logger = logger or (lambda _message: None)
         self.move_calls: list[tuple[int, int, int]] = []
         self.motor_calls: list[tuple[int, int]] = []
+        self.servo_mode_calls: list[int] = []
 
     def read_position(self, servo_id: int) -> int:
         return int(self.positions.get(servo_id, 500))
@@ -219,6 +226,10 @@ class DryRunServoController:
     def set_motor_speed(self, servo_id: int, speed: int) -> None:
         self.motor_calls.append((servo_id, speed))
         self.logger(f"DRY set_motor_speed id={servo_id} speed={speed}")
+
+    def set_servo_mode(self, servo_id: int) -> None:
+        self.servo_mode_calls.append(servo_id)
+        self.logger(f"DRY set_servo_mode id={servo_id}")
 
     def close(self) -> None:
         return

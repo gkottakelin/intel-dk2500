@@ -11,6 +11,7 @@ sys.path.insert(0, str(APP_ROOT))
 
 from camera_vector_terminal import CameraLineConfig  # noqa: E402
 from camera_vector_terminal_v2 import (  # noqa: E402
+    INITIAL_J6_POSITION,
     CameraVectorV2Runtime,
     HorizontalDirectionUndefined,
     _unit,
@@ -152,6 +153,34 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
     def test_near_vertical_line_does_not_guess_horizontal_direction(self):
         with self.assertRaises(HorizontalDirectionUndefined):
             _unit(np.array((1e-8, -1e-8, 0.0), dtype=float))
+
+    def test_home_configuration_keeps_j6_out_of_normal_home(self):
+        self.assertEqual(
+            self.settings.home,
+            {"J1": 500, "J2": 410, "J3": 800, "J4": 800, "J5": 500},
+        )
+        self.assertNotIn("J6", self.settings.home)
+
+    def test_initialize_button_action_homes_arm_and_positions_j6(self):
+        runtime, controller = self.make_runtime()
+        runtime.toggle_grip_lock()
+        controller.move_calls.clear()
+
+        runtime.initialize_home_pose()
+
+        self.assertFalse(runtime.j6_grip_locked)
+        self.assertEqual(controller.servo_mode_calls[-1], self.settings.servo_id("J6"))
+        self.assertEqual(
+            controller.move_calls,
+            [
+                (1, 500, 1200),
+                (2, 410, 1200),
+                (3, 800, 1200),
+                (4, 800, 1200),
+                (5, 500, 1200),
+                (10, INITIAL_J6_POSITION, 1200),
+            ],
+        )
 
 
 if __name__ == "__main__":
