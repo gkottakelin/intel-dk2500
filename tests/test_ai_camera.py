@@ -42,11 +42,15 @@ class FakeCV2:
 class FakeOrbbecSession:
     selection_key = ""
     depth_enabled = True
+    sdk_log_level = None
 
     def __init__(self, selection_key, *, library_path, config_path):
         type(self).selection_key = selection_key
-        stream = ET.parse(config_path).getroot().find("./Pipeline/Stream")
+        root = ET.parse(config_path).getroot()
+        stream = root.find("./Pipeline/Stream")
         type(self).depth_enabled = stream is not None and stream.find("Depth") is not None
+        log_level = root.find("./Log/LogLevel")
+        type(self).sdk_log_level = log_level.text.strip() if log_level is not None else None
 
     def __enter__(self):
         return self
@@ -72,6 +76,7 @@ class RGBCaptureTest(unittest.TestCase):
 
         self.assertEqual(FakeOrbbecSession.selection_key, "4-1.2-11")
         self.assertFalse(FakeOrbbecSession.depth_enabled)
+        self.assertEqual(FakeOrbbecSession.sdk_log_level, "3")
         self.assertEqual(frame.data, b"jpeg-bytes")
         self.assertEqual((frame.width, frame.height), (32, 24))
 

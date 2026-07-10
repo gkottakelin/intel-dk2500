@@ -39,12 +39,19 @@ def write_color_only_sdk_config(
     *,
     source: str | Path = DEFAULT_SDK_CONFIG,
 ) -> Path:
-    """Copy the bundled SDK configuration while disabling the Depth stream."""
+    """Create the Agent RGB config with Depth off and SDK INFO logs hidden."""
 
     source_path = Path(source).resolve()
     destination_path = Path(destination).resolve()
     tree = ET.parse(source_path)
-    stream = tree.getroot().find("./Pipeline/Stream")
+    root = tree.getroot()
+    log_level = root.find("./Log/LogLevel")
+    if log_level is not None:
+        # OrbbecSDK levels: 0 DEBUG, 1 INFO, 2 WARN, 3 ERROR, 4 FATAL,
+        # 5 NONE. Keep actual SDK errors visible without flooding the Agent
+        # terminal for every one-frame capture lifecycle.
+        log_level.text = "3"
+    stream = root.find("./Pipeline/Stream")
     if stream is None:
         raise RuntimeError(f"Orbbec SDK配置缺少Pipeline/Stream: {source_path}")
     depth = stream.find("Depth")
