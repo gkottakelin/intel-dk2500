@@ -19,6 +19,7 @@ try:
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
         manual_v2_horizontal_progress_validation,
+        manual_v2_vertical_progress_validation,
         parse_compact_arm_command,
         pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
@@ -55,6 +56,7 @@ except ModuleNotFoundError:
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
         manual_v2_horizontal_progress_validation,
+        manual_v2_vertical_progress_validation,
         parse_compact_arm_command,
         pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
@@ -366,6 +368,53 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("|ΔZ|=0.5cm", text)
         self.assertIn("夹角误差=2.5°", text)
 
+    def test_manual_pixel_output_marks_relaxed_vertical_progress(self):
+        output = io.StringIO()
+        result = {
+            "controller_decision": "descend_after_alignment",
+            "vertical_progress_validation": {
+                "rule": "manual_v2_relaxed_vertical_progress",
+                "accepted": True,
+                "overrode_v2_error": True,
+                "xy_change_cm": 0.5,
+                "z_change_cm": 1.9,
+            },
+        }
+
+        with patch("sys.stdout", output):
+            _print_manual_pixel_result(result)
+
+        text = output.getvalue()
+        self.assertIn("竖直进展=放宽接受", text)
+        self.assertIn("|ΔZ|=1.9cm", text)
+        self.assertIn("XY=0.5cm", text)
+
+    def test_manual_pixel_output_reports_step_coordinates_and_failure_reason(self):
+        output = io.StringIO()
+        result = {
+            "status": "error",
+            "controller_decision": "horizontal_align",
+            "grasp_point_xyz_before_cm": {"x": 0.0, "y": -20.0, "z": 10.0},
+            "grasp_point_xyz_expected_cm": {"x": 1.0, "y": -20.0, "z": 10.0},
+            "grasp_point_xyz_after_cm": {"x": 0.2, "y": -20.0, "z": 11.1},
+            "progress_judgement": {
+                "effective": False,
+                "no_progress_reasons": [
+                    "|ΔZ|=1.100cm 未小于1.000cm",
+                    "|ΔZ|=1.100cm 未小于XY变化=0.200cm",
+                ],
+            },
+        }
+
+        with patch("sys.stdout", output):
+            _print_manual_pixel_result(result)
+
+        text = output.getvalue()
+        self.assertIn("原本抓取点XYZ={'x': 0.0, 'y': -20.0, 'z': 10.0}", text)
+        self.assertIn("预计抓取点XYZ={'x': 1.0, 'y': -20.0, 'z': 10.0}", text)
+        self.assertIn("实际抓取点XYZ={'x': 0.2, 'y': -20.0, 'z': 11.1}", text)
+        self.assertIn("未取得有效进展原因=|ΔZ|=1.100cm 未小于1.000cm", text)
+
     def test_manual_pixel_arm_config_uses_hardware_device_config(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "devices.json"
@@ -452,6 +501,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 "camera_vector_terminal_v2_absolute_grasp_target",
             )
             self.assertEqual(result["terminal_input"]["direction"], "right")
+            self.assertIn("grasp_point_xyz_expected_cm", result)
+            self.assertTrue(result["progress_judgement"]["effective"])
+            self.assertEqual(
+                result["progress_judgement"]["no_progress_reasons"], []
+            )
             execute_spy.assert_awaited_once()
             self.assertIs(
                 execute_spy.await_args.args[0],
@@ -496,6 +550,19 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             manual_v2_horizontal_progress_validation(2.0, 0.0, 1.0, 2.0),
             manual_v2_horizontal_progress_validation(0.4, 0.0, 0.4, 2.0),
             manual_v2_horizontal_progress_validation(1.0, 0.0, 0.2, 3.0),
+        )
+        for result in rejected_cases:
+            self.assertFalse(result["accepted"])
+
+    def test_manual_v2_relaxed_vertical_progress_rule(self):
+        accepted = manual_v2_vertical_progress_validation(0.3, 0.4, -1.9)
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["xy_change_cm"], 0.5)
+        self.assertEqual(accepted["z_change_cm"], 1.9)
+
+        rejected_cases = (
+            manual_v2_vertical_progress_validation(0.0, 0.0, 1.8),
+            manual_v2_vertical_progress_validation(1.0, 0.0, 2.0),
         )
         for result in rejected_cases:
             self.assertFalse(result["accepted"])
@@ -562,6 +629,72 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(validation["z_change_cm"], 0.5)
             self.assertEqual(validation["xy_change_cm"], 0.8)
             self.assertEqual(validation["camera_line_angle_error_deg"], 2.5)
+        finally:
+            controller.close()
+
+    async def test_manual_v2_accepts_relaxed_vertical_feedback(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            start = [
+                float(value)
+                for value in controller.runtime.model.tcp(
+                    controller.runtime.positions
+                )
+            ]
+            reference_angle = (
+                controller.runtime.camera_pose_reference_status()[
+                    "camera_line_angle_from_vertical_deg"
+                ]
+            )
+            fake_terminal_result = {
+                "status": "error",
+                "error": "forced strict vertical tolerance failure",
+                "execution_path": "camera_vector_terminal_v2_absolute_grasp_target",
+                "workflow": ["terminal_input", "absolute_grasp_target"],
+                "terminal_input": {
+                    "direction": "down",
+                    "direction_unit_base": [0.0, 0.0, -1.0],
+                },
+                "steps": 1,
+                "tcp_samples_m": [],
+                "start_grasp_point_m": start,
+                "actual_grasp_point_m": [
+                    start[0] + 0.003,
+                    start[1] + 0.004,
+                    start[2] - 0.019,
+                ],
+                "motion_plan": {
+                    "target_joint_positions": dict(controller.runtime.positions)
+                },
+                "target_camera_line_angle_deg": reference_angle,
+                "actual_camera_line_angle_deg": reference_angle,
+                "feedback_corrections": 0,
+            }
+            with patch.object(
+                controller.terminal,
+                "execute_terminal_motion",
+                new=AsyncMock(return_value=fake_terminal_result),
+            ):
+                result = await controller.control_to_target_pixel(
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                )
+
+            validation = result["vertical_progress_validation"]
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(validation["accepted"])
+            self.assertTrue(validation["overrode_v2_error"])
+            self.assertEqual(validation["z_change_cm"], 1.9)
+            self.assertEqual(validation["xy_change_cm"], 0.5)
         finally:
             controller.close()
 
@@ -709,6 +842,12 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 final_result["target_height_cm"]
                 + final_result["target_tolerance_cm"],
             )
+            self.assertTrue(final_result["motion_steps"])
+            for step in final_result["motion_steps"]:
+                self.assertIn("original_grasp_point_xyz_cm", step)
+                self.assertIn("expected_grasp_point_xyz_cm", step)
+                self.assertIn("actual_grasp_point_xyz_cm", step)
+                self.assertIn("no_progress_reasons", step)
         finally:
             controller.close()
 

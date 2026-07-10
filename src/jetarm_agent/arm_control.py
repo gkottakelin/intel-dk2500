@@ -47,6 +47,8 @@ FINAL_GRASP_HEIGHT_CM = 1.0
 DESCENT_SPEED_CM_S = 2.0
 MANUAL_V2_HORIZONTAL_MAX_Z_CHANGE_CM = 1.0
 MANUAL_V2_HORIZONTAL_MAX_ANGLE_ERROR_DEG = 3.0
+MANUAL_V2_VERTICAL_MIN_Z_CHANGE_CM = 1.8
+MANUAL_V2_VERTICAL_Z_TO_XY_RATIO = 2.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -97,6 +99,19 @@ def manual_v2_horizontal_progress_validation(
     angle_within_limit = (
         angle_error_deg < MANUAL_V2_HORIZONTAL_MAX_ANGLE_ERROR_DEG
     )
+    rejection_reasons: list[str] = []
+    if not z_within_limit:
+        rejection_reasons.append(
+            f"|ΔZ|={z_change_cm:.3f}cm 未小于1.000cm"
+        )
+    if not horizontal_dominates:
+        rejection_reasons.append(
+            f"|ΔZ|={z_change_cm:.3f}cm 未小于XY变化={xy_change_cm:.3f}cm"
+        )
+    if not angle_within_limit:
+        rejection_reasons.append(
+            f"夹角误差={angle_error_deg:.3f}° 未小于3.000°"
+        )
     return {
         "rule": "manual_v2_relaxed_horizontal_progress",
         "accepted": (
@@ -115,6 +130,49 @@ def manual_v2_horizontal_progress_validation(
             "horizontal_change_dominates": horizontal_dominates,
             "camera_line_angle_within_limit": angle_within_limit,
         },
+        "rejection_reasons": rejection_reasons,
+    }
+
+
+def manual_v2_vertical_progress_validation(
+    delta_x_cm: float,
+    delta_y_cm: float,
+    delta_z_cm: float,
+) -> dict[str, Any]:
+    """Apply the relaxed manual-V2 vertical progress acceptance rule."""
+
+    xy_change_cm = math.hypot(float(delta_x_cm), float(delta_y_cm))
+    z_change_cm = abs(float(delta_z_cm))
+    z_exceeds_minimum = z_change_cm > MANUAL_V2_VERTICAL_MIN_Z_CHANGE_CM
+    z_dominates_xy = (
+        z_change_cm > MANUAL_V2_VERTICAL_Z_TO_XY_RATIO * xy_change_cm
+    )
+    rejection_reasons: list[str] = []
+    if not z_exceeds_minimum:
+        rejection_reasons.append(
+            f"|ΔZ|={z_change_cm:.3f}cm 未大于1.800cm"
+        )
+    if not z_dominates_xy:
+        rejection_reasons.append(
+            f"|ΔZ|={z_change_cm:.3f}cm 未大于2×XY={2.0 * xy_change_cm:.3f}cm"
+        )
+    return {
+        "rule": "manual_v2_relaxed_vertical_progress",
+        "accepted": z_exceeds_minimum and z_dominates_xy,
+        "xy_change_cm": round(xy_change_cm, 6),
+        "z_change_cm": round(z_change_cm, 6),
+        "z_change_minimum_cm_exclusive": MANUAL_V2_VERTICAL_MIN_Z_CHANGE_CM,
+        "z_to_xy_required_ratio_exclusive": MANUAL_V2_VERTICAL_Z_TO_XY_RATIO,
+        "actual_z_to_xy_ratio": (
+            round(z_change_cm / xy_change_cm, 6)
+            if xy_change_cm > 0.0
+            else None
+        ),
+        "conditions": {
+            "z_change_exceeds_minimum": z_exceeds_minimum,
+            "z_change_exceeds_twice_xy_change": z_dominates_xy,
+        },
+        "rejection_reasons": rejection_reasons,
     }
 
 
@@ -733,6 +791,7 @@ class JetArmToolController:
         )
         horizontal_motion = direction in horizontal_directions
         horizontal_progress_validation: dict[str, Any] | None = None
+        vertical_progress_validation: dict[str, Any] | None = None
         if (
             self.config.camera_vector_version == "v2"
             and horizontal_motion
@@ -753,6 +812,28 @@ class JetArmToolController:
                 if v2_terminal_result is not None
                 else None
             )
+        elif self.config.camera_vector_version == "v2" and direction in {
+            "up",
+            "down",
+        }:
+            vertical_progress_validation = manual_v2_vertical_progress_validation(
+                float(delta_cm[0]),
+                float(delta_cm[1]),
+                float(delta_cm[2]),
+            )
+            vertical_progress_validation["original_v2_status"] = (
+                v2_terminal_result.get("status")
+                if v2_terminal_result is not None
+                else None
+            )
+            vertical_progress_validation["original_v2_error"] = (
+                v2_terminal_result.get("error")
+                if v2_terminal_result is not None
+                else None
+            )
+        relaxed_progress_validation = (
+            horizontal_progress_validation or vertical_progress_validation
+        )
         motion_status = "ok"
         motion_error: str | None = None
         if (
@@ -761,10 +842,10 @@ class JetArmToolController:
             and v2_terminal_result.get("status") != "ok"
         ):
             if (
-                horizontal_progress_validation is not None
-                and horizontal_progress_validation["accepted"]
+                relaxed_progress_validation is not None
+                and relaxed_progress_validation["accepted"]
             ):
-                horizontal_progress_validation["overrode_v2_error"] = True
+                relaxed_progress_validation["overrode_v2_error"] = True
             else:
                 motion_status = "error"
                 motion_error = str(
@@ -777,10 +858,10 @@ class JetArmToolController:
             and estimated_distance <= 1e-6
         ):
             if (
-                horizontal_progress_validation is not None
-                and horizontal_progress_validation["accepted"]
+                relaxed_progress_validation is not None
+                and relaxed_progress_validation["accepted"]
             ):
-                horizontal_progress_validation["overrode_zero_direction_progress"] = True
+                relaxed_progress_validation["overrode_zero_direction_progress"] = True
             else:
                 motion_status = "error"
                 motion_error = "V2运动无有效进展，目标可能不可达或已触及关节限位"
@@ -799,6 +880,35 @@ class JetArmToolController:
             "left_y": round(float(end_tcp[1] * 100.0), 3),
             "up_z": round(float(end_tcp[2] * 100.0), 3),
         }
+        expected_tcp = start_tcp + np.asarray(direction_unit, dtype=float) * (
+            distance_cm / 100.0
+        )
+        if v2_terminal_result is not None:
+            raw_target_tcp = v2_terminal_result.get("target_grasp_point_m")
+            if raw_target_tcp is not None:
+                candidate_target = np.asarray(raw_target_tcp, dtype=float)
+                if candidate_target.shape == (3,) and np.all(
+                    np.isfinite(candidate_target)
+                ):
+                    expected_tcp = candidate_target
+        grasp_expected_cm = {
+            "forward_x": round(float(expected_tcp[0] * 100.0), 3),
+            "left_y": round(float(expected_tcp[1] * 100.0), 3),
+            "up_z": round(float(expected_tcp[2] * 100.0), 3),
+        }
+        no_progress_reasons: list[str] = []
+        if motion_status != "ok":
+            if motion_error:
+                no_progress_reasons.append(motion_error)
+            if relaxed_progress_validation is not None:
+                for reason in relaxed_progress_validation.get(
+                    "rejection_reasons", []
+                ):
+                    reason_text = str(reason)
+                    if reason_text not in no_progress_reasons:
+                        no_progress_reasons.append(reason_text)
+            if not no_progress_reasons:
+                no_progress_reasons.append("运动结果未通过有效进展判定")
         height_error_cm = float((end_tcp[2] - start_tcp[2]) * 100.0)
         result = {
             "status": motion_status,
@@ -836,6 +946,7 @@ class JetArmToolController:
                 else None
             ),
             "horizontal_progress_validation": horizontal_progress_validation,
+            "vertical_progress_validation": vertical_progress_validation,
             "feedback_read_policy": (
                 "v2_executor_start_and_verified_final_feedback"
                 if v2_terminal_result is not None
@@ -844,9 +955,17 @@ class JetArmToolController:
                 else "dry_run_command_integrated"
             ),
             "grasp_point_before_cm": grasp_before_cm,
+            "grasp_point_expected_cm": grasp_expected_cm,
             "grasp_point_after_cm": grasp_after_cm,
             "grasp_point_xyz_before_cm": self._grasp_point_xyz_cm(grasp_before_cm),
+            "grasp_point_xyz_expected_cm": self._grasp_point_xyz_cm(
+                grasp_expected_cm
+            ),
             "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(grasp_after_cm),
+            "progress_judgement": {
+                "effective": motion_status == "ok",
+                "no_progress_reasons": no_progress_reasons,
+            },
             "estimated_delta_cm": {
                 "forward_x": round(float(delta_cm[0]), 3),
                 "left_y": round(float(delta_cm[1]), 3),
@@ -1286,6 +1405,7 @@ class JetArmToolController:
         pose_relaxation_steps = 0
         pose_relaxation_reasons: list[str] = []
         pose_relaxation_reason_codes: list[str] = []
+        motion_steps: list[dict[str, Any]] = []
 
         def record_pose_relaxation(move_result: Mapping[str, Any]) -> None:
             nonlocal pose_relaxation_steps
@@ -1326,6 +1446,7 @@ class JetArmToolController:
                 "height_cm": current_height,
                 "target_height_cm": target_height_cm,
                 "target_tolerance_cm": target_tolerance_cm,
+                "motion_steps": motion_steps,
                 "camera_pose_constraint": pose_relaxation_summary(),
             }
         remaining_cm = current_height - target_height_cm
@@ -1359,6 +1480,28 @@ class JetArmToolController:
             current_height = after["up_z"]
             heights.append(current_height)
             steps += 1
+            progress_judgement = result.get("progress_judgement")
+            step_reasons = (
+                list(progress_judgement.get("no_progress_reasons", []))
+                if isinstance(progress_judgement, Mapping)
+                else []
+            )
+            motion_steps.append(
+                {
+                    "step": steps,
+                    "original_grasp_point_xyz_cm": result.get(
+                        "grasp_point_xyz_before_cm"
+                    ),
+                    "expected_grasp_point_xyz_cm": result.get(
+                        "grasp_point_xyz_expected_cm"
+                    ),
+                    "actual_grasp_point_xyz_cm": result.get(
+                        "grasp_point_xyz_after_cm"
+                    ),
+                    "effective": result.get("status") == "ok",
+                    "no_progress_reasons": step_reasons,
+                }
+            )
             if result.get("status") != "ok":
                 return {
                     **result,
@@ -1368,9 +1511,17 @@ class JetArmToolController:
                     "height_samples_cm": heights,
                     "height_after_cm": current_height,
                     "steps": steps,
+                    "motion_steps": motion_steps,
                     "camera_pose_constraint": pose_relaxation_summary(),
                 }
             if current_height >= previous_height - 1e-6:
+                no_height_progress_reason = (
+                    "下降无有效进展：实际抓取点Z未低于本步原始抓取点Z"
+                )
+                motion_steps[-1]["effective"] = False
+                motion_steps[-1]["no_progress_reasons"].append(
+                    no_height_progress_reason
+                )
                 return {
                     "status": "error",
                     "mode": self.config.mode,
@@ -1381,6 +1532,7 @@ class JetArmToolController:
                     "height_samples_cm": heights,
                     "height_after_cm": current_height,
                     "steps": steps,
+                    "motion_steps": motion_steps,
                     "camera_pose_constraint": pose_relaxation_summary(),
                 }
         if current_height > target_height_cm + target_tolerance_cm:
@@ -1394,6 +1546,7 @@ class JetArmToolController:
                 "height_samples_cm": heights,
                 "height_after_cm": current_height,
                 "steps": steps,
+                "motion_steps": motion_steps,
                 "camera_pose_constraint": pose_relaxation_summary(),
             }
         return {
@@ -1406,6 +1559,7 @@ class JetArmToolController:
             "height_after_cm": current_height,
             "height_samples_cm": heights,
             "steps": steps,
+            "motion_steps": motion_steps,
             "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(self._current_tcp_cm()),
             "camera_pose_constraint": pose_relaxation_summary(),
         }

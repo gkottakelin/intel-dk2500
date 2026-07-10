@@ -283,6 +283,59 @@ def _format_camera_angle(angle: float | None) -> str:
     return f"摄像头-抓取点与竖直夹角: {angle:.1f}°"
 
 
+def _print_motion_step_diagnostics(result: dict[str, object]) -> None:
+    raw_steps = result.get("motion_steps")
+    if isinstance(raw_steps, list):
+        steps = [step for step in raw_steps if isinstance(step, dict)]
+    else:
+        progress_judgement = result.get("progress_judgement")
+        reasons = (
+            list(progress_judgement.get("no_progress_reasons", []))
+            if isinstance(progress_judgement, dict)
+            else []
+        )
+        steps = [
+            {
+                "step": 1,
+                "original_grasp_point_xyz_cm": result.get(
+                    "grasp_point_xyz_before_cm"
+                ),
+                "expected_grasp_point_xyz_cm": result.get(
+                    "grasp_point_xyz_expected_cm"
+                ),
+                "actual_grasp_point_xyz_cm": result.get(
+                    "grasp_point_xyz_after_cm"
+                ),
+                "effective": (
+                    progress_judgement.get("effective")
+                    if isinstance(progress_judgement, dict)
+                    else result.get("status") == "ok"
+                ),
+                "no_progress_reasons": reasons,
+            }
+        ]
+
+    for step in steps:
+        original = step.get("original_grasp_point_xyz_cm")
+        expected = step.get("expected_grasp_point_xyz_cm")
+        actual = step.get("actual_grasp_point_xyz_cm")
+        if original is None and expected is None and actual is None:
+            continue
+        effective = bool(step.get("effective"))
+        reasons = [str(item) for item in step.get("no_progress_reasons", [])]
+        if not effective and not reasons:
+            fallback = result.get("error")
+            reasons = [str(fallback or "运动结果未通过有效进展判定")]
+        reason_text = "无（本步有效）" if effective else "；".join(reasons)
+        print(
+            f"运动步骤{step.get('step', 1)} | "
+            f"原本抓取点XYZ={original} | "
+            f"预计抓取点XYZ={expected} | "
+            f"实际抓取点XYZ={actual} | "
+            f"未取得有效进展原因={reason_text}"
+        )
+
+
 def _print_manual_pixel_result(result: dict[str, object]) -> None:
     decision = result.get("controller_decision")
     error = result.get("pixel_error", {})
@@ -303,6 +356,9 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"（仅下降；原因={reason}；步数={relaxed_steps}）"
         )
     progress_validation = result.get("horizontal_progress_validation")
+    vertical_progress_validation = result.get("vertical_progress_validation")
+    if not isinstance(progress_validation, dict):
+        progress_validation = vertical_progress_validation
     if (
         isinstance(progress_validation, dict)
         and progress_validation.get("accepted")
@@ -311,13 +367,20 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             or progress_validation.get("overrode_zero_direction_progress")
         )
     ):
-        progress_segment = (
-            " | 水平进展=放宽接受"
-            f"（XY={progress_validation.get('xy_change_cm')}cm，"
-            f"|ΔZ|={progress_validation.get('z_change_cm')}cm，"
-            "夹角误差="
-            f"{progress_validation.get('camera_line_angle_error_deg')}°）"
-        )
+        if progress_validation.get("rule") == "manual_v2_relaxed_vertical_progress":
+            progress_segment = (
+                " | 竖直进展=放宽接受"
+                f"（|ΔZ|={progress_validation.get('z_change_cm')}cm，"
+                f"XY={progress_validation.get('xy_change_cm')}cm）"
+            )
+        else:
+            progress_segment = (
+                " | 水平进展=放宽接受"
+                f"（XY={progress_validation.get('xy_change_cm')}cm，"
+                f"|ΔZ|={progress_validation.get('z_change_cm')}cm，"
+                "夹角误差="
+                f"{progress_validation.get('camera_line_angle_error_deg')}°）"
+            )
     status_segment = angle_segment + pose_segment + progress_segment
     if decision == "horizontal_align":
         print(
@@ -330,6 +393,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
             f"{status_segment}"
         )
+        _print_motion_step_diagnostics(result)
         return
     if decision == "descend_after_alignment":
         print(
@@ -342,6 +406,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
             f"{status_segment}"
         )
+        _print_motion_step_diagnostics(result)
         return
     if decision == "aligned_hold":
         remaining = result.get("remaining_descent_to_final_cm")
@@ -354,6 +419,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
         )
         return
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
+    _print_motion_step_diagnostics(result)
 
 
 def _resolve_manual_pixel_arm_config(
@@ -533,6 +599,7 @@ async def _run_manual_pixel_test(
                 descend_result = await controller.descend_to_height(
                     final_grasp_height_cm
                 )
+                _print_motion_step_diagnostics(descend_result)
                 final_height = descend_result.get(
                     "height_after_cm",
                     descend_result.get("height_cm"),
