@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不调用API，由人工输入目标点像素来模拟Agent视觉抓取闭环",
     )
+    mode.add_argument(
+        "--manual-pixel-test-v2",
+        action="store_true",
+        help="人工像素闭环V2；复用原工作流并使用camera-vector V2运动程序",
+    )
     parser.add_argument("--env-file", default=None, help="可选.env文件路径")
     parser.add_argument(
         "--device-config",
@@ -88,13 +93,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--manual-grasp-x",
         type=float,
         default=None,
-        help="manual-pixel-test使用的抓取点像素x，默认图像中心",
+        help="人工像素测试抓取点x；V1默认图像中心，V2默认320",
     )
     parser.add_argument(
         "--manual-grasp-y",
         type=float,
         default=None,
-        help="manual-pixel-test使用的抓取点像素y，默认图像中心",
+        help="人工像素测试抓取点y；V1默认图像中心，V2默认147",
     )
     return parser
 
@@ -284,6 +289,16 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     angle = _extract_camera_grasp_vertical_angle(result)
     angle_text = _format_camera_angle(angle)
     angle_segment = f" | {angle_text}" if angle_text else ""
+    pose_segment = ""
+    pose_constraint = result.get("camera_pose_constraint")
+    if isinstance(pose_constraint, dict) and pose_constraint.get("relaxed"):
+        reason = pose_constraint.get("reason") or pose_constraint.get("reasons")
+        relaxed_steps = pose_constraint.get("relaxed_step_count", 0)
+        pose_segment = (
+            " | 姿态约束=已放宽"
+            f"（仅下降；原因={reason}；步数={relaxed_steps}）"
+        )
+    status_segment = angle_segment + pose_segment
     if decision == "horizontal_align":
         print(
             "控制结果: 水平对准 | "
@@ -292,7 +307,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"速度={result.get('speed_cm_s')}cm/s "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
-            f"{angle_segment}"
+            f"{status_segment}"
         )
         return
     if decision == "descend_after_alignment":
@@ -303,7 +318,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
             f"误差={error} 容差={tolerance}px "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
-            f"{angle_segment}"
+            f"{status_segment}"
         )
         return
     if decision == "aligned_hold":
@@ -313,13 +328,15 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"当前高度={result.get('height_cm')}cm "
             f"误差={error} 容差={tolerance}px "
             + (f"距最终抓取高度还剩={remaining}cm" if remaining is not None else "")
-            + angle_segment
+            + status_segment
         )
         return
     print(f"控制结果: {json.dumps(result, ensure_ascii=False)}")
 
 
-def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConfig:
+def _resolve_manual_pixel_arm_config(
+    args: argparse.Namespace, *, camera_vector_version: str = "v1"
+) -> ArmControlConfig:
     device_path = Path(args.device_config)
     saved_devices = RuntimeDeviceConfig.load(device_path, required=False)
     saved_has_config = device_path.is_file()
@@ -355,28 +372,47 @@ def _resolve_manual_pixel_arm_config(args: argparse.Namespace) -> ArmControlConf
         terminal_config_path=arm_config_path,
         max_distance_cm=100.0,
         allow_extended_distance=True,
+        camera_vector_version=camera_vector_version,
     )
 
 
-async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
+async def _run_manual_pixel_test(
+    args: argparse.Namespace,
+    *,
+    default_grasp_x: float | None = None,
+    default_grasp_y: float | None = None,
+    camera_vector_version: str = "v1",
+    display_name: str = "手动像素闭环测试",
+) -> int:
     if args.manual_image_width <= 0 or args.manual_image_height <= 0:
         raise ConfigurationError("manual image width/height必须大于0")
     grasp_x = (
         float(args.manual_grasp_x)
         if args.manual_grasp_x is not None
-        else args.manual_image_width / 2.0
+        else (
+            float(default_grasp_x)
+            if default_grasp_x is not None
+            else args.manual_image_width / 2.0
+        )
     )
     grasp_y = (
         float(args.manual_grasp_y)
         if args.manual_grasp_y is not None
-        else args.manual_image_height / 2.0
+        else (
+            float(default_grasp_y)
+            if default_grasp_y is not None
+            else args.manual_image_height / 2.0
+        )
     )
     if not math.isfinite(grasp_x) or not math.isfinite(grasp_y):
         raise ConfigurationError("manual grasp point必须是有限数字")
 
-    arm_config = _resolve_manual_pixel_arm_config(args)
+    arm_config = _resolve_manual_pixel_arm_config(
+        args,
+        camera_vector_version=camera_vector_version,
+    )
     if arm_config.mode == "hardware":
-        print("硬件手动像素闭环测试：会真实控制机械臂运动。")
+        print(f"硬件{display_name}：会真实控制机械臂运动。")
         print(
             "串口: "
             + (
@@ -387,7 +423,7 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
         )
         confirmation = input("确认机械臂周围安全后输入 RUN 开始，其他输入将退出: ").strip()
         if confirmation != "RUN":
-            print("已取消硬件手动像素测试。")
+            print(f"已取消硬件{display_name}。")
             return 0
 
     controller = JetArmToolController(arm_config)
@@ -402,7 +438,15 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
             if arm_config.mode == "hardware"
             else "dry-run，仅模拟"
         )
-        print(f"手动像素闭环测试（{mode_text}；不调用API，不接相机）")
+        print(f"{display_name}（{mode_text}；不调用API，不接相机）")
+        print(
+            "运动程序: "
+            + (
+                "camera_vector_terminal_v2 / CameraVectorV2Runtime"
+                if camera_vector_version == "v2"
+                else "camera_vector_terminal / CameraRelativeManualServoRuntime"
+            )
+        )
         print(
             f"模拟图像: {args.manual_image_width}x{args.manual_image_height}, "
             f"固定抓取点像素=({grasp_x:g}, {grasp_y:g})"
@@ -451,6 +495,12 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
                     descend_when_aligned=False,
                 )
                 _print_manual_pixel_result(result)
+                if result.get("status") != "ok":
+                    print(
+                        "运动未取得有效进展，已停止流程："
+                        f"{result.get('error', '目标可能不可达或已触及关节限位')}"
+                    )
+                    return 2
                 decision = result.get("controller_decision")
                 if decision != "aligned_hold":
                     print("最终对准未完成，请重新输入目标点像素。")
@@ -461,10 +511,41 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
                 descend_result = await controller.descend_to_height(
                     final_grasp_height_cm
                 )
+                final_height = descend_result.get(
+                    "height_after_cm",
+                    descend_result.get("height_cm"),
+                )
                 print(
-                    f"下降结果: 高度={descend_result.get('height_after_cm')}cm "
+                    f"下降结果: 高度={final_height}cm "
+                    f"目标={final_grasp_height_cm:g}cm "
+                    "容差="
+                    f"{descend_result.get('target_tolerance_cm', 0.0)}cm "
                     f"步数={descend_result.get('steps')}"
                 )
+                final_pose_constraint = descend_result.get(
+                    "camera_pose_constraint"
+                )
+                if (
+                    isinstance(final_pose_constraint, dict)
+                    and final_pose_constraint.get("relaxed")
+                ):
+                    print(
+                        "姿态约束状态: 最终下降期间已因限位放宽 | "
+                        f"原因={final_pose_constraint.get('reasons')} "
+                        "放宽步数="
+                        f"{final_pose_constraint.get('relaxed_step_count')}"
+                    )
+                if (
+                    descend_result.get("status") != "ok"
+                    or not isinstance(final_height, (int, float))
+                    or float(final_height)
+                    > final_grasp_height_cm
+                    + float(descend_result.get("target_tolerance_cm", 0.0))
+                ):
+                    print(
+                        "最终下降未安全到达抓取高度，已停止流程且不会执行夹取。"
+                    )
+                    return 2
                 grip = await controller.control_gripper("grip_lock")
                 home = await controller.go_home()
                 print(
@@ -477,6 +558,12 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
                 target_x, target_y, grasp_x, grasp_y,
             )
             _print_manual_pixel_result(result)
+            if result.get("status") != "ok":
+                print(
+                    "运动未取得有效进展，已停止流程："
+                    f"{result.get('error', '目标可能不可达或已触及关节限位')}"
+                )
+                return 2
             decision = result.get("controller_decision")
 
             if decision == "aligned_hold":
@@ -510,6 +597,10 @@ async def _run_manual_pixel_test(args: argparse.Namespace) -> int:
 
 
 async def run(args: argparse.Namespace) -> int:
+    if args.manual_pixel_test_v2:
+        from .manual_pixel_test_v2 import run_manual_pixel_test_v2
+
+        return await run_manual_pixel_test_v2(args)
     if args.manual_pixel_test:
         return await _run_manual_pixel_test(args)
 

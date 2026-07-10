@@ -2,6 +2,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -153,6 +154,37 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
     def test_near_vertical_line_does_not_guess_horizontal_direction(self):
         with self.assertRaises(HorizontalDirectionUndefined):
             _unit(np.array((1e-8, -1e-8, 0.0), dtype=float))
+
+    def test_down_relaxes_inclination_when_strict_pose_is_unreachable(self):
+        runtime, _controller = self.make_runtime()
+        before = dict(runtime.positions)
+        runtime.set_vertical_direction(-1.0)
+
+        with patch.object(runtime, "_analytic_pose_candidates", return_value=[]):
+            self.assertTrue(runtime.step_cartesian(0.08))
+
+        status = runtime.pose_relaxation_status()
+        self.assertNotEqual(runtime.positions, before)
+        self.assertTrue(status["relaxed"])
+        self.assertEqual(status["mode"], "relaxed_due_to_downward_limit")
+        self.assertEqual(
+            status["reason_code"],
+            "strict_pose_unreachable_or_joint_limit",
+        )
+        self.assertGreater(status["relaxed_step_count"], 0)
+
+    def test_up_does_not_relax_inclination_when_strict_pose_is_unreachable(self):
+        runtime, _controller = self.make_runtime()
+        before = dict(runtime.positions)
+        runtime.set_vertical_direction(1.0)
+
+        with patch.object(runtime, "_analytic_pose_candidates", return_value=[]):
+            self.assertTrue(runtime.step_cartesian(0.08))
+
+        status = runtime.pose_relaxation_status()
+        self.assertEqual(runtime.positions, before)
+        self.assertFalse(status["relaxed"])
+        self.assertEqual(status["mode"], "strict")
 
     def test_home_configuration_keeps_j6_out_of_normal_home(self):
         self.assertEqual(

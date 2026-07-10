@@ -27,6 +27,7 @@ DEFAULT_TCP_SPEED_CM_S = 1.5
 MIN_TCP_SPEED_CM_S = 1.0
 MAX_TCP_SPEED_CM_S = 5.0
 MAX_AGENT_MOVE_COMMAND_CM = 2.0
+CAMERA_VECTOR_VERSIONS = ("v1", "v2")
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
 MIN_PIXEL_ALIGNMENT_SPEED_CM_S = 0.7
@@ -88,6 +89,7 @@ class ArmControlConfig:
     min_speed_cm_s: float = MIN_TCP_SPEED_CM_S
     max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
     max_motor_duration_s: float = 2.0
+    camera_vector_version: str = "v1"
 
     def validate(self) -> None:
         if self.mode not in {"dry-run", "hardware"}:
@@ -116,18 +118,33 @@ class ArmControlConfig:
             raise ArmControlError("TCP速度配置必须满足0 < 最小值 <= 默认值 <= 最大值")
         if self.max_motor_duration_s <= 0:
             raise ArmControlError("max_motor_duration_s必须大于0")
+        if self.camera_vector_version not in CAMERA_VECTOR_VERSIONS:
+            raise ArmControlError(
+                "camera_vector_version必须是v1或v2，收到: "
+                f"{self.camera_vector_version}"
+            )
 
 
-def _load_terminal_module() -> Any:
+def _load_terminal_module(camera_vector_version: str = "v1") -> Any:
     import_error: Exception | None = None
     terminal_dir = DEFAULT_TERMINAL_CONFIG.parents[1]
     terminal_dir_text = str(terminal_dir)
     if terminal_dir_text not in sys.path:
         sys.path.insert(0, terminal_dir_text)
+    if camera_vector_version not in CAMERA_VECTOR_VERSIONS:
+        raise ArmControlError(
+            "camera_vector_version必须是v1或v2，收到: "
+            f"{camera_vector_version}"
+        )
+    module_leaf = (
+        "camera_vector_terminal_v2"
+        if camera_vector_version == "v2"
+        else "camera_vector_terminal"
+    )
     for module_name in (
-        "camera_vector_terminal",
-        "ubuntu22_04_operation_terminal.camera_vector_terminal",
-        "project.ubuntu22_04_operation_terminal.camera_vector_terminal",
+        module_leaf,
+        f"ubuntu22_04_operation_terminal.{module_leaf}",
+        f"project.ubuntu22_04_operation_terminal.{module_leaf}",
     ):
         try:
             return importlib.import_module(module_name)
@@ -211,7 +228,7 @@ class JetArmToolController:
         self.logger = logger or (lambda _message: None)
         self.closed = False
 
-        terminal = _load_terminal_module()
+        terminal = _load_terminal_module(config.camera_vector_version)
 
         self.terminal = terminal
         self.settings = terminal.TerminalSettings.from_file(
@@ -236,11 +253,18 @@ class JetArmToolController:
             )
 
         camera_config_cls = getattr(terminal, "CameraLineConfig", None)
-        runtime_cls = getattr(
-            terminal,
-            "CameraRelativeManualServoRuntime",
-            terminal.ManualServoRuntime,
-        )
+        if config.camera_vector_version == "v2":
+            runtime_cls = getattr(terminal, "CameraVectorV2Runtime", None)
+            if runtime_cls is None:
+                raise ArmControlError(
+                    "camera_vector_terminal_v2缺少CameraVectorV2Runtime"
+                )
+        else:
+            runtime_cls = getattr(
+                terminal,
+                "CameraRelativeManualServoRuntime",
+                terminal.ManualServoRuntime,
+            )
         self.camera_config = (
             camera_config_cls.from_file(config.terminal_config_path)
             if camera_config_cls is not None
@@ -505,6 +529,11 @@ class JetArmToolController:
         tick loop, exactly as the camera_vector GUI terminal does."""
 
         self._refresh_hardware_positions()
+        reset_pose_relaxation = getattr(
+            self.runtime, "reset_pose_relaxation_status", None
+        )
+        if callable(reset_pose_relaxation):
+            reset_pose_relaxation()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
         requested_speed_m_s = speed_cm_s / 100.0
         planner_speed_m_s, direction_unit = self._set_cartesian_direction(direction)
@@ -610,6 +639,20 @@ class JetArmToolController:
         estimated_distance = sum(
             float(delta_cm[index]) * direction_unit[index] for index in range(3)
         )
+        motion_status = "ok"
+        motion_error: str | None = None
+        if (
+            self.config.camera_vector_version == "v2"
+            and distance_cm > 0.0
+            and estimated_distance <= 1e-6
+        ):
+            motion_status = "error"
+            motion_error = "V2运动无有效进展，目标可能不可达或已触及关节限位"
+        pose_constraint_status: dict[str, Any] | None = None
+        get_pose_relaxation = getattr(self.runtime, "pose_relaxation_status", None)
+        if callable(get_pose_relaxation):
+            pose_constraint_status = dict(get_pose_relaxation())
+            pose_constraint_status["motion_progress_ok"] = motion_status == "ok"
         grasp_before_cm = {
             "forward_x": round(float(start_tcp[0] * 100.0), 3),
             "left_y": round(float(start_tcp[1] * 100.0), 3),
@@ -622,8 +665,8 @@ class JetArmToolController:
         }
         horizontal_motion = direction in horizontal_directions
         height_error_cm = float((end_tcp[2] - start_tcp[2]) * 100.0)
-        return {
-            "status": "ok",
+        result = {
+            "status": motion_status,
             "mode": self.config.mode,
             "direction": direction,
             "requested_distance_cm": distance_cm,
@@ -645,18 +688,31 @@ class JetArmToolController:
                 "up_z": round(float(delta_cm[2]), 3),
             },
             "direction_reference": (
-                "camera_vector" if self._uses_camera_vector_runtime()
+                (
+                    "camera_vector_v2"
+                    if self.config.camera_vector_version == "v2"
+                    else "camera_vector"
+                )
+                if self._uses_camera_vector_runtime()
                 else ("camera_view" if direction in {"up", "down"} else "base")
             ),
             "horizontal_motion_frame": (
-                "grasp_point_xyz_xy" if horizontal_motion else None
+                (
+                    "camera_to_grasp_line_xy_projection"
+                    if self.config.camera_vector_version == "v2"
+                    else "grasp_point_xyz_xy"
+                )
+                if horizontal_motion
+                else None
             ),
             "horizontal_height_hold": (
                 {
                     "target_z_cm": round(float(start_tcp[2] * 100.0), 3),
                     "actual_after_z_cm": round(float(end_tcp[2] * 100.0), 3),
                     "error_cm": round(height_error_cm, 4),
-                    "z_participates_in_command": False,
+                    "z_participates_in_command": (
+                        self.config.camera_vector_version == "v2"
+                    ),
                 }
                 if horizontal_motion
                 else None
@@ -673,6 +729,7 @@ class JetArmToolController:
                 "actual_after_deg": round(camera_angle_after_deg, 3),
                 "error_deg": round(camera_angle_after_deg - camera_angle_before_deg, 3),
             },
+            "camera_pose_constraint": pose_constraint_status,
             "camera_grasp_pose_hold": {
                 "line_unit_before": line_before,
                 "line_unit_after": line_after,
@@ -685,6 +742,9 @@ class JetArmToolController:
             "joint_positions": dict(self.runtime.positions),
             "tcp_samples_cm": tcp_samples,
         }
+        if motion_error is not None:
+            result["error"] = motion_error
+        return result
 
     async def move_tcp(
         self,
@@ -726,7 +786,12 @@ class JetArmToolController:
         duration_ms = self._validate_run_time_ms(run_time_ms)
         if self.runtime.j6_grip_locked:
             self.runtime.toggle_grip_lock()
-        self.controller.move_servo(self.settings.servo_id("J6"), target, duration_ms)
+        j6_id = self.settings.servo_id("J6")
+        set_servo_mode = getattr(self.controller, "set_servo_mode", None)
+        if not callable(set_servo_mode):
+            raise ArmControlError("当前舵机控制器不支持将J6切换到位置控制模式")
+        set_servo_mode(j6_id)
+        self.controller.move_servo(j6_id, target, duration_ms)
         if self.config.mode == "hardware":
             await self.sleep(duration_ms / 1000.0)
         return {
@@ -737,6 +802,7 @@ class JetArmToolController:
             "target_position": target,
             "run_time_ms": duration_ms,
             "grip_locked": False,
+            "position_mode_enabled": True,
         }
 
     async def move_by_pixel_error(
@@ -1015,7 +1081,46 @@ class JetArmToolController:
         self._refresh_hardware_positions()
         current = self._current_tcp_cm()
         current_height = current["up_z"]
-        if current_height <= target_height_cm:
+        target_tolerance_cm = max(
+            0.0,
+            float(getattr(self.runtime, "position_target_tolerance_m", 0.0))
+            * 100.0,
+        )
+        pose_relaxation_steps = 0
+        pose_relaxation_reasons: list[str] = []
+        pose_relaxation_reason_codes: list[str] = []
+
+        def record_pose_relaxation(move_result: Mapping[str, Any]) -> None:
+            nonlocal pose_relaxation_steps
+            status = move_result.get("camera_pose_constraint")
+            if not isinstance(status, Mapping) or not status.get("relaxed"):
+                return
+            pose_relaxation_steps += int(status.get("relaxed_step_count", 0))
+            reason = status.get("reason")
+            if isinstance(reason, str) and reason not in pose_relaxation_reasons:
+                pose_relaxation_reasons.append(reason)
+            reason_code = status.get("reason_code")
+            if (
+                isinstance(reason_code, str)
+                and reason_code not in pose_relaxation_reason_codes
+            ):
+                pose_relaxation_reason_codes.append(reason_code)
+
+        def pose_relaxation_summary() -> dict[str, Any]:
+            relaxed = pose_relaxation_steps > 0
+            return {
+                "constraint": "camera_grasp_line_inclination",
+                "mode": (
+                    "relaxed_due_to_downward_limit" if relaxed else "strict"
+                ),
+                "relaxed": relaxed,
+                "reasons": list(pose_relaxation_reasons),
+                "reason_codes": list(pose_relaxation_reason_codes),
+                "relaxed_step_count": pose_relaxation_steps,
+                "allowed_scope": "down_only",
+            }
+
+        if current_height <= target_height_cm + target_tolerance_cm:
             return {
                 "status": "ok",
                 "mode": self.config.mode,
@@ -1023,13 +1128,19 @@ class JetArmToolController:
                 "already_at_target": True,
                 "height_cm": current_height,
                 "target_height_cm": target_height_cm,
+                "target_tolerance_cm": target_tolerance_cm,
+                "camera_pose_constraint": pose_relaxation_summary(),
             }
         remaining_cm = current_height - target_height_cm
         # Clamp to the per-command limit so the move stays safe.
         effective_cm = min(remaining_cm, self.config.max_distance_cm)
         steps = 0
         heights: list[float] = [current_height]
-        while current_height > target_height_cm and steps < 200:
+        while (
+            current_height > target_height_cm + target_tolerance_cm
+            and steps < 200
+        ):
+            previous_height = current_height
             remaining_cm = current_height - target_height_cm
             if remaining_cm <= 0:
                 break
@@ -1037,6 +1148,7 @@ class JetArmToolController:
             result = await self._move_tcp_segment(
                 "down", effective_cm, speed_cm_s, collect_tcp_samples=True
             )
+            record_pose_relaxation(result)
             self._refresh_hardware_positions()
             after = self._current_tcp_cm()
             current_height = after["up_z"]
@@ -1047,19 +1159,50 @@ class JetArmToolController:
                     **result,
                     "action": "descend_to_height",
                     "target_height_cm": target_height_cm,
+                    "target_tolerance_cm": target_tolerance_cm,
                     "height_samples_cm": heights,
+                    "height_after_cm": current_height,
                     "steps": steps,
+                    "camera_pose_constraint": pose_relaxation_summary(),
                 }
+            if current_height >= previous_height - 1e-6:
+                return {
+                    "status": "error",
+                    "mode": self.config.mode,
+                    "action": "descend_to_height",
+                    "error": "下降无有效进展，已停止且不会执行抓取",
+                    "target_height_cm": target_height_cm,
+                    "target_tolerance_cm": target_tolerance_cm,
+                    "height_samples_cm": heights,
+                    "height_after_cm": current_height,
+                    "steps": steps,
+                    "camera_pose_constraint": pose_relaxation_summary(),
+                }
+        if current_height > target_height_cm + target_tolerance_cm:
+            return {
+                "status": "error",
+                "mode": self.config.mode,
+                "action": "descend_to_height",
+                "error": "达到最大下降步数后仍未到达目标高度",
+                "target_height_cm": target_height_cm,
+                "target_tolerance_cm": target_tolerance_cm,
+                "height_samples_cm": heights,
+                "height_after_cm": current_height,
+                "steps": steps,
+                "camera_pose_constraint": pose_relaxation_summary(),
+            }
         return {
             "status": "ok",
             "mode": self.config.mode,
             "action": "descend_to_height",
             "target_height_cm": target_height_cm,
+            "target_tolerance_cm": target_tolerance_cm,
             "height_before_cm": heights[0],
             "height_after_cm": current_height,
             "height_samples_cm": heights,
             "steps": steps,
             "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(self._current_tcp_cm()),
+            "camera_pose_constraint": pose_relaxation_summary(),
         }
 
     async def rotate_wrist(
@@ -1202,6 +1345,31 @@ class JetArmToolController:
         }
 
     def arm_parameters(self) -> dict[str, Any]:
+        uses_v2_camera_frame = self.config.camera_vector_version == "v2"
+        horizontal_frame = (
+            "camera_to_grasp_line_xy_projection"
+            if uses_v2_camera_frame
+            else "base_horizontal_xy"
+        )
+        runtime_implementation = (
+            "ubuntu22_04_operation_terminal.camera_vector_terminal_v2"
+            if uses_v2_camera_frame
+            else "ubuntu22_04_operation_terminal.camera_vector_terminal"
+        )
+        if uses_v2_camera_frame:
+            direction_descriptions = {
+                "forward": "camera_to_grasp_line_xy_projection",
+                "backward": "opposite_of_forward",
+                "left": "world_up_cross_forward",
+                "right": "opposite_of_left",
+            }
+        else:
+            direction_descriptions = {
+                "forward": "grasp_point_xyz_y_decreases",
+                "backward": "grasp_point_xyz_y_increases",
+                "left": "grasp_point_xyz_x_decreases",
+                "right": "grasp_point_xyz_x_increases",
+            }
         joints = {
             name: {
                 "servo_id": self.settings.servo_id(name),
@@ -1230,13 +1398,10 @@ class JetArmToolController:
                 "units": "cm",
             },
             "agent_direction_frames": {
-                "forward_backward_left_right": "base_horizontal_xy",
+                "forward_backward_left_right": horizontal_frame,
                 "up_down": "camera_grasp_line",
-                "implementation": "ubuntu22_04_operation_terminal.camera_vector_terminal",
-                "forward": "grasp_point_xyz_y_decreases",
-                "backward": "grasp_point_xyz_y_increases",
-                "left": "grasp_point_xyz_x_decreases",
-                "right": "grasp_point_xyz_x_increases",
+                "implementation": runtime_implementation,
+                **direction_descriptions,
             },
             "home_joint_positions": dict(self.settings.home),
             "joints": joints,
@@ -1252,10 +1417,12 @@ class JetArmToolController:
             },
             "camera_orientation_model": {
                 "mount": "eye_in_hand_near_j5_j6",
-                "control_frame": "camera_vector",
+                "control_frame": (
+                    "camera_vector_v2" if uses_v2_camera_frame else "camera_vector"
+                ),
                 "up": "grasp_point_to_camera",
                 "down": "camera_to_grasp_point",
-                "forward_backward_left_right": "base_horizontal_xy",
+                "forward_backward_left_right": horizontal_frame,
                 "motion_constraint": "keep_camera_grasp_line_pose_and_lock_horizontal_z",
             },
             "vision_guided_grasp": {

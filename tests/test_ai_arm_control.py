@@ -1,9 +1,10 @@
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 try:
     from project.src.jetarm_agent.arm_control import (
@@ -22,9 +23,19 @@ try:
         required_mcp_tool_for_command,
     )
     from project.src.jetarm_agent.config import AgentSettings, ConfigurationError
-    from project.src.jetarm_agent.cli import _parse_manual_target_pixel
-    from project.src.jetarm_agent.cli import _resolve_manual_pixel_arm_config
+    from project.src.jetarm_agent.cli import (
+        _parse_manual_target_pixel,
+        _print_manual_pixel_result,
+        _resolve_manual_pixel_arm_config,
+        build_parser,
+    )
     from project.src.jetarm_agent.device_config import RuntimeDeviceConfig
+    from project.src.jetarm_agent.manual_pixel_test_v2 import (
+        CAMERA_VECTOR_VERSION,
+        DEFAULT_MANUAL_GRASP_X,
+        DEFAULT_MANUAL_GRASP_Y,
+        run_manual_pixel_test_v2,
+    )
     from project.src.jetarm_agent.openai_compatible import (
         FunctionToolCall,
         ToolModelResponse,
@@ -47,9 +58,19 @@ except ModuleNotFoundError:
         required_mcp_tool_for_command,
     )
     from src.jetarm_agent.config import AgentSettings, ConfigurationError
-    from src.jetarm_agent.cli import _parse_manual_target_pixel
-    from src.jetarm_agent.cli import _resolve_manual_pixel_arm_config
+    from src.jetarm_agent.cli import (
+        _parse_manual_target_pixel,
+        _print_manual_pixel_result,
+        _resolve_manual_pixel_arm_config,
+        build_parser,
+    )
     from src.jetarm_agent.device_config import RuntimeDeviceConfig
+    from src.jetarm_agent.manual_pixel_test_v2 import (
+        CAMERA_VECTOR_VERSION,
+        DEFAULT_MANUAL_GRASP_X,
+        DEFAULT_MANUAL_GRASP_Y,
+        run_manual_pixel_test_v2,
+    )
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
     from src.jetarm_agent.tool_agent import ToolCallingSession
 
@@ -145,6 +166,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(release["status"], "ok")
         self.assertEqual(release["target_position"], 370)
+        self.assertTrue(release["position_mode_enabled"])
+        self.assertEqual(self.controller.controller.servo_mode_calls[0], 10)
         self.assertEqual(self.controller.controller.move_calls[0], (10, 370, 500))
         self.assertTrue(aligned["aligned"])
         self.assertEqual(aligned["motion_command_count"], 0)
@@ -287,6 +310,32 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "必须是数字"):
             _parse_manual_target_pixel("x y")
 
+    def test_manual_pixel_output_marks_relaxed_downward_pose(self):
+        output = io.StringIO()
+        result = {
+            "controller_decision": "descend_after_alignment",
+            "requested_distance_cm": 2.0,
+            "speed_cm_s": 2.0,
+            "height_before_cm": 8.0,
+            "height_after_cm": 6.0,
+            "pixel_error": {"dx": 0.0, "dy": 0.0},
+            "dynamic_tolerance_px": 13.0,
+            "camera_pose_constraint": {
+                "relaxed": True,
+                "reason": "V2严格姿态目标超出工作空间或关节限位",
+                "relaxed_step_count": 3,
+            },
+        }
+
+        with patch("sys.stdout", output):
+            _print_manual_pixel_result(result)
+
+        text = output.getvalue()
+        self.assertIn("姿态约束=已放宽", text)
+        self.assertIn("仅下降", text)
+        self.assertIn("关节限位", text)
+        self.assertIn("步数=3", text)
+
     def test_manual_pixel_arm_config_uses_hardware_device_config(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "devices.json"
@@ -308,6 +357,183 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.serial_port, "/dev/ttyUSB0")
         self.assertEqual(config.max_distance_cm, 100.0)
         self.assertTrue(config.allow_extended_distance)
+
+    def test_manual_pixel_v2_has_independent_mode_and_fixed_default_grasp_point(self):
+        args = build_parser().parse_args(["--manual-pixel-test-v2"])
+
+        self.assertTrue(args.manual_pixel_test_v2)
+        self.assertFalse(args.manual_pixel_test)
+        self.assertEqual(DEFAULT_MANUAL_GRASP_X, 320.0)
+        self.assertEqual(DEFAULT_MANUAL_GRASP_Y, 147.0)
+        self.assertEqual(CAMERA_VECTOR_VERSION, "v2")
+
+    def test_manual_pixel_v2_arm_config_selects_v2_runtime(self):
+        args = SimpleNamespace(
+            device_config=str(PROJECT_ROOT / "missing-devices.json"),
+            arm_mode="dry-run",
+            arm_port=None,
+            arm_config=None,
+        )
+
+        config = _resolve_manual_pixel_arm_config(
+            args,
+            camera_vector_version="v2",
+        )
+
+        self.assertEqual(config.camera_vector_version, "v2")
+        self.assertEqual(config.max_distance_cm, 100.0)
+        self.assertTrue(config.allow_extended_distance)
+
+    async def test_v2_controller_reuses_pixel_parameters_with_v2_motion_runtime(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            state = await controller.state()
+            parameters = state["arm_parameters"]["vision_guided_grasp"]
+            result = await controller.control_to_target_pixel(
+                370,
+                147,
+                DEFAULT_MANUAL_GRASP_X,
+                DEFAULT_MANUAL_GRASP_Y,
+            )
+
+            self.assertEqual(controller.terminal.__name__, "camera_vector_terminal_v2")
+            self.assertEqual(type(controller.runtime).__name__, "CameraVectorV2Runtime")
+            self.assertEqual(parameters["height_tolerance_bands_px"][0]["tolerance_px"], 40)
+            self.assertEqual(parameters["pixel_alignment_min_speed_cm_s"], 0.7)
+            self.assertEqual(parameters["pixel_alignment_max_speed_cm_s"], 1.5)
+            self.assertEqual(parameters["pixel_recalculation_descent_interval_cm"], 2.0)
+            self.assertEqual(result["controller_decision"], "horizontal_align")
+            self.assertEqual(result["direction"], "right")
+            self.assertEqual(
+                state["arm_parameters"]["agent_direction_frames"]["implementation"],
+                "ubuntu22_04_operation_terminal.camera_vector_terminal_v2",
+            )
+            self.assertEqual(
+                state["arm_parameters"]["agent_direction_frames"]["forward"],
+                "camera_to_grasp_line_xy_projection",
+            )
+        finally:
+            controller.close()
+
+    async def test_v2_zero_progress_is_reported_as_error(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            with patch.object(
+                controller.runtime,
+                "step_cartesian",
+                return_value=True,
+            ):
+                result = await controller.move_tcp("forward", 0.1, 1.0)
+
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["estimated_distance_cm"], 0.0)
+            self.assertIn("无有效进展", result["error"])
+        finally:
+            controller.close()
+
+    async def test_final_descent_stops_after_no_height_progress(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            with patch.object(
+                controller,
+                "_move_tcp_segment",
+                new=AsyncMock(return_value={"status": "ok"}),
+            ):
+                result = await controller.descend_to_height(1.0)
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("下降无有效进展", result["error"])
+            self.assertEqual(result["steps"], 1)
+        finally:
+            controller.close()
+
+    async def test_v2_descent_relaxes_at_limit_and_reports_status(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            relaxed_segment = None
+            aligned_hold = None
+            for _index in range(20):
+                result = await controller.control_to_target_pixel(
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                )
+                pose_status = result.get("camera_pose_constraint")
+                if isinstance(pose_status, dict) and pose_status.get("relaxed"):
+                    relaxed_segment = result
+                if result.get("controller_decision") == "aligned_hold":
+                    aligned_hold = result
+                    break
+
+            self.assertIsNotNone(relaxed_segment)
+            self.assertIsNotNone(aligned_hold)
+            self.assertEqual(relaxed_segment["status"], "ok")
+            self.assertEqual(
+                relaxed_segment["camera_pose_constraint"]["reason_code"],
+                "strict_pose_unreachable_or_joint_limit",
+            )
+
+            final_result = await controller.descend_to_height(1.0)
+
+            self.assertEqual(final_result["status"], "ok")
+            self.assertTrue(final_result["camera_pose_constraint"]["relaxed"])
+            self.assertGreater(
+                final_result["camera_pose_constraint"]["relaxed_step_count"],
+                0,
+            )
+            self.assertLessEqual(
+                final_result["height_after_cm"],
+                final_result["target_height_cm"]
+                + final_result["target_tolerance_cm"],
+            )
+        finally:
+            controller.close()
+
+    async def test_manual_pixel_v2_workflow_reports_default_grasp_and_runtime(self):
+        args = build_parser().parse_args(
+            ["--manual-pixel-test-v2", "--arm-mode", "dry-run"]
+        )
+        output = io.StringIO()
+
+        with patch("builtins.input", return_value="q"), patch(
+            "sys.stdout", output
+        ):
+            exit_code = await run_manual_pixel_test_v2(args)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("固定抓取点像素=(320, 147)", text)
+        self.assertIn("camera_vector_terminal_v2 / CameraVectorV2Runtime", text)
+        self.assertIn("2cm=50px/cm，25cm=18px/cm", text)
 
     def test_manual_pixel_hardware_without_port_delegates_to_terminal_discovery(self):
         args = SimpleNamespace(
@@ -342,7 +568,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         stopped = await self.controller.stop_all()
         state = await self.controller.state()
 
-        self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 478, "J3": 641, "J4": 890})
+        self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 410, "J3": 800, "J4": 800})
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
         self.assertGreater(

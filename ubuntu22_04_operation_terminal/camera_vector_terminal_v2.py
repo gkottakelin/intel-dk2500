@@ -38,6 +38,7 @@ from jetarm_terminal import (
     DEFAULT_CONFIG_PATH,
     BusServoController,
     DryRunServoController,
+    ManualServoRuntime,
     TerminalSettings,
     choose_serial_port_dialog,
     discover_linux_serial_ports,
@@ -98,10 +99,16 @@ def _wrap_angle(angle_rad: float) -> float:
 class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
     """Camera-relative runtime using fixed-inclination analytic pose IK."""
 
+    position_target_tolerance_m = IK_POSITION_TOLERANCE_M
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._locked_pitch_rad: float | None = None
         self._locked_height_m: float | None = None
+        self._pose_relaxation_used = False
+        self._pose_relaxation_reason: str | None = None
+        self._pose_relaxation_reason_code: str | None = None
+        self._pose_relaxation_step_count = 0
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_vector_v2_frame(
@@ -141,6 +148,27 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
         self._locked_height_m = None
         self.z_lock = False
 
+    def reset_pose_relaxation_status(self) -> None:
+        self._pose_relaxation_used = False
+        self._pose_relaxation_reason = None
+        self._pose_relaxation_reason_code = None
+        self._pose_relaxation_step_count = 0
+
+    def pose_relaxation_status(self) -> dict[str, object]:
+        return {
+            "constraint": "camera_grasp_line_inclination",
+            "mode": (
+                "relaxed_due_to_downward_limit"
+                if self._pose_relaxation_used
+                else "strict"
+            ),
+            "relaxed": self._pose_relaxation_used,
+            "reason": self._pose_relaxation_reason,
+            "reason_code": self._pose_relaxation_reason_code,
+            "relaxed_step_count": self._pose_relaxation_step_count,
+            "allowed_scope": "down_only",
+        }
+
     def initialize_home_pose(self) -> None:
         """Return J1-J5 home and set J6 to its initialization position."""
 
@@ -167,8 +195,11 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
 
         candidates = self._analytic_pose_candidates(target_tcp, self._locked_pitch_rad)
         if not candidates:
-            self.logger("V2目标位姿超出工作空间或关节限位，已拒绝本步运动")
-            return dict(self.positions)
+            return self._relax_downward_pose_or_reject(
+                target_delta,
+                "strict_pose_unreachable_or_joint_limit",
+                "V2严格姿态目标超出工作空间或关节限位",
+            )
 
         target_inclination = self._locked_line_angle_rad
         if target_inclination is None:
@@ -191,13 +222,75 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
             position_error > IK_POSITION_TOLERANCE_M
             or inclination_error > IK_INCLINATION_TOLERANCE_RAD
         ):
-            self.logger(
-                "V2解析逆解误差超限，已拒绝本步运动: "
+            return self._relax_downward_pose_or_reject(
+                target_delta,
+                "strict_pose_error_exceeded",
+                "V2严格姿态解析逆解误差超限: "
                 f"位置误差={position_error * 1000.0:.1f}mm, "
-                f"倾角误差={math.degrees(inclination_error):.2f}°"
+                f"倾角误差={math.degrees(inclination_error):.2f}°",
             )
-            return dict(self.positions)
+        if best == self.positions:
+            return self._relax_downward_pose_or_reject(
+                target_delta,
+                "strict_pose_no_progress",
+                "V2严格姿态解析逆解无关节进展",
+            )
         return best
+
+    def _relax_downward_pose_or_reject(
+        self,
+        target_delta: np.ndarray,
+        reason_code: str,
+        strict_message: str,
+    ) -> dict[str, int]:
+        downward_only = (
+            self.vertical_direction < -HORIZONTAL_PROJECTION_EPSILON
+            and math.hypot(self.joystick_x, self.joystick_y)
+            <= HORIZONTAL_PROJECTION_EPSILON
+        )
+        if not downward_only:
+            self.logger(f"{strict_message}，已拒绝本步运动")
+            return dict(self.positions)
+
+        if not self._pose_relaxation_used:
+            self.logger(
+                f"{strict_message}；下降动作已放宽摄像头-抓取点连线倾角约束"
+            )
+        self._pose_relaxation_used = True
+        if self._pose_relaxation_reason is None:
+            self._pose_relaxation_reason = strict_message
+            self._pose_relaxation_reason_code = reason_code
+        self._pose_relaxation_step_count += 1
+        return self._solve_relaxed_cartesian_positions(target_delta)
+
+    def _solve_relaxed_cartesian_positions(
+        self, target_delta: np.ndarray
+    ) -> dict[str, int]:
+        """Solve position only, bypassing V2 inclination constraints."""
+
+        jacobian = self.model.jacobian(self.positions)
+        damping = (self.settings.damping**2) * np.eye(3)
+        try:
+            dq = jacobian.T @ np.linalg.solve(
+                jacobian @ jacobian.T + damping,
+                target_delta,
+            )
+        except np.linalg.LinAlgError:
+            dq = np.zeros(4)
+        max_step = math.radians(self.settings.max_joint_step_deg)
+        dq = np.clip(dq, -max_step, max_step)
+        seed = dict(self.positions)
+        for index, joint_name in enumerate(ARM_JOINTS):
+            current = self.model.position_to_model_angle(
+                joint_name, self.positions[joint_name]
+            )
+            target = self.model.clamp_model_angle(
+                joint_name, current + float(dq[index])
+            )
+            seed[joint_name] = self.model.model_angle_to_position(
+                joint_name, target
+            )
+        return ManualServoRuntime._local_refine(self, seed, target_delta)
 
     def _analytic_pose_candidates(
         self,
