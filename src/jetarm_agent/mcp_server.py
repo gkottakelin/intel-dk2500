@@ -350,12 +350,20 @@ class JetArmMCPService:
             "actual_grasp_point_xyz_cm",
             result.get("grasp_point_xyz_after_cm", original),
         )
-        plan = source.get("motion_plan", result.get("v2_motion_plan"))
-        if plan is None:
-            plan = {
-                "controller_decision": result.get("controller_decision"),
-                "motion_command_count": result.get("motion_command_count", 0),
-            }
+        direction = source.get("direction", result.get("direction"))
+        distance_cm = source.get(
+            "requested_distance_cm", result.get("requested_distance_cm")
+        )
+        if direction is None:
+            direction = "none"
+        if not isinstance(distance_cm, (int, float)):
+            distance_cm = 0.0 if direction == "none" else None
+        plan = {
+            "direction": str(direction),
+            "distance_cm": (
+                round(float(distance_cm), 3) if distance_cm is not None else None
+            ),
+        }
         angle = source.get("camera_grasp_vertical_angle_deg")
         if not isinstance(angle, (int, float)):
             angle = self._camera_grasp_angle_deg(result)

@@ -312,6 +312,8 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                     "target_tolerance_cm": 0.4,
                     "motion_steps": [
                         {
+                            "direction": "down",
+                            "requested_distance_cm": 2.0,
                             "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 3},
                             "expected_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 1},
                             "actual_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 1},
@@ -347,7 +349,9 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         fake.go_home.assert_awaited_once()
         record = final["new_grasp_step_records"][-1]
         self.assertEqual(record["target_pixel"], {"x": 328.0, "y": 150.0})
-        self.assertEqual(record["motion_plan"], {"accepted": True})
+        self.assertEqual(
+            record["motion_plan"], {"direction": "down", "distance_cm": 2.0}
+        )
         self.assertEqual(record["camera_grasp_vertical_angle_deg"], 12.5)
 
     async def test_failed_visual_confirmation_reopens_grasp_loop(self):
@@ -401,7 +405,7 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "target_pixel": {"x": 330, "y": 150},
                     "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 10},
-                    "motion_plan": {"direction": "forward"},
+                    "motion_plan": {"direction": "forward", "distance_cm": 1.0},
                     "expected_grasp_point_xyz_cm": {"x": 0, "y": -21, "z": 10},
                     "actual_grasp_point_xyz_cm": {"x": 0, "y": -20.9, "z": 10},
                     "camera_grasp_vertical_angle_deg": 12.5,
@@ -415,12 +419,12 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
 
         text = output.getvalue()
         labels = [
-            "目标点像素坐标=",
-            "原抓取点实际坐标=",
-            "运动规划=",
-            "预计抓取点坐标=",
-            "实际抓取点坐标=",
-            "夹角=",
+            "目标点像素坐标：",
+            "原抓取点实际坐标：",
+            "运动规划：",
+            "预计抓取点坐标：",
+            "实际抓取点坐标：",
+            "夹角：",
         ]
         positions = [text.index(label) for label in labels]
         self.assertEqual(positions, sorted(positions))
@@ -432,7 +436,7 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "target_pixel": {"x": 330, "y": 150},
                     "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 10},
-                    "motion_plan": {"direction": "forward"},
+                    "motion_plan": {"direction": "forward", "distance_cm": 1.0},
                     "expected_grasp_point_xyz_cm": {"x": 0, "y": -21, "z": 10},
                     "actual_grasp_point_xyz_cm": {"x": 0, "y": -20.9, "z": 10},
                     "camera_grasp_vertical_angle_deg": 12.5,
@@ -458,8 +462,9 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         with redirect_stdout(output):
             await _send_with_tools(session, "尝试抓取红色物块")
 
-        self.assertIn("抓取步骤记录 |", session.output_at_return)
-        self.assertEqual(output.getvalue().count("抓取步骤记录 |"), 1)
+        self.assertIn("========== 抓取步骤", session.output_at_return)
+        self.assertEqual(output.getvalue().count("========== 抓取步骤"), 1)
+        self.assertIn("运动规划：方向=forward，距离=1.0 cm", output.getvalue())
         self.assertNotIn("[工作流 4/5] MCP结果", output.getvalue())
 
     async def test_internal_grasp_setup_and_legacy_pixel_tool_are_hidden_from_agent(self):

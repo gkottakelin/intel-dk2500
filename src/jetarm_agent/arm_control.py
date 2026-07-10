@@ -1515,6 +1515,10 @@ class JetArmToolController:
             motion_steps.append(
                 {
                     "step": steps,
+                    "direction": result.get("direction", "down"),
+                    "requested_distance_cm": result.get(
+                        "requested_distance_cm", effective_cm
+                    ),
                     "original_grasp_point_xyz_cm": result.get(
                         "grasp_point_xyz_before_cm"
                     ),

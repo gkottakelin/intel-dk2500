@@ -273,18 +273,21 @@ def _print_agent_grasp_step_records(result: dict[str, object]) -> None:
     for record in raw_records:
         if not isinstance(record, dict):
             continue
+        plan = record.get("motion_plan")
+        plan = plan if isinstance(plan, dict) else {}
+        distance_cm = plan.get("distance_cm")
+        distance_text = "无" if distance_cm is None else f"{distance_cm} cm"
+        print(f"\n========== 抓取步骤 {record.get('step', '-')} ==========")
+        print(f"目标点像素坐标：{record.get('target_pixel')}")
+        print(f"原抓取点实际坐标：{record.get('original_grasp_point_xyz_cm')}")
         print(
-            "抓取步骤记录 | "
-            f"目标点像素坐标={record.get('target_pixel')} | "
-            "原抓取点实际坐标="
-            f"{record.get('original_grasp_point_xyz_cm')} | "
-            f"运动规划={record.get('motion_plan')} | "
-            "预计抓取点坐标="
-            f"{record.get('expected_grasp_point_xyz_cm')} | "
-            "实际抓取点坐标="
-            f"{record.get('actual_grasp_point_xyz_cm')} | "
-            f"夹角={record.get('camera_grasp_vertical_angle_deg')}°"
+            "运动规划："
+            f"方向={plan.get('direction', 'none')}，距离={distance_text}"
         )
+        print(f"预计抓取点坐标：{record.get('expected_grasp_point_xyz_cm')}")
+        print(f"实际抓取点坐标：{record.get('actual_grasp_point_xyz_cm')}")
+        print(f"夹角：{record.get('camera_grasp_vertical_angle_deg')}°")
+        print("================================")
 
 
 async def _run_tool_test(
