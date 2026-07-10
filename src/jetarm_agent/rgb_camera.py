@@ -48,9 +48,10 @@ def write_color_only_sdk_config(
     log_level = root.find("./Log/LogLevel")
     if log_level is not None:
         # OrbbecSDK levels: 0 DEBUG, 1 INFO, 2 WARN, 3 ERROR, 4 FATAL,
-        # 5 NONE. Keep actual SDK errors visible without flooding the Agent
-        # terminal for every one-frame capture lifecycle.
-        log_level.text = "3"
+        # 5 NONE. This SDK emits a known USB-core compatibility message as an
+        # ERROR even while frames are returned normally. Native API failures
+        # still reach Python through ob_error and are reported by the MCP tool.
+        log_level.text = "5"
     stream = root.find("./Pipeline/Stream")
     if stream is None:
         raise RuntimeError(f"Orbbec SDK配置缺少Pipeline/Stream: {source_path}")

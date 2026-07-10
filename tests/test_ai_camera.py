@@ -76,7 +76,7 @@ class RGBCaptureTest(unittest.TestCase):
 
         self.assertEqual(FakeOrbbecSession.selection_key, "4-1.2-11")
         self.assertFalse(FakeOrbbecSession.depth_enabled)
-        self.assertEqual(FakeOrbbecSession.sdk_log_level, "3")
+        self.assertEqual(FakeOrbbecSession.sdk_log_level, "5")
         self.assertEqual(frame.data, b"jpeg-bytes")
         self.assertEqual((frame.width, frame.height), (32, 24))
 

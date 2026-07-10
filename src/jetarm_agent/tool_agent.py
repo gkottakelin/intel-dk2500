@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from .config import AgentSettings
 from .openai_compatible import OpenAICompatibleClient, ToolModelResponse
@@ -77,6 +77,7 @@ class ToolCallingSession:
         required_tool_retries: int = 1,
         preselected_tool_name: str | None = None,
         preselected_tool_arguments: dict[str, Any] | None = None,
+        on_tool_call: Callable[[ExecutedToolCall], None] | None = None,
     ) -> ToolAgentResult:
         user_text = text.strip()
         if not user_text:
@@ -116,15 +117,16 @@ class ToolCallingSession:
             arguments, result, images = await self._execute(
                 selected_tool_name, raw_arguments
             )
-            executed.append(
-                ExecutedToolCall(
-                    call_id=call_id,
-                    name=selected_tool_name,
-                    arguments=arguments,
-                    result=result,
-                    images=images,
-                )
+            executed_call = ExecutedToolCall(
+                call_id=call_id,
+                name=selected_tool_name,
+                arguments=arguments,
+                result=result,
+                images=images,
             )
+            executed.append(executed_call)
+            if on_tool_call is not None:
+                on_tool_call(executed_call)
             turn.append(
                 {
                     "role": "tool",
@@ -237,15 +239,16 @@ class ToolCallingSession:
                     elif tool_call.name in SEQUENTIAL_MOTION_TOOLS:
                         fresh_rgb_observation = False
                         successful_motion = self._successful_result(result)
-                executed.append(
-                    ExecutedToolCall(
-                        call_id=tool_call.call_id,
-                        name=tool_call.name,
-                        arguments=arguments,
-                        result=result,
-                        images=images,
-                    )
+                executed_call = ExecutedToolCall(
+                    call_id=tool_call.call_id,
+                    name=tool_call.name,
+                    arguments=arguments,
+                    result=result,
+                    images=images,
                 )
+                executed.append(executed_call)
+                if on_tool_call is not None:
+                    on_tool_call(executed_call)
                 turn.append(
                     {
                         "role": "tool",
@@ -287,15 +290,16 @@ class ToolCallingSession:
                 arguments, result, images = await self._execute(
                     RGB_CAMERA_TOOL, raw_arguments
                 )
-                executed.append(
-                    ExecutedToolCall(
-                        call_id=camera_call_id,
-                        name=RGB_CAMERA_TOOL,
-                        arguments=arguments,
-                        result=result,
-                        images=images,
-                    )
+                executed_call = ExecutedToolCall(
+                    call_id=camera_call_id,
+                    name=RGB_CAMERA_TOOL,
+                    arguments=arguments,
+                    result=result,
+                    images=images,
                 )
+                executed.append(executed_call)
+                if on_tool_call is not None:
+                    on_tool_call(executed_call)
                 turn.append(
                     {
                         "role": "tool",

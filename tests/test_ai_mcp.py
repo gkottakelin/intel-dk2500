@@ -425,6 +425,43 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         positions = [text.index(label) for label in labels]
         self.assertEqual(positions, sorted(positions))
 
+    async def test_grasp_step_record_is_printed_as_soon_as_tool_returns(self):
+        record_result = {
+            "status": "ok",
+            "new_grasp_step_records": [
+                {
+                    "target_pixel": {"x": 330, "y": 150},
+                    "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 10},
+                    "motion_plan": {"direction": "forward"},
+                    "expected_grasp_point_xyz_cm": {"x": 0, "y": -21, "z": 10},
+                    "actual_grasp_point_xyz_cm": {"x": 0, "y": -20.9, "z": 10},
+                    "camera_grasp_vertical_angle_deg": 12.5,
+                }
+            ],
+        }
+
+        class FakeSession:
+            async def ask(self, _text, **kwargs):
+                call = SimpleNamespace(
+                    call_id="target-step-1",
+                    name="control_jetarm_to_target_pixel",
+                    arguments={"target_x": 330, "target_y": 150},
+                    result=record_result,
+                    images=(),
+                )
+                kwargs["on_tool_call"](call)
+                self.output_at_return = output.getvalue()
+                return SimpleNamespace(text="继续闭环", tool_calls=(call,))
+
+        output = io.StringIO()
+        session = FakeSession()
+        with redirect_stdout(output):
+            await _send_with_tools(session, "尝试抓取红色物块")
+
+        self.assertIn("抓取步骤记录 |", session.output_at_return)
+        self.assertEqual(output.getvalue().count("抓取步骤记录 |"), 1)
+        self.assertNotIn("[工作流 4/5] MCP结果", output.getvalue())
+
     async def test_internal_grasp_setup_and_legacy_pixel_tool_are_hidden_from_agent(self):
         class FakeMCPSession:
             async def list_tools(self):

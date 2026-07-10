@@ -933,5 +933,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    # The interactive Agent prints structured motion records itself. Keep the
+    # stdio child quiet unless a genuine server failure needs attention.
+    logging.basicConfig(level=logging.ERROR, stream=sys.stderr)
     raise SystemExit(main())

@@ -194,8 +194,19 @@ async def _send(session: ChatSession, text: str) -> str:
 async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     required_tool = required_mcp_tool_for_command(text)
     is_arm_command = looks_like_arm_command(text)
+    is_grasp_workflow = looks_like_grasp_workflow_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
     movement_request = required_tool == "move_jetarm"
+    streamed_call_ids: set[str] = set()
+
+    def print_completed_grasp_step(call: object) -> None:
+        result = getattr(call, "result", None)
+        if not isinstance(result, dict) or not _has_agent_grasp_step_records(result):
+            return
+        _print_agent_grasp_step_records(result)
+        call_id = getattr(call, "call_id", None)
+        if isinstance(call_id, str):
+            streamed_call_ids.add(call_id)
     if is_arm_command:
         print(f"[工作流 1/5] 接收自然语言: {text}")
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
@@ -214,8 +225,15 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         ),
         first_tool_choice="none" if camera_request else "auto",
         allow_additional_tools=not camera_request,
+        on_tool_call=print_completed_grasp_step,
     )
     for call in result.tool_calls:
+        if is_grasp_workflow:
+            if call.call_id not in streamed_call_ids and isinstance(call.result, dict):
+                _print_agent_grasp_step_records(call.result)
+            if isinstance(call.result, dict) and call.result.get("status") == "error":
+                print(f"抓取步骤失败 | 工具={call.name} | 原因={call.result.get('error')}")
+            continue
         prefix = "[工作流 3/5] MCP调用" if is_arm_command else "[MCP调用]"
         print(f"{prefix}: {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         prefix = "[工作流 4/5] MCP结果" if is_arm_command else "[MCP结果]"
@@ -228,6 +246,13 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         print("[工作流 5/5] Agent读取MCP结果并生成总结报告")
     print(f"AI: {result.text}")
     return result.text
+
+
+def _has_agent_grasp_step_records(result: dict[str, object]) -> bool:
+    records = result.get("new_grasp_step_records")
+    return bool(records) if isinstance(records, list) else isinstance(
+        result.get("grasp_step_record"), dict
+    )
 
 
 def _print_agent_grasp_step_records(result: dict[str, object]) -> None:
