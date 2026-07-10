@@ -45,6 +45,8 @@ DEFAULT_DESCENT_RECALIBRATION_CM = 2.0
 FINAL_ALIGNMENT_THRESHOLD_CM = 2.0
 FINAL_GRASP_HEIGHT_CM = 1.0
 DESCENT_SPEED_CM_S = 2.0
+MANUAL_V2_HORIZONTAL_MAX_Z_CHANGE_CM = 1.0
+MANUAL_V2_HORIZONTAL_MAX_ANGLE_ERROR_DEG = 3.0
 SleepFunction = Callable[[float], Awaitable[None]]
 
 
@@ -77,6 +79,43 @@ def pixel_alignment_px_per_cm_for_height(height_cm: object) -> float:
             "height_cm is outside the calibrated positive pixel-scale range"
         )
     return px_per_cm
+
+
+def manual_v2_horizontal_progress_validation(
+    delta_x_cm: float,
+    delta_y_cm: float,
+    delta_z_cm: float,
+    camera_line_angle_error_deg: float,
+) -> dict[str, Any]:
+    """Apply the relaxed manual-V2 horizontal progress acceptance rule."""
+
+    xy_change_cm = math.hypot(float(delta_x_cm), float(delta_y_cm))
+    z_change_cm = abs(float(delta_z_cm))
+    angle_error_deg = abs(float(camera_line_angle_error_deg))
+    z_within_limit = z_change_cm < MANUAL_V2_HORIZONTAL_MAX_Z_CHANGE_CM
+    horizontal_dominates = z_change_cm < xy_change_cm
+    angle_within_limit = (
+        angle_error_deg < MANUAL_V2_HORIZONTAL_MAX_ANGLE_ERROR_DEG
+    )
+    return {
+        "rule": "manual_v2_relaxed_horizontal_progress",
+        "accepted": (
+            z_within_limit and horizontal_dominates and angle_within_limit
+        ),
+        "xy_change_cm": round(xy_change_cm, 6),
+        "z_change_cm": round(z_change_cm, 6),
+        "z_change_limit_cm_exclusive": MANUAL_V2_HORIZONTAL_MAX_Z_CHANGE_CM,
+        "z_change_less_than_xy_change": horizontal_dominates,
+        "camera_line_angle_error_deg": round(angle_error_deg, 6),
+        "camera_line_angle_error_limit_deg_exclusive": (
+            MANUAL_V2_HORIZONTAL_MAX_ANGLE_ERROR_DEG
+        ),
+        "conditions": {
+            "z_change_within_limit": z_within_limit,
+            "horizontal_change_dominates": horizontal_dominates,
+            "camera_line_angle_within_limit": angle_within_limit,
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -692,6 +731,28 @@ class JetArmToolController:
         estimated_distance = sum(
             float(delta_cm[index]) * direction_unit[index] for index in range(3)
         )
+        horizontal_motion = direction in horizontal_directions
+        horizontal_progress_validation: dict[str, Any] | None = None
+        if (
+            self.config.camera_vector_version == "v2"
+            and horizontal_motion
+        ):
+            horizontal_progress_validation = manual_v2_horizontal_progress_validation(
+                float(delta_cm[0]),
+                float(delta_cm[1]),
+                float(delta_cm[2]),
+                camera_angle_after_deg - camera_angle_before_deg,
+            )
+            horizontal_progress_validation["original_v2_status"] = (
+                v2_terminal_result.get("status")
+                if v2_terminal_result is not None
+                else None
+            )
+            horizontal_progress_validation["original_v2_error"] = (
+                v2_terminal_result.get("error")
+                if v2_terminal_result is not None
+                else None
+            )
         motion_status = "ok"
         motion_error: str | None = None
         if (
@@ -699,18 +760,30 @@ class JetArmToolController:
             and v2_terminal_result is not None
             and v2_terminal_result.get("status") != "ok"
         ):
-            motion_status = "error"
-            motion_error = str(
-                v2_terminal_result.get("error")
-                or "V2 absolute grasp-point motion failed"
-            )
+            if (
+                horizontal_progress_validation is not None
+                and horizontal_progress_validation["accepted"]
+            ):
+                horizontal_progress_validation["overrode_v2_error"] = True
+            else:
+                motion_status = "error"
+                motion_error = str(
+                    v2_terminal_result.get("error")
+                    or "V2 absolute grasp-point motion failed"
+                )
         elif (
             self.config.camera_vector_version == "v2"
             and distance_cm > 0.0
             and estimated_distance <= 1e-6
         ):
-            motion_status = "error"
-            motion_error = "V2运动无有效进展，目标可能不可达或已触及关节限位"
+            if (
+                horizontal_progress_validation is not None
+                and horizontal_progress_validation["accepted"]
+            ):
+                horizontal_progress_validation["overrode_zero_direction_progress"] = True
+            else:
+                motion_status = "error"
+                motion_error = "V2运动无有效进展，目标可能不可达或已触及关节限位"
         pose_constraint_status: dict[str, Any] | None = None
         get_pose_relaxation = getattr(self.runtime, "pose_relaxation_status", None)
         if callable(get_pose_relaxation):
@@ -726,7 +799,6 @@ class JetArmToolController:
             "left_y": round(float(end_tcp[1] * 100.0), 3),
             "up_z": round(float(end_tcp[2] * 100.0), 3),
         }
-        horizontal_motion = direction in horizontal_directions
         height_error_cm = float((end_tcp[2] - start_tcp[2]) * 100.0)
         result = {
             "status": motion_status,
@@ -763,6 +835,7 @@ class JetArmToolController:
                 if v2_terminal_result is not None
                 else None
             ),
+            "horizontal_progress_validation": horizontal_progress_validation,
             "feedback_read_policy": (
                 "v2_executor_start_and_verified_final_feedback"
                 if v2_terminal_result is not None

@@ -293,6 +293,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     angle_text = _format_camera_angle(angle)
     angle_segment = f" | {angle_text}" if angle_text else ""
     pose_segment = ""
+    progress_segment = ""
     pose_constraint = result.get("camera_pose_constraint")
     if isinstance(pose_constraint, dict) and pose_constraint.get("relaxed"):
         reason = pose_constraint.get("reason") or pose_constraint.get("reasons")
@@ -301,7 +302,23 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             " | 姿态约束=已放宽"
             f"（仅下降；原因={reason}；步数={relaxed_steps}）"
         )
-    status_segment = angle_segment + pose_segment
+    progress_validation = result.get("horizontal_progress_validation")
+    if (
+        isinstance(progress_validation, dict)
+        and progress_validation.get("accepted")
+        and (
+            progress_validation.get("overrode_v2_error")
+            or progress_validation.get("overrode_zero_direction_progress")
+        )
+    ):
+        progress_segment = (
+            " | 水平进展=放宽接受"
+            f"（XY={progress_validation.get('xy_change_cm')}cm，"
+            f"|ΔZ|={progress_validation.get('z_change_cm')}cm，"
+            "夹角误差="
+            f"{progress_validation.get('camera_line_angle_error_deg')}°）"
+        )
+    status_segment = angle_segment + pose_segment + progress_segment
     if decision == "horizontal_align":
         print(
             "控制结果: 水平对准 | "

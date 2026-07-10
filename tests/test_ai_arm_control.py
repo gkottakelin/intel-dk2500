@@ -18,6 +18,7 @@ try:
         looks_like_arm_command,
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
+        manual_v2_horizontal_progress_validation,
         parse_compact_arm_command,
         pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
@@ -53,6 +54,7 @@ except ModuleNotFoundError:
         looks_like_arm_command,
         looks_like_camera_command,
         looks_like_grasp_workflow_command,
+        manual_v2_horizontal_progress_validation,
         parse_compact_arm_command,
         pixel_alignment_px_per_cm_for_height,
         required_mcp_tool_for_command,
@@ -342,6 +344,28 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("12.3°", text)
         self.assertNotIn("99.0°", text)
 
+    def test_manual_pixel_output_marks_relaxed_horizontal_progress(self):
+        output = io.StringIO()
+        result = {
+            "controller_decision": "horizontal_align",
+            "horizontal_progress_validation": {
+                "accepted": True,
+                "overrode_v2_error": True,
+                "xy_change_cm": 0.8,
+                "z_change_cm": 0.5,
+                "camera_line_angle_error_deg": 2.5,
+            },
+        }
+
+        with patch("sys.stdout", output):
+            _print_manual_pixel_result(result)
+
+        text = output.getvalue()
+        self.assertIn("水平进展=放宽接受", text)
+        self.assertIn("XY=0.8cm", text)
+        self.assertIn("|ΔZ|=0.5cm", text)
+        self.assertIn("夹角误差=2.5°", text)
+
     def test_manual_pixel_arm_config_uses_hardware_device_config(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "devices.json"
@@ -455,6 +479,89 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 state["arm_parameters"]["agent_direction_frames"]["forward"],
                 "grasp_to_camera_line_xy_projection",
             )
+        finally:
+            controller.close()
+
+    def test_manual_v2_relaxed_horizontal_progress_rule(self):
+        accepted = manual_v2_horizontal_progress_validation(
+            0.8,
+            0.6,
+            0.5,
+            2.9,
+        )
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["xy_change_cm"], 1.0)
+
+        rejected_cases = (
+            manual_v2_horizontal_progress_validation(2.0, 0.0, 1.0, 2.0),
+            manual_v2_horizontal_progress_validation(0.4, 0.0, 0.4, 2.0),
+            manual_v2_horizontal_progress_validation(1.0, 0.0, 0.2, 3.0),
+        )
+        for result in rejected_cases:
+            self.assertFalse(result["accepted"])
+
+    async def test_manual_v2_accepts_relaxed_horizontal_feedback(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            start = [
+                float(value)
+                for value in controller.runtime.model.tcp(
+                    controller.runtime.positions
+                )
+            ]
+            reference_angle = (
+                controller.runtime.camera_pose_reference_status()[
+                    "camera_line_angle_from_vertical_deg"
+                ]
+            )
+            fake_terminal_result = {
+                "status": "error",
+                "error": "forced strict tolerance failure",
+                "execution_path": "camera_vector_terminal_v2_absolute_grasp_target",
+                "workflow": ["terminal_input", "absolute_grasp_target"],
+                "terminal_input": {
+                    "direction": "right",
+                    "direction_unit_base": [0.0, 1.0, 0.0],
+                },
+                "steps": 1,
+                "tcp_samples_m": [],
+                "start_grasp_point_m": start,
+                "actual_grasp_point_m": [
+                    start[0],
+                    start[1] + 0.008,
+                    start[2] + 0.005,
+                ],
+                "motion_plan": {"target_joint_positions": dict(controller.runtime.positions)},
+                "target_camera_line_angle_deg": reference_angle,
+                "actual_camera_line_angle_deg": reference_angle + 2.5,
+                "feedback_corrections": 0,
+            }
+            with patch.object(
+                controller.terminal,
+                "execute_terminal_motion",
+                new=AsyncMock(return_value=fake_terminal_result),
+            ):
+                result = await controller.control_to_target_pixel(
+                    370,
+                    147,
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                )
+
+            validation = result["horizontal_progress_validation"]
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(validation["accepted"])
+            self.assertTrue(validation["overrode_v2_error"])
+            self.assertEqual(validation["z_change_cm"], 0.5)
+            self.assertEqual(validation["xy_change_cm"], 0.8)
+            self.assertEqual(validation["camera_line_angle_error_deg"], 2.5)
         finally:
             controller.close()
 
