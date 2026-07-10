@@ -1231,6 +1231,9 @@ class JetArmToolController:
         self._refresh_hardware_positions()
         tcp_before = self._current_tcp_cm()
         xyz_before = self._grasp_point_xyz_cm(tcp_before)
+        camera_angle_before_deg = self._camera_pose()[
+            "line_of_sight_angle_from_vertical_deg"
+        ]
         height_cm = tcp_before["up_z"]
         tolerance = self._pixel_tolerance_for_height(height_cm)
         pixel_scale_px_per_cm = pixel_alignment_px_per_cm_for_height(height_cm)
@@ -1298,6 +1301,7 @@ class JetArmToolController:
                 "grasp_point_after_cm": tcp_before,
                 "grasp_point_xyz_before_cm": xyz_before,
                 "grasp_point_xyz_after_cm": xyz_before,
+                "v2_returned_camera_line_angle_deg": camera_angle_before_deg,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
@@ -1327,6 +1331,7 @@ class JetArmToolController:
                 "grasp_point_after_cm": tcp_before,
                 "grasp_point_xyz_before_cm": xyz_before,
                 "grasp_point_xyz_after_cm": xyz_before,
+                "v2_returned_camera_line_angle_deg": camera_angle_before_deg,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
                 "dynamic_tolerance_px": tolerance,
@@ -1518,6 +1523,10 @@ class JetArmToolController:
                     ),
                     "actual_grasp_point_xyz_cm": result.get(
                         "grasp_point_xyz_after_cm"
+                    ),
+                    "motion_plan": result.get("v2_motion_plan"),
+                    "camera_grasp_vertical_angle_deg": result.get(
+                        "v2_returned_camera_line_angle_deg"
                     ),
                     "effective": result.get("status") == "ok",
                     "progress_check_enabled": self.config.manual_progress_check_enabled,
@@ -2351,18 +2360,19 @@ def looks_like_grasp_workflow_command(text: str) -> bool:
 ARM_TOOL_SYSTEM_PROMPT = """
 机械臂工具规则：
 1. 只有用户明确要求移动或操作夹爪时才调用会改变机械臂状态的工具，禁止自行追加动作；读取状态和参数可在回答或执行任务确有需要时调用get_jetarm_state。
-2. “上/下”使用camera_vector控制系：上=抓取点到摄像头方向，下=摄像头到抓取点方向；“前/后/左/右”使用抓取点XYZ水平坐标：前=Y减小，后=Y增大，左=X减小，右=X增大。水平运动时把目标换算到XYZ的X/Y方向，Z不参与移动目标并保持当前高度；运动过程中保持摄像头-抓取点姿态尽量不变，距离必须保持用户给出的厘米数。
+2. Agent必须根据用户自然语言语义自行判断是否要求抓取物品；只有判断为抓取任务时才进入视觉抓取闭环，普通问答、画面描述和非抓取命令不得启动抓取。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
-4. 视觉抓取目标时，Agent只解析用户命令，并在最新RGB图像中寻找目标点像素target_x/target_y；不得决定前后左右方向、下降距离或运动速度。
-5. get_rgb_camera_frame会返回camera.grasp_point_pixel。视觉抓取时调用control_jetarm_to_target_pixel并只提供目标点像素，抓取点像素和运动决策由控制程序负责。
-6. control_jetarm_to_target_pixel会根据关节反馈/FK解算抓取点高度，按高度选择像素容差：>15cm为40px，>10且<=15cm为25px，>5且<=10cm为13px，<=5cm为8px。
-7. 目标点与抓取点未重合时，控制程序自行决定前后左右移动；移动距离按像素误差除以当前高度对应的线性比例计算：高度2cm时50px/cm，高度25cm时18px/cm，其他高度线性插值/外推。
-8. 已重合时，控制程序以2cm/s向下运动，并在下降过程中持续基于关节角度/FK解算抓取点位置。
-9. 每下降2cm或任一机械臂移动返回status=ok后，旧图像立即失效；必须重新调用get_rgb_camera_frame，再由Agent重新寻找目标点像素。
-10. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
-11. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
-12. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
-13. 当前只使用单路RGB相机，不得请求或声称使用深度流。
-14. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
-15. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
+4. 视觉抓取时，Agent只在最新RGB图像中识别用户指定物品，并把该物品中心作为target_x/target_y；不得发送边缘点，不得决定前后左右方向、下降距离、速度、容差或姿态。
+5. 抓取点像素必须由用户在Agent调用前输入；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未设置时不得猜测或使用图像中心。
+6. 每张最新图像只允许调用一次control_jetarm_to_target_pixel，并且只传target_x/target_y。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
+7. control_jetarm_to_target_pixel会按FK高度选择40/25/13/8px动态容差和高度线性像素比例，自行执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。
+8. 每次机械臂运动结束后旧图像立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标物品中心，再发送新的target_x/target_y。
+9. Home后的机械抓取结果为awaiting_visual_verification。Agent必须检查自动返回的最新图像并调用confirm_jetarm_grasp_result：只有确认目标物品已被抓起时传success=true；失败时传success=false，再用当前新图重新识别中心并继续，直到确认工具返回grasp_completed=true。
+10. 每步结果中的grasp_step_record严格记录目标点像素、原抓取点实际坐标、运动规划、预计抓取点坐标、实际抓取点坐标和摄像头-抓取点夹角；Agent总结时不得改写或虚构这些值。
+11. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
+12. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
+13. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
+14. 当前只使用单路RGB相机，不得请求或声称使用深度流。
+15. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
+16. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
 """.strip()

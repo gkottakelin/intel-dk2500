@@ -137,6 +137,7 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
             RuntimeDeviceConfig(arm_mode="off", rgb_camera="4-1.2-11"),
             camera_capture=lambda _device: RGBJpegFrame(b"jpeg", 640, 480),
         )
+        service.set_grasp_point_pixel(320, 147)
         server = create_mcp_server(service)
 
         tools = await server.list_tools()
@@ -157,11 +158,19 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             response.structuredContent["camera"]["grasp_point_pixel"],
-            {"x": 320.0, "y": 240.0, "source": "image_center_default"},
+            {
+                "x": 320.0,
+                "y": 147.0,
+                "source": "user_input_before_agent_grasp",
+            },
         )
         self.assertEqual(
             service._last_grasp_point_pixel,
-            {"x": 320.0, "y": 240.0, "source": "image_center_default"},
+            {
+                "x": 320.0,
+                "y": 147.0,
+                "source": "user_input_before_agent_grasp",
+            },
         )
         serialized = response.model_dump_json(by_alias=True)
         self.assertIn('"type":"image"', serialized)

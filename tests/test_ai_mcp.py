@@ -1,10 +1,19 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 try:
+    from project.src.jetarm_agent.cli import (
+        _agent_grasp_point_from_args,
+        _print_agent_grasp_step_records,
+        _send_with_tools,
+        build_parser,
+    )
     from project.src.jetarm_agent.config import AgentSettings
     from project.src.jetarm_agent.device_config import (
         RuntimeDeviceConfig,
@@ -26,6 +35,12 @@ try:
     )
     from project.src.jetarm_agent.tooling import ToolRegistry
 except ModuleNotFoundError:
+    from src.jetarm_agent.cli import (
+        _agent_grasp_point_from_args,
+        _print_agent_grasp_step_records,
+        _send_with_tools,
+        build_parser,
+    )
     from src.jetarm_agent.config import AgentSettings
     from src.jetarm_agent.device_config import (
         RuntimeDeviceConfig,
@@ -131,13 +146,9 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             step_duration_s=0.4,
             speed_saturation_px=120,
         )
-        with self.assertRaisesRegex(RuntimeError, "get_rgb_camera_frame"):
+        with self.assertRaisesRegex(RuntimeError, "输入抓取点像素"):
             await self.service.control_to_target_pixel(100, 100)
-        self.service._last_grasp_point_pixel = {
-            "x": 100.0,
-            "y": 100.0,
-            "source": "test_frame",
-        }
+        configured = self.service.set_grasp_point_pixel(100, 100)
         target_aligned = await self.service.control_to_target_pixel(
             100,
             100,
@@ -163,9 +174,128 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(target_aligned["mcp"], "control_jetarm_to_target_pixel")
         self.assertEqual(target_aligned["agent_role"], "target_pixel_only")
         self.assertEqual(target_aligned["controller_decision"], "aligned_hold")
-        self.assertEqual(target_aligned["grasp_point_pixel_source"], "test_frame")
+        self.assertEqual(
+            target_aligned["grasp_point_pixel_source"],
+            "user_input_before_agent_grasp",
+        )
         self.assertEqual(target_moved["controller_decision"], "horizontal_align")
         self.assertEqual(target_moved["direction"], "right")
+        self.assertEqual(configured["grasp_point_pixel"]["x"], 100.0)
+        self.assertEqual(target_moved["camera_vector_version"], "v2")
+        self.assertFalse(target_moved["progress_check_enabled"])
+        self.assertIsNotNone(
+            target_aligned["grasp_step_record"][
+                "camera_grasp_vertical_angle_deg"
+            ]
+        )
+        self.assertEqual(
+            target_moved["grasp_step_record_format"],
+            [
+                "target_pixel",
+                "original_grasp_point_xyz_cm",
+                "motion_plan",
+                "expected_grasp_point_xyz_cm",
+                "actual_grasp_point_xyz_cm",
+                "camera_grasp_vertical_angle_deg",
+            ],
+        )
+
+    async def test_agent_controller_uses_manual_v2_with_progress_check_disabled(self):
+        controller = self.service.controller()
+
+        self.assertEqual(controller.config.camera_vector_version, "v2")
+        self.assertFalse(controller.config.manual_progress_check_enabled)
+        self.assertEqual(controller.config.max_distance_cm, 100.0)
+        self.assertTrue(controller.config.allow_extended_distance)
+
+    async def test_user_grasp_point_is_fixed_across_frames(self):
+        self.assertIsNone(self.service.grasp_point_pixel_for_frame(640, 480))
+
+        self.service.set_grasp_point_pixel(320, 147)
+
+        first = self.service.grasp_point_pixel_for_frame(640, 480)
+        second = self.service.grasp_point_pixel_for_frame(640, 480)
+        self.assertEqual(first, second)
+        self.assertEqual(first["source"], "user_input_before_agent_grasp")
+        with self.assertRaisesRegex(RuntimeError, "超出当前RGB图像范围"):
+            self.service.grasp_point_pixel_for_frame(100, 100)
+
+    async def test_final_alignment_automatically_descends_grips_and_homes(self):
+        fake = SimpleNamespace(
+            set_gripper_position=AsyncMock(return_value={"status": "ok"}),
+            control_to_target_pixel=AsyncMock(
+                side_effect=[
+                    {
+                        "status": "ok",
+                        "controller_decision": "aligned_hold",
+                        "motion_command_count": 0,
+                        "grasp_point_xyz_before_cm": {"x": 0, "y": -20, "z": 3},
+                        "grasp_point_xyz_after_cm": {"x": 0, "y": -20, "z": 3},
+                    },
+                    {
+                        "status": "ok",
+                        "controller_decision": "aligned_hold",
+                        "motion_command_count": 0,
+                        "grasp_point_xyz_before_cm": {"x": 0, "y": -20, "z": 3},
+                        "grasp_point_xyz_after_cm": {"x": 0, "y": -20, "z": 3},
+                    },
+                ]
+            ),
+            descend_to_height=AsyncMock(
+                return_value={
+                    "status": "ok",
+                    "height_after_cm": 1.0,
+                    "target_tolerance_cm": 0.4,
+                    "motion_steps": [
+                        {
+                            "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 3},
+                            "expected_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 1},
+                            "actual_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 1},
+                            "motion_plan": {"accepted": True},
+                            "camera_grasp_vertical_angle_deg": 12.5,
+                        }
+                    ],
+                }
+            ),
+            control_gripper=AsyncMock(return_value={"status": "ok", "action": "grip_lock"}),
+            go_home=AsyncMock(return_value={"status": "ok"}),
+            close=lambda: None,
+        )
+        self.service._controller = fake
+        self.service.set_grasp_point_pixel(320, 147)
+
+        first = await self.service.control_to_target_pixel(330, 155)
+        final = await self.service.control_to_target_pixel(328, 150)
+
+        self.assertTrue(first["final_alignment_phase"])
+        self.assertTrue(first["requires_new_target_pixel"])
+        self.assertEqual(final["controller_decision"], "grasp_complete")
+        self.assertFalse(final["grasp_completed"])
+        self.assertEqual(
+            final["grasp_completion_status"], "awaiting_visual_verification"
+        )
+        with self.assertRaisesRegex(RuntimeError, "confirm_jetarm_grasp_result"):
+            await self.service.control_to_target_pixel(328, 150)
+        confirmed = self.service.confirm_grasp_result(True)
+        self.assertTrue(confirmed["grasp_completed"])
+        fake.descend_to_height.assert_awaited_once_with(1.0)
+        fake.control_gripper.assert_awaited_once_with("grip_lock")
+        fake.go_home.assert_awaited_once()
+        record = final["new_grasp_step_records"][-1]
+        self.assertEqual(record["target_pixel"], {"x": 328.0, "y": 150.0})
+        self.assertEqual(record["motion_plan"], {"accepted": True})
+        self.assertEqual(record["camera_grasp_vertical_angle_deg"], 12.5)
+
+    async def test_failed_visual_confirmation_reopens_grasp_loop(self):
+        self.service._awaiting_grasp_visual_confirmation = True
+        self.service._gripper_prepared_for_grasp = True
+
+        result = self.service.confirm_grasp_result(False)
+
+        self.assertFalse(result["grasp_completed"])
+        self.assertTrue(result["retry_required"])
+        self.assertFalse(self.service._awaiting_grasp_visual_confirmation)
+        self.assertFalse(self.service._gripper_prepared_for_grasp)
 
     async def test_visual_closed_loop_limit_is_two_hundred_rounds(self):
         settings = AgentSettings.from_sources(
@@ -176,6 +306,97 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(MAX_VISUAL_CLOSED_LOOP_ROUNDS, 200)
         self.assertEqual(session.max_rounds, 200)
 
+    async def test_agent_grasp_point_cli_requires_a_pair(self):
+        args = build_parser().parse_args(
+            ["--agent-grasp-x", "320", "--agent-grasp-y", "147"]
+        )
+        self.assertEqual(_agent_grasp_point_from_args(args), (320.0, 147.0))
+
+        incomplete = build_parser().parse_args(["--agent-grasp-x", "320"])
+        with self.assertRaisesRegex(ValueError, "必须同时提供"):
+            _agent_grasp_point_from_args(incomplete)
+
+    async def test_agent_decides_grasp_intent_without_local_camera_preselection(self):
+        class FakeSession:
+            async def ask(self, text, **kwargs):
+                self.text = text
+                self.kwargs = kwargs
+                return SimpleNamespace(text="由Agent判断", tool_calls=())
+
+        session = FakeSession()
+
+        with redirect_stdout(io.StringIO()):
+            await _send_with_tools(session, "请抓取红色物块")
+
+        self.assertIsNone(session.kwargs["preselected_tool_name"])
+        self.assertIsNone(session.kwargs["preselected_tool_arguments"])
+
+    async def test_grasp_step_terminal_record_uses_requested_field_order(self):
+        result = {
+            "new_grasp_step_records": [
+                {
+                    "target_pixel": {"x": 330, "y": 150},
+                    "original_grasp_point_xyz_cm": {"x": 0, "y": -20, "z": 10},
+                    "motion_plan": {"direction": "forward"},
+                    "expected_grasp_point_xyz_cm": {"x": 0, "y": -21, "z": 10},
+                    "actual_grasp_point_xyz_cm": {"x": 0, "y": -20.9, "z": 10},
+                    "camera_grasp_vertical_angle_deg": 12.5,
+                }
+            ]
+        }
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            _print_agent_grasp_step_records(result)
+
+        text = output.getvalue()
+        labels = [
+            "目标点像素坐标=",
+            "原抓取点实际坐标=",
+            "运动规划=",
+            "预计抓取点坐标=",
+            "实际抓取点坐标=",
+            "夹角=",
+        ]
+        positions = [text.index(label) for label in labels]
+        self.assertEqual(positions, sorted(positions))
+
+    async def test_internal_grasp_setup_and_legacy_pixel_tool_are_hidden_from_agent(self):
+        class FakeMCPSession:
+            async def list_tools(self):
+                return SimpleNamespace(
+                    tools=[
+                        SimpleNamespace(
+                            name="set_jetarm_grasp_point_pixel",
+                            description="internal",
+                            inputSchema={"type": "object", "properties": {}},
+                        ),
+                        SimpleNamespace(
+                            name="move_jetarm_by_pixel_error",
+                            description="legacy",
+                            inputSchema={"type": "object", "properties": {}},
+                        ),
+                        SimpleNamespace(
+                            name="control_jetarm_to_target_pixel",
+                            description="target only",
+                            inputSchema={
+                                "type": "object",
+                                "properties": {
+                                    "target_x": {"type": "number"},
+                                    "target_y": {"type": "number"},
+                                },
+                            },
+                        ),
+                    ]
+                )
+
+        bridge = MCPRobotBridge()
+        bridge.session = FakeMCPSession()
+
+        registry = await bridge.registry()
+
+        self.assertEqual(registry.names(), ("control_jetarm_to_target_pixel",))
+
     async def test_mcp_service_rejects_long_command_instead_of_splitting(self):
         with self.assertRaisesRegex(Exception, "单次"):
             await self.service.move("前5")
@@ -185,11 +406,12 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(DEFAULT_WORKFLOW_PATH.is_file())
         self.assertIn("get_rgb_camera_frame", instructions)
         self.assertIn("control_jetarm_to_target_pixel", instructions)
-        self.assertIn("Agent 只负责解析用户命令", instructions)
+        self.assertIn("Agent 根据用户自然语言自行判断", instructions)
         self.assertIn("camera.grasp_point_pixel", instructions)
-        self.assertIn("set_jetarm_gripper_position(position=370)", instructions)
-        self.assertIn("每下降 `2 cm`", instructions)
-        self.assertIn("高度 `>15 cm`", instructions)
+        self.assertIn("/grasp-point 320 147", instructions)
+        self.assertIn("有效进展检测固定关闭", instructions)
+        self.assertIn("confirm_jetarm_grasp_result", instructions)
+        self.assertIn("目标点像素坐标", instructions)
         self.assertIn("status=error", instructions)
 
     async def test_model_mcp_controller_model_roundtrip(self):

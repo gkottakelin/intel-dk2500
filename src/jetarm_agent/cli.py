@@ -107,6 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="on",
         help="人工像素测试有效进展检测开关，默认on；off时只记录进展异常",
     )
+    parser.add_argument(
+        "--agent-grasp-x",
+        type=float,
+        default=None,
+        help="Agent抓取调用前由用户输入的抓取点像素x",
+    )
+    parser.add_argument(
+        "--agent-grasp-y",
+        type=float,
+        default=None,
+        help="Agent抓取调用前由用户输入的抓取点像素y",
+    )
     return parser
 
 
@@ -140,6 +152,7 @@ def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> N
         print("  /arm-home   直接回到home位姿")
         print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
         print("  /workflow   显示JetArm MCP工作流规范")
+        print("  /grasp-point x y  在调用Agent抓取前输入并固定抓取点像素")
     if camera_enabled:
         print("  /camera     采集当前RGB画面并让AI描述")
     print("  /exit     退出")
@@ -183,7 +196,6 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     is_arm_command = looks_like_arm_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
     movement_request = required_tool == "move_jetarm"
-    grasp_workflow_request = looks_like_grasp_workflow_command(text)
     if is_arm_command:
         print(f"[工作流 1/5] 接收自然语言: {text}")
         print("[工作流 2/5] Agent解析意图并生成MCP工具调用")
@@ -194,11 +206,11 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         required_tool_retries=1,
         preselected_tool_name=(
             "get_rgb_camera_frame"
-            if camera_request or movement_request or grasp_workflow_request
+            if camera_request or movement_request
             else None
         ),
         preselected_tool_arguments=(
-            {} if camera_request or movement_request or grasp_workflow_request else None
+            {} if camera_request or movement_request else None
         ),
         first_tool_choice="none" if camera_request else "auto",
         allow_additional_tools=not camera_request,
@@ -208,12 +220,36 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         print(f"{prefix}: {call.name} {json.dumps(call.arguments, ensure_ascii=False)}")
         prefix = "[工作流 4/5] MCP结果" if is_arm_command else "[MCP结果]"
         print(f"{prefix}: {call.name} {json.dumps(call.result, ensure_ascii=False)}")
+        if isinstance(call.result, dict):
+            _print_agent_grasp_step_records(call.result)
         if call.images:
             print(f"[MCP图像]: {len(call.images)}张RGB JPEG已传给Agent")
     if is_arm_command:
         print("[工作流 5/5] Agent读取MCP结果并生成总结报告")
     print(f"AI: {result.text}")
     return result.text
+
+
+def _print_agent_grasp_step_records(result: dict[str, object]) -> None:
+    raw_records = result.get("new_grasp_step_records")
+    if not isinstance(raw_records, list):
+        record = result.get("grasp_step_record")
+        raw_records = [record] if isinstance(record, dict) else []
+    for record in raw_records:
+        if not isinstance(record, dict):
+            continue
+        print(
+            "抓取步骤记录 | "
+            f"目标点像素坐标={record.get('target_pixel')} | "
+            "原抓取点实际坐标="
+            f"{record.get('original_grasp_point_xyz_cm')} | "
+            f"运动规划={record.get('motion_plan')} | "
+            "预计抓取点坐标="
+            f"{record.get('expected_grasp_point_xyz_cm')} | "
+            "实际抓取点坐标="
+            f"{record.get('actual_grasp_point_xyz_cm')} | "
+            f"夹角={record.get('camera_grasp_vertical_angle_deg')}°"
+        )
 
 
 async def _run_tool_test(
@@ -239,11 +275,11 @@ def _workflow_text() -> str:
 
 def _print_workflow_summary() -> None:
     print("MCP执行工作流:")
-    print("  1. MCP采集最新RGB图像并传给Agent")
-    print("  2. Agent只解析命令并寻找目标点像素，不决定机械臂运动")
-    print("  3. MCP控制程序根据目标点和抓取点像素执行对准或下降")
-    print("  4. 每移动或下降2cm后重新采集RGB图像，再让Agent重新找目标点")
-    print("  5. 达到抓取高度后执行夹取、复位，并让Agent按新图检查结果")
+    print("  1. 调用前由用户输入并固定抓取点像素")
+    print("  2. Agent根据自然语言判断是否抓取，并识别目标物品中心像素")
+    print("  3. 控制端以人工测试V2流程执行一次对准或下降（进展检测关闭）")
+    print("  4. 每次动作结束后自动重新取图，Agent重新发送目标中心像素")
+    print("  5. 最终自动下降、夹取、Home；Agent用新图确认，失败则继续")
 
 
 def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
@@ -262,6 +298,21 @@ def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
     if not math.isfinite(x) or not math.isfinite(y):
         raise ValueError("像素坐标必须是有限数字")
     return x, y
+
+
+def _agent_grasp_point_from_args(
+    args: argparse.Namespace,
+) -> tuple[float, float] | None:
+    x = getattr(args, "agent_grasp_x", None)
+    y = getattr(args, "agent_grasp_y", None)
+    if x is None and y is None:
+        return None
+    if x is None or y is None:
+        raise ConfigurationError("--agent-grasp-x和--agent-grasp-y必须同时提供")
+    point = _parse_manual_target_pixel(f"{x} {y}")
+    if point is None or point[0] < 0.0 or point[1] < 0.0:
+        raise ConfigurationError("Agent抓取点像素必须是大于等于0的有限数字")
+    return point
 
 
 def _extract_camera_grasp_vertical_angle(result: dict[str, object]) -> float | None:
@@ -736,6 +787,7 @@ async def run(args: argparse.Namespace) -> int:
     if args.manual_pixel_test:
         return await _run_manual_pixel_test(args)
 
+    agent_grasp_point = _agent_grasp_point_from_args(args)
     _load_env_file(args.env_file)
     device_path = Path(args.device_config)
     has_device_config = device_path.is_file()
@@ -831,6 +883,15 @@ async def run(args: argparse.Namespace) -> int:
                         max_distance_cm=max_distance_cm,
                     )
                 )
+                if agent_grasp_point is not None:
+                    configured_point = await bridge.call_tool(
+                        "set_jetarm_grasp_point_pixel",
+                        {"x": agent_grasp_point[0], "y": agent_grasp_point[1]},
+                    )
+                    print(
+                        "Agent调用前抓取点已设置: "
+                        f"{configured_point.get('grasp_point_pixel')}"
+                    )
                 registry = await bridge.registry()
                 workflow = _workflow_text()
                 arm_session = ToolCallingSession(
@@ -845,6 +906,14 @@ async def run(args: argparse.Namespace) -> int:
                 )
                 print(f"机械臂MCP: {arm_mode} ({arm_port or '未启用'})")
                 print(f"可用MCP工具: {', '.join(registry.names())}")
+                print(
+                    "Agent抓取点像素: "
+                    + (
+                        f"({agent_grasp_point[0]:g}, {agent_grasp_point[1]:g})"
+                        if agent_grasp_point is not None
+                        else "未设置；抓取前请先输入 /grasp-point x y"
+                    )
+                )
                 _print_workflow_summary()
 
             if args.once:
@@ -903,6 +972,16 @@ async def run(args: argparse.Namespace) -> int:
                             f"每条move_jetarm命令严格小于{max_distance_cm:g}cm"
                         ),
                         "controller_auto_split": False,
+                        "agent_grasp_point_pixel": (
+                            {
+                                "x": agent_grasp_point[0],
+                                "y": agent_grasp_point[1],
+                            }
+                            if agent_grasp_point is not None
+                            else None
+                        ),
+                        "agent_grasp_workflow": "manual_pixel_test_v2",
+                        "agent_grasp_progress_check_enabled": False,
                     }
                     print(json.dumps(summary, ensure_ascii=False, indent=2))
                     continue
@@ -914,6 +993,36 @@ async def run(args: argparse.Namespace) -> int:
                     continue
                 if command == "/workflow":
                     print(_workflow_text())
+                    continue
+                if command == "/grasp-point" or command.startswith(
+                    "/grasp-point "
+                ):
+                    if bridge is None or arm_mode == "off":
+                        print("错误: 机械臂MCP未启用。", file=sys.stderr)
+                        continue
+                    raw_point = text[len("/grasp-point") :].strip()
+                    if not raw_point:
+                        try:
+                            raw_point = input("调用Agent抓取前输入抓取点像素 x y: ")
+                        except EOFError:
+                            print()
+                            continue
+                    try:
+                        point = _parse_manual_target_pixel(raw_point)
+                        if point is None or point[0] < 0.0 or point[1] < 0.0:
+                            raise ValueError("抓取点像素必须大于等于0")
+                        configured_point = await bridge.call_tool(
+                            "set_jetarm_grasp_point_pixel",
+                            {"x": point[0], "y": point[1]},
+                        )
+                    except (ValueError, MCPClientError) as exc:
+                        print(f"错误: {exc}", file=sys.stderr)
+                        continue
+                    agent_grasp_point = point
+                    print(
+                        "Agent调用前抓取点已设置并重置抓取闭环: "
+                        f"{configured_point.get('grasp_point_pixel')}"
+                    )
                     continue
                 if command == "/camera":
                     if not effective_devices.rgb_camera or arm_session is None:

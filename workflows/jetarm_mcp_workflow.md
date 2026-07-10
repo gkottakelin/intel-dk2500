@@ -1,72 +1,54 @@
 ---
 name: jetarm-mcp-motion
-description: 将自然语言机械臂任务转换为 JetArm MCP 调用，并按真实工具回执总结。
+description: Agent识别抓取意图和目标中心像素，控制端执行人工测试V2闭环。
 ---
 
-# JetArm MCP 工作流规范
+# JetArm Agent 抓取工作流规范
 
-## 通用控制规则
+## 职责边界
 
-1. 只有用户明确要求移动、抓取、回 Home、停止、旋转腕部、控制夹爪或查看画面时，才调用会改变机械臂状态的工具。
-2. 每次需要视觉定位时必须调用 `get_rgb_camera_frame`，让 Agent 看到最新 RGB 画面和同一时刻的 `arm_pose`。
-3. `move_jetarm` 使用 camera-vector 控制系：上为抓取点到摄像头，下为摄像头到抓取点；前=抓取点 XYZ 的 `Y` 减小，后=`Y` 增大，左=`X` 减小，右=`X` 增大；水平运动只换算到 XYZ 的 `X/Y` 目标，`Z` 不参与移动目标并保持当前高度，同时保持摄像头-抓取点姿态。
-4. 普通手动移动仍保持单条命令严格小于 `2 cm`，控制程序只执行当前收到的一条命令。
-5. 任一工具返回 `status=error` 后立即停止后续动作；存在运动风险时调用 `stop_jetarm`。
-6. 最终总结必须以 MCP 工具真实返回值为依据，不得虚构视觉结果、位置或完成状态。
+1. Agent 根据用户自然语言自行判断是否要求抓取物品。只有抓取任务才能启动以下闭环。
+2. 用户必须在调用 Agent 抓取前输入抓取点像素；控制端固定保存该值。未输入时禁止猜测或使用图像中心。
+3. Agent 只负责在最新 RGB 图像中识别用户指定物品，并把物品中心作为 `target_x/target_y`。
+4. Agent 不得决定机械臂方向、距离、速度、容差、下降阶段或关节姿态。
+5. 控制端完整复用人工测试模块 V2：动态容差、按高度变化的像素比例、2 cm 分段下降、最终对准、最终下降、夹取和 Home。
+6. Agent 抓取工作流使用 `camera_vector_terminal_v2`，有效进展检测固定关闭；进展异常仍记录。规划拒绝、没有实际下发运动、串口异常和最终抓取高度安全保护不会关闭。
 
-## Agent 与控制程序职责
+## 调用前抓取点输入
 
-1. Agent 只负责解析用户命令，并在传输来的 RGB 图像中寻找目标点。
-2. Agent 返回目标点像素 `target_x/target_y`，不得自行决定机械臂前后左右、下降距离或速度。
-3. 图像中的抓取点像素由控制程序提供在 `camera.grasp_point_pixel` 中；当前默认是图像中心，来源字段为 `image_center_default`。
-4. 机械臂控制程序调用 `control_jetarm_to_target_pixel`，根据目标点像素和抓取点像素自行决定前后左右移动或下降。
-5. 每次机械臂发生移动后旧图像失效，必须重新获取图像，再由 Agent 重新寻找目标点像素。
-
-## 视觉抓取物块工作流
-
-当用户要求抓取物块、方块、积木、目标物体或 block/cube/object 时，必须使用以下闭环流程。
-
-1. 调用 `set_jetarm_gripper_position(position=370)`，在抓取成功前让 J6 保持松开状态。
-2. 调用 `get_rgb_camera_frame` 获取最新画面和 `camera.grasp_point_pixel`。
-3. Agent 只在画面中寻找目标点，并返回 `target_x/target_y`。
-4. 调用 `control_jetarm_to_target_pixel(target_x=..., target_y=...)`。
-5. 控制程序读取各关节当前位置，用 FK 实时解算抓取点位置和高度；该高度解算独立于运动命令。
-6. 控制程序按抓取点高度选择像素容差：
-   - 高度 `>15 cm`：容差 `40 px`
-   - 高度 `>10 cm` 且 `<=15 cm`：容差 `25 px`
-   - 高度 `>5 cm` 且 `<=10 cm`：容差 `13 px`
-   - 高度 `<=5 cm`：容差 `8 px`
-7. 如果目标点和抓取点像素未在当前容差内重合，控制程序自行决定前/后/左/右移动方向和步长，并换算为抓取点 XYZ 的 `X/Y` 水平目标；Agent 不参与运动决策。
-8. 水平移动距离按主轴像素误差除以当前高度对应的线性比例计算，并受单次运动上限约束：高度 `2 cm` 时比例为 `50 px/cm`，高度 `25 cm` 时比例为 `18 px/cm`，其他高度按线性关系计算。
-9. 如果两个像素点在当前容差内重合，控制程序以 `2 cm/s` 向下运动，并在下降过程中持续基于关节角度/FK 解算抓取点位置。
-10. 每下降 `2 cm`，必须重新调用 `get_rgb_camera_frame`，由 Agent 再次寻找目标点像素，然后重新调用 `control_jetarm_to_target_pixel`。
-11. 抓取动作使用 `control_jetarm_gripper(action="grip_lock")`。
-12. 抓取完成后调用 `move_jetarm_home` 复位。
-13. 复位后调用 `get_rgb_camera_frame`，由 Agent 检查物块是否被成功抓起。
-14. 如果 Agent 判断抓取失败，必须调用 `set_jetarm_gripper_position(position=370)` 重新松开 J6，再从取图和目标像素查找开始重试。
-
-## 抓取示例
+交互终端在 Agent 调用前使用：
 
 ```text
-set_jetarm_gripper_position(position=370)
-get_rgb_camera_frame()
-Agent 只返回 target_x/target_y
-control_jetarm_to_target_pixel(target_x=..., target_y=...)
-
-若返回 controller_decision="horizontal_align"：
-  重新 get_rgb_camera_frame()
-  Agent 重新返回 target_x/target_y
-  再调用 control_jetarm_to_target_pixel(...)
-
-若返回 controller_decision="descend_after_alignment"：
-  控制程序已下降 2 cm，并返回 FK 高度样本
-  重新 get_rgb_camera_frame()
-  Agent 重新返回 target_x/target_y
-  再调用 control_jetarm_to_target_pixel(...)
-
-到达抓取高度后：
-  control_jetarm_gripper(action="grip_lock")
-  move_jetarm_home()
-  get_rgb_camera_frame()
-  Agent 检查抓取是否成功
+/grasp-point 320 147
 ```
+
+也可在启动时使用 `--agent-grasp-x` 和 `--agent-grasp-y`。输入值会出现在每张图像的 `camera.grasp_point_pixel` 中，来源为 `user_input_before_agent_grasp`。
+
+## Agent 视觉抓取闭环
+
+1. Agent 判断用户自然语言是否为抓取任务；不是抓取任务时不得调用抓取控制工具。
+2. 抓取任务先调用 `get_rgb_camera_frame`。
+3. Agent 在最新画面中找到用户指定物品，取物品中心像素。
+4. Agent 只调用 `control_jetarm_to_target_pixel(target_x=..., target_y=...)`。
+5. 控制端首次动作前自动把 J6 设置为松开位置，然后根据抓取点和目标点执行一次 V2 水平对准或下降。
+6. 每次运动结束后旧图像立即失效；会话自动重新调用 `get_rgb_camera_frame`，把新图交给 Agent。
+7. Agent 必须在新图中重新识别同一物品中心，重新发送 `target_x/target_y`，不得复用旧坐标。
+8. 控制端按抓取点 FK 高度选择动态容差：`>15 cm: 40 px`、`>10 cm: 25 px`、`>5 cm: 13 px`、`<=5 cm: 8 px`。
+9. 未对准时，控制端按当前高度像素比例计算水平运动；水平运动保持抓取点高度及摄像头—抓取点姿态。
+10. 对准后，控制端按 2 cm 阶段下降。接近最终高度时先要求一张新图完成最终对准。
+11. 最终对准后，控制端自动下降到最终抓取高度，执行夹取并返回 Home；此时结果是 `grasp_completion_status="awaiting_visual_verification"`，不能直接宣称成功。
+12. 会话自动获取 Home 后画面。Agent必须检查目标物品是否确实被抓起，再调用 `confirm_jetarm_grasp_result(success=...)`。
+13. 只有确认工具返回 `grasp_completed=true` 才能结束并报告成功。若确认失败，Agent用当前新图重新识别同一物品中心并继续闭环，直到确认成功或出现硬错误。
+
+## 每一步记录
+
+每次 `control_jetarm_to_target_pixel` 的 `grasp_step_record` 和终端输出严格使用以下顺序：
+
+1. `target_pixel`：目标点像素坐标，即目标物块中心。
+2. `original_grasp_point_xyz_cm`：动作前原抓取点实际坐标。
+3. `motion_plan`：V2 运动规划。
+4. `expected_grasp_point_xyz_cm`：预计抓取点坐标。
+5. `actual_grasp_point_xyz_cm`：动作后实际抓取点坐标。
+6. `camera_grasp_vertical_angle_deg`：摄像头—抓取点连线与竖直方向夹角。
+
+任何工具返回 `status=error` 后必须停止后续动作，不得沿用旧图像或声称抓取成功。

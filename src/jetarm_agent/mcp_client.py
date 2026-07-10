@@ -13,6 +13,14 @@ from .device_config import DEFAULT_DEVICE_CONFIG_PATH, PROJECT_ROOT
 from .tooling import ToolDefinition, ToolExecutionPayload, ToolImage, ToolRegistry
 
 
+INTERNAL_MCP_TOOL_NAMES = frozenset(
+    {
+        "set_jetarm_grasp_point_pixel",
+        "move_jetarm_by_pixel_error",
+    }
+)
+
+
 class MCPClientError(RuntimeError):
     """Raised when the local JetArm MCP server cannot be used."""
 
@@ -98,6 +106,8 @@ class MCPRobotBridge:
         definitions: list[ToolDefinition] = []
         for tool in response.tools:
             name = str(tool.name)
+            if name in INTERNAL_MCP_TOOL_NAMES:
+                continue
             description = str(tool.description or "")
             parameters = dict(tool.inputSchema or {"type": "object", "properties": {}})
 

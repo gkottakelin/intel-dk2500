@@ -8,6 +8,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -26,6 +27,7 @@ from .arm_control import (
     PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM,
     ArmControlConfig,
     JetArmToolController,
+    parse_compact_arm_command,
 )
 from .device_config import (
     DEFAULT_DEVICE_CONFIG_PATH,
@@ -37,6 +39,7 @@ from .rgb_camera import RGBJpegFrame, capture_rgb_jpeg
 
 
 DEFAULT_WORKFLOW_PATH = PROJECT_ROOT / "workflows" / "jetarm_mcp_workflow.md"
+AGENT_VISUAL_WORKFLOW_MAX_DISTANCE_CM = 100.0
 LOGGER = logging.getLogger("jetarm_mcp")
 
 
@@ -58,7 +61,12 @@ class JetArmMCPService:
         self.workflow_path = Path(workflow_path)
         self.max_distance_cm = max_distance_cm
         self._controller: JetArmToolController | None = None
+        self._configured_grasp_point_pixel: dict[str, Any] | None = None
         self._last_grasp_point_pixel: dict[str, Any] | None = None
+        self._grasp_final_phase = False
+        self._gripper_prepared_for_grasp = False
+        self._awaiting_grasp_visual_confirmation = False
+        self._grasp_step_records: list[dict[str, Any]] = []
 
     def _terminal_config_path(self) -> Path:
         path = Path(self.devices.arm_terminal_config)
@@ -74,10 +82,13 @@ class JetArmMCPService:
                     mode=self.devices.arm_mode,
                     serial_port=self.devices.arm_port or None,
                     terminal_config_path=self._terminal_config_path(),
-                    max_distance_cm=self.max_distance_cm,
+                    max_distance_cm=AGENT_VISUAL_WORKFLOW_MAX_DISTANCE_CM,
+                    allow_extended_distance=True,
                     default_speed_cm_s=1.5,
                     min_speed_cm_s=1.0,
                     max_speed_cm_s=5.0,
+                    camera_vector_version="v2",
+                    manual_progress_check_enabled=False,
                 )
             )
             LOGGER.info("JetArm controller initialized")
@@ -122,6 +133,11 @@ class JetArmMCPService:
 
     async def move(self, command: str, speed_cm_s: float = 1.5) -> dict[str, Any]:
         LOGGER.info("Executing compact command %s at %.3f cm/s", command, speed_cm_s)
+        _direction, distance_cm = parse_compact_arm_command(command)
+        if distance_cm >= self.max_distance_cm:
+            raise RuntimeError(
+                f"Agent普通移动单次必须小于{self.max_distance_cm:g}cm"
+            )
         result = await self.controller().execute_compact_command(command, speed_cm_s)
         result["mcp"] = "move_jetarm"
         LOGGER.info("Compact command completed with status=%s", result.get("status"))
@@ -154,13 +170,53 @@ class JetArmMCPService:
         result["mcp"] = "control_jetarm_gripper"
         return result
 
-    @staticmethod
-    def grasp_point_pixel_for_frame(width: int, height: int) -> dict[str, Any]:
-        return {
-            "x": round(float(width) / 2.0, 3),
-            "y": round(float(height) / 2.0, 3),
-            "source": "image_center_default",
+    def set_grasp_point_pixel(self, x: float, y: float) -> dict[str, Any]:
+        """Set the user-measured grasp pixel before an Agent grasp workflow."""
+
+        try:
+            resolved_x = float(x)
+            resolved_y = float(y)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("抓取点像素必须是两个数字") from exc
+        if (
+            not math.isfinite(resolved_x)
+            or not math.isfinite(resolved_y)
+            or resolved_x < 0.0
+            or resolved_y < 0.0
+        ):
+            raise RuntimeError("抓取点像素必须是大于等于0的有限数字")
+        point = {
+            "x": round(resolved_x, 3),
+            "y": round(resolved_y, 3),
+            "source": "user_input_before_agent_grasp",
         }
+        self._configured_grasp_point_pixel = dict(point)
+        self._last_grasp_point_pixel = dict(point)
+        self._grasp_final_phase = False
+        self._gripper_prepared_for_grasp = False
+        self._awaiting_grasp_visual_confirmation = False
+        self._grasp_step_records.clear()
+        return {
+            "status": "ok",
+            "mcp": "set_jetarm_grasp_point_pixel",
+            "grasp_point_pixel": point,
+            "workflow_reset": True,
+        }
+
+    def grasp_point_pixel_for_frame(
+        self, width: int, height: int
+    ) -> dict[str, Any] | None:
+        point = self._configured_grasp_point_pixel
+        if point is None:
+            return None
+        x = float(point["x"])
+        y = float(point["y"])
+        if not 0.0 <= x < float(width) or not 0.0 <= y < float(height):
+            raise RuntimeError(
+                "调用前输入的抓取点像素超出当前RGB图像范围："
+                f"point=({x:g}, {y:g}), image={width}x{height}"
+            )
+        return dict(point)
 
     async def set_gripper_position(
         self,
@@ -193,6 +249,206 @@ class JetArmMCPService:
         result["mcp"] = "move_jetarm_by_pixel_error"
         return result
 
+    @staticmethod
+    def _camera_grasp_angle_deg(result: dict[str, Any]) -> float | None:
+        angle = result.get("v2_returned_camera_line_angle_deg")
+        if isinstance(angle, (int, float)):
+            return round(float(angle), 3)
+        hold = result.get("camera_line_angle_hold")
+        if isinstance(hold, dict):
+            angle = hold.get("actual_after_deg")
+            if isinstance(angle, (int, float)):
+                return round(float(angle), 3)
+        return None
+
+    def _record_grasp_step(
+        self,
+        target_x: float,
+        target_y: float,
+        result: dict[str, Any],
+        *,
+        motion_step: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        source = motion_step or result
+        original = source.get(
+            "original_grasp_point_xyz_cm",
+            result.get("grasp_point_xyz_before_cm"),
+        )
+        expected = source.get(
+            "expected_grasp_point_xyz_cm",
+            result.get("grasp_point_xyz_expected_cm", original),
+        )
+        actual = source.get(
+            "actual_grasp_point_xyz_cm",
+            result.get("grasp_point_xyz_after_cm", original),
+        )
+        plan = source.get("motion_plan", result.get("v2_motion_plan"))
+        if plan is None:
+            plan = {
+                "controller_decision": result.get("controller_decision"),
+                "motion_command_count": result.get("motion_command_count", 0),
+            }
+        angle = source.get("camera_grasp_vertical_angle_deg")
+        if not isinstance(angle, (int, float)):
+            angle = self._camera_grasp_angle_deg(result)
+        record = {
+            "step": len(self._grasp_step_records) + 1,
+            "target_pixel": {
+                "x": round(float(target_x), 3),
+                "y": round(float(target_y), 3),
+            },
+            "original_grasp_point_xyz_cm": original,
+            "motion_plan": plan,
+            "expected_grasp_point_xyz_cm": expected,
+            "actual_grasp_point_xyz_cm": actual,
+            "camera_grasp_vertical_angle_deg": angle,
+        }
+        self._grasp_step_records.append(record)
+        return record
+
+    def _attach_grasp_step_records(
+        self, result: dict[str, Any], new_records: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        result["grasp_step_record"] = new_records[-1] if new_records else None
+        result["new_grasp_step_records"] = list(new_records)
+        # Return only records produced by this tool call. Earlier calls already
+        # remain in the Agent/tool history; repeating the full history here
+        # would grow the model context quadratically during a long closed loop.
+        result["grasp_step_records"] = list(new_records)
+        result["grasp_step_record_count_total"] = len(self._grasp_step_records)
+        result["grasp_step_record_format"] = [
+            "target_pixel",
+            "original_grasp_point_xyz_cm",
+            "motion_plan",
+            "expected_grasp_point_xyz_cm",
+            "actual_grasp_point_xyz_cm",
+            "camera_grasp_vertical_angle_deg",
+        ]
+        return result
+
+    async def _complete_final_grasp(
+        self, target_x: float, target_y: float, alignment: dict[str, Any]
+    ) -> dict[str, Any]:
+        from .arm_control import FINAL_GRASP_HEIGHT_CM
+
+        final_descent = await self.controller().descend_to_height(
+            FINAL_GRASP_HEIGHT_CM
+        )
+        new_records: list[dict[str, Any]] = []
+        raw_steps = final_descent.get("motion_steps")
+        if isinstance(raw_steps, list):
+            for raw_step in raw_steps:
+                if isinstance(raw_step, dict):
+                    new_records.append(
+                        self._record_grasp_step(
+                            target_x,
+                            target_y,
+                            final_descent,
+                            motion_step=raw_step,
+                        )
+                    )
+        if not new_records:
+            new_records.append(
+                self._record_grasp_step(target_x, target_y, final_descent)
+            )
+        final_height = final_descent.get(
+            "height_after_cm", final_descent.get("height_cm")
+        )
+        tolerance = float(final_descent.get("target_tolerance_cm", 0.0))
+        safely_reached = (
+            final_descent.get("status") == "ok"
+            and isinstance(final_height, (int, float))
+            and float(final_height) <= FINAL_GRASP_HEIGHT_CM + tolerance
+        )
+        if not safely_reached:
+            result = {
+                **alignment,
+                "status": "error",
+                "mcp": "control_jetarm_to_target_pixel",
+                "controller_decision": "final_descent_failed",
+                "error": final_descent.get(
+                    "error", "最终下降未安全到达抓取高度"
+                ),
+                "final_descent": final_descent,
+                "grasp_completed": False,
+                "requires_new_target_pixel": False,
+            }
+            return self._attach_grasp_step_records(result, new_records)
+
+        grip = await self.controller().control_gripper("grip_lock")
+        if grip.get("status") != "ok":
+            result = {
+                **alignment,
+                "status": "error",
+                "mcp": "control_jetarm_to_target_pixel",
+                "controller_decision": "gripper_failed",
+                "error": grip.get("error", "夹取动作失败"),
+                "final_descent": final_descent,
+                "gripper": grip,
+                "grasp_completed": False,
+                "requires_new_target_pixel": False,
+            }
+            return self._attach_grasp_step_records(result, new_records)
+        home = await self.controller().go_home()
+        if home.get("status") != "ok":
+            result = {
+                **alignment,
+                "status": "error",
+                "mcp": "control_jetarm_to_target_pixel",
+                "controller_decision": "home_failed_after_grip",
+                "error": home.get("error", "夹取后返回Home失败"),
+                "final_descent": final_descent,
+                "gripper": grip,
+                "home": home,
+                "grasp_completed": False,
+                "requires_new_target_pixel": False,
+            }
+            return self._attach_grasp_step_records(result, new_records)
+        self._grasp_final_phase = False
+        self._gripper_prepared_for_grasp = False
+        self._awaiting_grasp_visual_confirmation = True
+        result = {
+            **alignment,
+            "status": "ok",
+            "mcp": "control_jetarm_to_target_pixel",
+            "controller_decision": "grasp_complete",
+            "final_descent": final_descent,
+            "gripper": grip,
+            "home": home,
+            "mechanical_grasp_sequence_completed": True,
+            "grasp_completed": False,
+            "grasp_completion_status": "awaiting_visual_verification",
+            "visual_verification_required": True,
+            "requires_new_target_pixel": False,
+        }
+        return self._attach_grasp_step_records(result, new_records)
+
+    def confirm_grasp_result(self, success: bool) -> dict[str, Any]:
+        if not self._awaiting_grasp_visual_confirmation:
+            raise RuntimeError("当前没有等待Agent图像确认的抓取结果")
+        if not isinstance(success, bool):
+            raise RuntimeError("success必须是布尔值")
+        self._awaiting_grasp_visual_confirmation = False
+        if success:
+            return {
+                "status": "ok",
+                "mcp": "confirm_jetarm_grasp_result",
+                "grasp_completed": True,
+                "visual_verification": "success",
+                "grasp_step_record_count_total": len(self._grasp_step_records),
+            }
+        self._grasp_final_phase = False
+        self._gripper_prepared_for_grasp = False
+        return {
+            "status": "ok",
+            "mcp": "confirm_jetarm_grasp_result",
+            "grasp_completed": False,
+            "visual_verification": "failed",
+            "retry_required": True,
+            "instruction": "使用当前最新RGB图像重新识别同一目标中心并继续闭环",
+            "grasp_step_record_count_total": len(self._grasp_step_records),
+        }
+
     async def control_to_target_pixel(
         self,
         target_x: float,
@@ -206,8 +462,10 @@ class JetArmMCPService:
         final_alignment_threshold_cm: float | None = None,
         final_grasp_height_cm: float | None = None,
     ) -> dict[str, Any]:
-        from .arm_control import FINAL_ALIGNMENT_THRESHOLD_CM, FINAL_GRASP_HEIGHT_CM
-
+        if self._awaiting_grasp_visual_confirmation:
+            raise RuntimeError(
+                "必须先根据Home后最新RGB图像调用confirm_jetarm_grasp_result"
+            )
         grasp_pixel = self._last_grasp_point_pixel
         resolved_grasp_x = (
             grasp_point_x
@@ -221,10 +479,18 @@ class JetArmMCPService:
         )
         if resolved_grasp_x is None or resolved_grasp_y is None:
             raise RuntimeError(
-                "missing grasp point pixel; call get_rgb_camera_frame first or pass grasp_point_x/grasp_point_y"
+                "未输入抓取点像素；请在Agent抓取调用前先设置抓取点x/y"
             )
+        if not self._gripper_prepared_for_grasp:
+            await self.controller().set_gripper_position(
+                DEFAULT_GRIPPER_RELEASE_POSITION,
+                DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+            )
+            self._gripper_prepared_for_grasp = True
         kwargs: dict[str, Any] = dict(
-            descend_when_aligned=descend_when_aligned,
+            descend_when_aligned=(
+                False if self._grasp_final_phase else descend_when_aligned
+            ),
             descent_step_cm=descent_step_cm,
             step_duration_s=step_duration_s,
             speed_saturation_px=speed_saturation_px,
@@ -246,7 +512,20 @@ class JetArmMCPService:
             if grasp_point_x is None or grasp_point_y is None
             else "tool_arguments"
         )
-        return result
+        result["agent_grasp_workflow"] = "manual_pixel_test_v2"
+        result["camera_vector_version"] = "v2"
+        result["progress_check_enabled"] = False
+        record = self._record_grasp_step(target_x, target_y, result)
+        if result.get("status") != "ok":
+            return self._attach_grasp_step_records(result, [record])
+        if result.get("controller_decision") != "aligned_hold":
+            return self._attach_grasp_step_records(result, [record])
+        if not self._grasp_final_phase:
+            self._grasp_final_phase = True
+            result["final_alignment_phase"] = True
+            result["requires_new_target_pixel"] = True
+            return self._attach_grasp_step_records(result, [record])
+        return await self._complete_final_grasp(target_x, target_y, result)
 
     def close(self) -> None:
         if self._controller is not None:
@@ -307,8 +586,21 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
                 result["camera"] = {"status": "error", "error": str(exc)}
             return content_result(result)
 
-        grasp_point_pixel = service.grasp_point_pixel_for_frame(frame.width, frame.height)
-        service._last_grasp_point_pixel = grasp_point_pixel
+        try:
+            grasp_point_pixel = service.grasp_point_pixel_for_frame(
+                frame.width, frame.height
+            )
+        except RuntimeError as exc:
+            return content_result(
+                {
+                    "status": "error",
+                    "mcp": "get_rgb_camera_frame",
+                    "error": str(exc),
+                }
+            )
+        service._last_grasp_point_pixel = (
+            dict(grasp_point_pixel) if grasp_point_pixel is not None else None
+        )
         result["camera"] = {
             "status": "ok",
             "device": service.devices.rgb_camera,
@@ -317,6 +609,9 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "height": frame.height,
             "mime_type": frame.mime_type,
             "grasp_point_pixel": grasp_point_pixel,
+            "grasp_point_pixel_required_before_grasp": (
+                grasp_point_pixel is None
+            ),
         }
         # One MCP result carries both the pixels and the pose used to interpret
         # them.  Movement is blocked when an enabled arm cannot provide pose.
@@ -339,7 +634,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         description=(
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
             "同一结果还返回抓取点基座坐标、关节位置、相机视线与竖直方向夹角及相机视角上方向。"
-            "每次视觉定位和机械臂移动前必须调用；视觉抓取时Agent只返回目标点像素，"
+            "每次视觉定位和机械臂移动前必须调用；抓取点像素来自用户调用前输入。"
+            "视觉抓取时Agent只返回目标物品中心像素，"
             "运动由control_jetarm_to_target_pixel决策；不启动深度流。"
         ),
         structured_output=False,
@@ -352,10 +648,20 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
+            "内部宿主工具：在Agent抓取调用前保存用户输入的抓取点像素。"
+            "该工具不会暴露给模型。"
+        )
+    )
+    def set_jetarm_grasp_point_pixel(x: float, y: float) -> dict[str, Any]:
+        return service.set_grasp_point_pixel(x, y)
+
+    @mcp.tool(
+        description=(
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
             "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
             "允许1到5cm/s。所有方向使用camera-vector控制系：上为抓取点到摄像头，"
-            "下为摄像头到抓取点；前=抓取点XYZ的Y减小，后=Y增大，左=X减小，右=X增大；"
+            "下为摄像头到抓取点；V2前为摄像头到抓取点连线的水平投影，"
+            "后为抓取点到摄像头连线的水平投影，左右保持实机方向；"
             "水平运动只换算到XYZ的X/Y目标，Z不参与并保持当前高度，同时保持摄像头-抓取点姿态。"
             "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
             "收到status=ok后必须重新取图；视觉抓取应改用control_jetarm_to_target_pixel，"
@@ -458,45 +764,42 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
-            "Controller-owned target-pixel workflow. The Agent only returns the "
-            "target pixel from the latest RGB image. The controller uses the "
-            "latest grasp-point pixel, reads joint feedback/FK height, chooses "
-            "height-based tolerance (40/25/13/8 px), performs front/back/left/right "
+            "Manual-pixel-test V2 grasp workflow with progress detection disabled. "
+            "The Agent must supply only the center pixel target_x/target_y of the "
+            "requested object from the latest RGB image. The controller uses the "
+            "user-entered grasp-point pixel, reads joint feedback/FK height, chooses "
+            "height-based tolerance (40/25/13/8 px), performs V2 front/back/left/right "
             "alignment with a height-linear px/cm scale "
             f"({PIXEL_ALIGNMENT_SCALE_NEAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_NEAR_PX_PER_CM:g}; "
-            f"{PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM:g}). When aligned, descends 2 cm. When one "
-            "more descent step would reach or pass the final-alignment threshold "
-            "(2 cm), the controller returns aligned_hold instead; the caller "
-            "should request a final alignment then descend to final_grasp_height_cm."
+            f"{PIXEL_ALIGNMENT_SCALE_FAR_HEIGHT_CM:g} cm -> {PIXEL_ALIGNMENT_SCALE_FAR_PX_PER_CM:g}), descends in 2 cm stages, and requests a "
+            "fresh target pixel after every move. On final alignment it automatically "
+            "descends to grasp height, grips, and returns Home. The Agent must then "
+            "verify the fresh image with confirm_jetarm_grasp_result."
         ),
         structured_output=False,
     )
     async def control_jetarm_to_target_pixel(
         target_x: float,
         target_y: float,
-        grasp_point_x: float | None = None,
-        grasp_point_y: float | None = None,
-        descend_when_aligned: bool = True,
-        descent_step_cm: float = DEFAULT_DESCENT_RECALIBRATION_CM,
-        step_duration_s: float = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
-        speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
-        final_alignment_threshold_cm: float | None = None,
-        final_grasp_height_cm: float | None = None,
     ) -> Any:
         return content_result(
             await service.control_to_target_pixel(
                 target_x,
                 target_y,
-                grasp_point_x,
-                grasp_point_y,
-                descend_when_aligned,
-                descent_step_cm,
-                step_duration_s,
-                speed_saturation_px,
-                final_alignment_threshold_cm,
-                final_grasp_height_cm,
             )
         )
+
+    @mcp.tool(
+        description=(
+            "After control_jetarm_to_target_pixel completes the mechanical grasp and "
+            "the session automatically returns a fresh Home-position RGB image, the "
+            "Agent must inspect that image and call this tool with success=true only "
+            "when the requested object was actually picked up. Use success=false to "
+            "continue the target-pixel closed loop from the current image."
+        )
+    )
+    def confirm_jetarm_grasp_result(success: bool) -> dict[str, Any]:
+        return service.confirm_grasp_result(success)
 
     return mcp
 
