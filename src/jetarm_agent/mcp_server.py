@@ -61,8 +61,22 @@ class JetArmMCPService:
         self.workflow_path = Path(workflow_path)
         self.max_distance_cm = max_distance_cm
         self._controller: JetArmToolController | None = None
-        self._configured_grasp_point_pixel: dict[str, Any] | None = None
-        self._last_grasp_point_pixel: dict[str, Any] | None = None
+        configured_grasp_point = (
+            {
+                "x": round(float(devices.grasp_point_x), 3),
+                "y": round(float(devices.grasp_point_y), 3),
+                "source": "device_config",
+            }
+            if devices.grasp_point_x is not None
+            and devices.grasp_point_y is not None
+            else None
+        )
+        self._configured_grasp_point_pixel: dict[str, Any] | None = (
+            dict(configured_grasp_point) if configured_grasp_point else None
+        )
+        self._last_grasp_point_pixel: dict[str, Any] | None = (
+            dict(configured_grasp_point) if configured_grasp_point else None
+        )
         self._last_rgb_frame_size: tuple[int, int] | None = None
         self._grasp_final_phase = False
         self._gripper_prepared_for_grasp = False
@@ -750,8 +764,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
             "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
             "允许1到5cm/s。所有方向使用camera-vector控制系：上为抓取点到摄像头，"
-            "下为摄像头到抓取点；V2前为摄像头到抓取点连线的水平投影，"
-            "后为抓取点到摄像头连线的水平投影，左右保持实机方向；"
+            "下为摄像头到抓取点；V2前使实际抓取点Y减小，后使Y增加，"
+            "左使X减小，右使X增加；"
             "水平运动只换算到XYZ的X/Y目标，Z不参与并保持当前高度，同时保持摄像头-抓取点姿态。"
             "调用前必须把最新RGB图像和配套机械臂姿态传给Agent，每次只调用一条；"
             "收到status=ok后必须重新取图；视觉抓取应改用control_jetarm_to_target_pixel，"
@@ -926,6 +940,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             arm_terminal_config=args.arm_config or devices.arm_terminal_config,
             rgb_camera=devices.rgb_camera,
             rgb_camera_name=devices.rgb_camera_name,
+            grasp_point_x=devices.grasp_point_x,
+            grasp_point_y=devices.grasp_point_y,
         )
         devices.validate()
     service = JetArmMCPService(devices, max_distance_cm=args.arm_max_distance_cm)

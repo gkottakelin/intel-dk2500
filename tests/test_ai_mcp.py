@@ -91,12 +91,17 @@ class DeviceConfigTest(unittest.TestCase):
                 arm_mode="dry-run",
                 rgb_camera=camera.selection_key,
                 rgb_camera_name=camera.name,
+                grasp_point_x=320.0,
+                grasp_point_y=147.0,
             )
             config.save(config_path)
             loaded = RuntimeDeviceConfig.load(config_path)
             cameras = discover_rgb_cameras(lambda: [camera])
 
             self.assertEqual(loaded, config)
+            self.assertEqual(
+                (loaded.grasp_point_x, loaded.grasp_point_y), (320.0, 147.0)
+            )
             self.assertEqual(cameras[0].selection_key, "4-1.2-11")
             self.assertEqual(cameras[0].name, "SV1301S_U3")
             self.assertEqual(
@@ -219,6 +224,32 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["source"], "user_input_before_agent_grasp")
         with self.assertRaisesRegex(RuntimeError, "超出当前RGB图像范围"):
             self.service.grasp_point_pixel_for_frame(100, 100)
+
+    async def test_service_loads_grasp_point_from_interface_config(self):
+        service = JetArmMCPService(
+            RuntimeDeviceConfig(
+                arm_mode="dry-run",
+                arm_terminal_config=str(
+                    PROJECT_ROOT
+                    / "ubuntu22_04_operation_terminal"
+                    / "config"
+                    / "terminal.json"
+                ),
+                grasp_point_x=320.0,
+                grasp_point_y=147.0,
+            )
+        )
+        self.addAsyncCleanup(self._close_service, service)
+
+        point = service.grasp_point_pixel_for_frame(640, 480)
+
+        self.assertEqual(
+            point,
+            {"x": 320.0, "y": 147.0, "source": "device_config"},
+        )
+
+    async def _close_service(self, service):
+        service.close()
 
     async def test_agent_bottom_origin_y_is_converted_before_v2_motion(self):
         self.service.set_grasp_point_pixel(320, 147)

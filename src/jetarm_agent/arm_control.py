@@ -2363,7 +2363,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 2. Agent必须根据用户自然语言语义自行判断是否要求抓取物品；只有判断为抓取任务时才进入视觉抓取闭环，普通问答、画面描述和非抓取命令不得启动抓取。
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取时，Agent只在最新RGB原图中识别用户指定物品，并把该物品中心作为target_x/target_y；像素原点必须是左上角(0,0)，X向右、Y向下。目标在抓取点上方时target_y必须小于抓取点y，下方时必须大于；禁止使用左下角原点、Y向上、缩放图或翻转图坐标。
-5. 抓取点像素必须由用户在Agent调用前输入；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未设置时不得猜测或使用图像中心。
+5. 抓取点像素必须来自接口与抓取点配置文件，或由用户在调用前通过/grasp-point临时覆盖；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未配置时不得猜测或使用图像中心。
 6. V2水平运动以实际抓取点XYZ为准：forward必须使实际Y减小，backward必须使实际Y增加，left使X减小，right使X增加；上下仍沿摄像头—抓取点连线。
 7. 每张最新图像只允许调用一次control_jetarm_to_target_pixel。除物品中心target_x/target_y外，必须声明target_vertical_relation=above、below或same_y用于坐标方向校验；只有目标中心与抓取点Y差绝对值不超过2px时才用same_y。该字段不是运动方向。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
 8. control_jetarm_to_target_pixel会按FK高度选择40/25/13/8px动态容差和高度线性像素比例，自行执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。

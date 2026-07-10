@@ -179,7 +179,12 @@ Windows/Python 3.12 相关依赖。Ubuntu 主要使用：
 
     python3 -m src.jetarm_agent --once "你好，请介绍一下你能做什么"
 
-Agent 抓取物品前必须由用户输入抓取点像素。交互模式启动后先输入：
+推荐先在接口与抓取点配置界面中保存抓取点像素：
+
+    python3 -m src.jetarm_agent.device_config
+
+抓取点会与机械臂串口和 Gemini 相机配置一起保存。需要在当前运行期间
+临时重新标定时，再在交互模式输入：
 
     /grasp-point 320 147
 
@@ -381,7 +386,8 @@ V2 硬件模式示例：
 1. 机械臂模式
 2. 机械臂串口
 3. Gemini 相机序列号或 UID
-4. 操作终端配置文件
+4. 抓取点像素 X、Y
+5. 操作终端配置文件
 
 配置结果保存到：
 
@@ -393,7 +399,9 @@ V2 硬件模式示例：
 
     python3 -m src.jetarm_agent.device_config \
         --no-gui \
-        --arm-mode dry-run
+        --arm-mode dry-run \
+        --grasp-point-x 320 \
+        --grasp-point-y 147
 
 配置完成后启动 Agent：
 

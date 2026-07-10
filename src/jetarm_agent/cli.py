@@ -152,7 +152,7 @@ def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> N
         print("  /arm-home   直接回到home位姿")
         print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
         print("  /workflow   显示JetArm MCP工作流规范")
-        print("  /grasp-point x y  在调用Agent抓取前输入并固定抓取点像素")
+        print("  /grasp-point x y  临时覆盖配置文件中的抓取点像素")
     if camera_enabled:
         print("  /camera     采集当前RGB画面并让AI描述")
     print("  /exit     退出")
@@ -825,11 +825,21 @@ async def run(args: argparse.Namespace) -> int:
     if args.manual_pixel_test:
         return await _run_manual_pixel_test(args)
 
-    agent_grasp_point = _agent_grasp_point_from_args(args)
+    agent_grasp_point_override = _agent_grasp_point_from_args(args)
     _load_env_file(args.env_file)
     device_path = Path(args.device_config)
     has_device_config = device_path.is_file()
     saved_devices = RuntimeDeviceConfig.load(device_path, required=False)
+    agent_grasp_point = agent_grasp_point_override
+    if (
+        agent_grasp_point is None
+        and saved_devices.grasp_point_x is not None
+        and saved_devices.grasp_point_y is not None
+    ):
+        agent_grasp_point = (
+            float(saved_devices.grasp_point_x),
+            float(saved_devices.grasp_point_y),
+        )
     arm_mode = (
         args.arm_mode
         or (saved_devices.arm_mode if has_device_config else "")
@@ -883,6 +893,12 @@ async def run(args: argparse.Namespace) -> int:
         arm_terminal_config=str(arm_config_path),
         rgb_camera=saved_devices.rgb_camera,
         rgb_camera_name=saved_devices.rgb_camera_name,
+        grasp_point_x=(
+            agent_grasp_point[0] if agent_grasp_point is not None else None
+        ),
+        grasp_point_y=(
+            agent_grasp_point[1] if agent_grasp_point is not None else None
+        ),
     )
     effective_devices.validate()
 
@@ -921,10 +937,13 @@ async def run(args: argparse.Namespace) -> int:
                         max_distance_cm=max_distance_cm,
                     )
                 )
-                if agent_grasp_point is not None:
+                if agent_grasp_point_override is not None:
                     configured_point = await bridge.call_tool(
                         "set_jetarm_grasp_point_pixel",
-                        {"x": agent_grasp_point[0], "y": agent_grasp_point[1]},
+                        {
+                            "x": agent_grasp_point_override[0],
+                            "y": agent_grasp_point_override[1],
+                        },
                     )
                     print(
                         "Agent调用前抓取点已设置: "

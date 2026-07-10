@@ -1,9 +1,10 @@
-"""Preflight configuration for the JetArm serial port and one RGB camera."""
+"""Configure JetArm interfaces and the fixed Agent grasp-point pixel."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -35,6 +36,8 @@ class RuntimeDeviceConfig:
     arm_terminal_config: str = str(DEFAULT_TERMINAL_CONFIG)
     rgb_camera: str = ""
     rgb_camera_name: str = ""
+    grasp_point_x: float | None = None
+    grasp_point_y: float | None = None
 
     def validate(self) -> None:
         if self.arm_mode not in {"off", "dry-run", "hardware"}:
@@ -43,6 +46,16 @@ class RuntimeDeviceConfig:
             raise ValueError("hardware模式必须配置机械臂串口")
         if not self.arm_terminal_config.strip():
             raise ValueError("arm_terminal_config不能为空")
+        if (self.grasp_point_x is None) != (self.grasp_point_y is None):
+            raise ValueError("抓取点像素X和Y必须同时配置或同时留空")
+        for label, value in (
+            ("抓取点像素X", self.grasp_point_x),
+            ("抓取点像素Y", self.grasp_point_y),
+        ):
+            if value is not None and (
+                not math.isfinite(float(value)) or float(value) < 0.0
+            ):
+                raise ValueError(f"{label}必须是大于等于0的有限数字")
 
     @classmethod
     def load(
@@ -55,6 +68,8 @@ class RuntimeDeviceConfig:
             return cls()
         with config_path.open("r", encoding="utf-8") as file:
             payload = json.load(file)
+        raw_grasp_x = payload.get("grasp_point_x")
+        raw_grasp_y = payload.get("grasp_point_y")
         config = cls(
             arm_mode=str(payload.get("arm_mode", "off")),
             arm_port=str(payload.get("arm_port", "")),
@@ -63,6 +78,12 @@ class RuntimeDeviceConfig:
             ),
             rgb_camera=str(payload.get("rgb_camera", "")),
             rgb_camera_name=str(payload.get("rgb_camera_name", "")),
+            grasp_point_x=(
+                None if raw_grasp_x is None or raw_grasp_x == "" else float(raw_grasp_x)
+            ),
+            grasp_point_y=(
+                None if raw_grasp_y is None or raw_grasp_y == "" else float(raw_grasp_y)
+            ),
         )
         config.validate()
         return config
@@ -132,20 +153,26 @@ def configure_devices_dialog(
     tk = terminal.tk
     ttk = terminal.ttk
     root = tk.Tk()
-    root.title("JetArm Agent 启动前设备配置")
+    root.title("JetArm Agent 接口与抓取点配置")
     root.resizable(False, False)
     result: dict[str, RuntimeDeviceConfig | None] = {"config": None}
 
     body = ttk.Frame(root, padding=18)
     body.grid(row=0, column=0, sticky="nsew")
     body.columnconfigure(1, weight=1)
-    ttk.Label(body, text="机械臂与Gemini RGB相机", font=("Noto Sans CJK SC", 13, "bold")).grid(
+    ttk.Label(body, text="机械臂、Gemini RGB相机与抓取点", font=("Noto Sans CJK SC", 13, "bold")).grid(
         row=0, column=0, columnspan=3, sticky="w", pady=(0, 14)
     )
 
     mode_value = tk.StringVar(value=initial.arm_mode)
     port_value = tk.StringVar(value=initial.arm_port)
     camera_value = tk.StringVar(value=initial.rgb_camera)
+    grasp_x_value = tk.StringVar(
+        value="" if initial.grasp_point_x is None else f"{initial.grasp_point_x:g}"
+    )
+    grasp_y_value = tk.StringVar(
+        value="" if initial.grasp_point_y is None else f"{initial.grasp_point_y:g}"
+    )
     status_value = tk.StringVar(value="")
 
     ttk.Label(body, text="机械臂模式").grid(row=1, column=0, sticky="w", padx=(0, 10))
@@ -207,21 +234,38 @@ def configure_devices_dialog(
     ttk.Button(body, text="刷新", command=refresh).grid(
         row=2, column=2, rowspan=2, sticky="nsew", padx=(10, 0), pady=4
     )
+    ttk.Label(body, text="抓取点像素").grid(row=4, column=0, sticky="w", padx=(0, 10))
+    grasp_frame = ttk.Frame(body)
+    grasp_frame.grid(row=4, column=1, sticky="w", pady=4)
+    ttk.Label(grasp_frame, text="X").pack(side="left")
+    ttk.Entry(grasp_frame, textvariable=grasp_x_value, width=12).pack(
+        side="left", padx=(5, 16)
+    )
+    ttk.Label(grasp_frame, text="Y").pack(side="left")
+    ttk.Entry(grasp_frame, textvariable=grasp_y_value, width=12).pack(
+        side="left", padx=(5, 0)
+    )
     ttk.Label(
         body, textvariable=status_value, foreground="#526172", wraplength=650
-    ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 12))
+    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 12))
 
     def save() -> None:
         camera_text = camera_value.get().strip()
         camera = camera_by_label.get(camera_text)
-        config = RuntimeDeviceConfig(
-            arm_mode=mode_value.get().strip(),
-            arm_port=port_value.get().strip(),
-            arm_terminal_config=initial.arm_terminal_config,
-            rgb_camera=camera.selection_key if camera else "",
-            rgb_camera_name=camera.name if camera else "",
-        )
         try:
+            raw_grasp_x = grasp_x_value.get().strip()
+            raw_grasp_y = grasp_y_value.get().strip()
+            grasp_x = float(raw_grasp_x) if raw_grasp_x else None
+            grasp_y = float(raw_grasp_y) if raw_grasp_y else None
+            config = RuntimeDeviceConfig(
+                arm_mode=mode_value.get().strip(),
+                arm_port=port_value.get().strip(),
+                arm_terminal_config=initial.arm_terminal_config,
+                rgb_camera=camera.selection_key if camera else "",
+                rgb_camera_name=camera.name if camera else "",
+                grasp_point_x=grasp_x,
+                grasp_point_y=grasp_y,
+            )
             config.validate()
         except ValueError as exc:
             if terminal.messagebox is not None:
@@ -231,7 +275,7 @@ def configure_devices_dialog(
         root.destroy()
 
     buttons = ttk.Frame(body)
-    buttons.grid(row=5, column=0, columnspan=3, sticky="e")
+    buttons.grid(row=6, column=0, columnspan=3, sticky="e")
     ttk.Button(buttons, text="取消", command=root.destroy).pack(side="left", padx=(0, 8))
     ttk.Button(buttons, text="保存配置", command=save).pack(side="left")
     root.protocol("WM_DELETE_WINDOW", root.destroy)
@@ -241,13 +285,17 @@ def configure_devices_dialog(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="配置JetArm Agent机械臂与RGB相机接口")
+    parser = argparse.ArgumentParser(
+        description="配置JetArm Agent机械臂、RGB相机接口与抓取点像素"
+    )
     parser.add_argument("--config", default=str(DEFAULT_DEVICE_CONFIG_PATH))
     parser.add_argument("--no-gui", action="store_true")
     parser.add_argument("--arm-mode", choices=("off", "dry-run", "hardware"))
     parser.add_argument("--arm-port")
     parser.add_argument("--camera", help="Orbbec相机序列号或UID")
     parser.add_argument("--camera-name", default="")
+    parser.add_argument("--grasp-point-x", type=float)
+    parser.add_argument("--grasp-point-y", type=float)
     parser.add_argument("--arm-config", default=str(DEFAULT_TERMINAL_CONFIG))
     return parser
 
@@ -263,6 +311,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             arm_terminal_config=args.arm_config or initial.arm_terminal_config,
             rgb_camera=args.camera if args.camera is not None else initial.rgb_camera,
             rgb_camera_name=args.camera_name or initial.rgb_camera_name,
+            grasp_point_x=(
+                args.grasp_point_x
+                if args.grasp_point_x is not None
+                else initial.grasp_point_x
+            ),
+            grasp_point_y=(
+                args.grasp_point_y
+                if args.grasp_point_y is not None
+                else initial.grasp_point_y
+            ),
         )
     else:
         config = configure_devices_dialog(initial)
