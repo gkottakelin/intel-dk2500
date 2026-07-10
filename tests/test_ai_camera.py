@@ -144,7 +144,14 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         camera_tool = next(
             tool for tool in tools if tool.name == "get_rgb_camera_frame"
         )
+        target_tool = next(
+            tool for tool in tools if tool.name == "control_jetarm_to_target_pixel"
+        )
         self.assertIsNone(camera_tool.outputSchema)
+        self.assertIn(
+            "target_vertical_relation",
+            target_tool.inputSchema.get("required", []),
+        )
 
         response = await server.call_tool("get_rgb_camera_frame", {})
         content = response.content

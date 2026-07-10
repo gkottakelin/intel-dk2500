@@ -33,7 +33,7 @@ try:
         MAX_VISUAL_CLOSED_LOOP_ROUNDS,
         ToolCallingSession,
     )
-    from project.src.jetarm_agent.tooling import ToolRegistry
+    from project.src.jetarm_agent.tooling import ToolImage, ToolRegistry
 except ModuleNotFoundError:
     from src.jetarm_agent.cli import (
         _agent_grasp_point_from_args,
@@ -54,7 +54,7 @@ except ModuleNotFoundError:
         MAX_VISUAL_CLOSED_LOOP_ROUNDS,
         ToolCallingSession,
     )
-    from src.jetarm_agent.tooling import ToolRegistry
+    from src.jetarm_agent.tooling import ToolImage, ToolRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -219,6 +219,70 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["source"], "user_input_before_agent_grasp")
         with self.assertRaisesRegex(RuntimeError, "超出当前RGB图像范围"):
             self.service.grasp_point_pixel_for_frame(100, 100)
+
+    async def test_agent_bottom_origin_y_is_converted_before_v2_motion(self):
+        self.service.set_grasp_point_pixel(320, 147)
+        self.service._last_rgb_frame_size = (640, 480)
+
+        result = await self.service.control_to_target_pixel(
+            320,
+            410,
+            target_vertical_relation="above",
+        )
+
+        self.assertEqual(result["direction"], "forward")
+        validation = result["target_coordinate_validation"]
+        self.assertEqual(
+            validation["normalization"],
+            "bottom_origin_y_up_converted_to_top_left_y_down",
+        )
+        self.assertEqual(validation["received_target_y"], 410.0)
+        self.assertEqual(validation["normalized_target_y"], 70.0)
+        self.assertEqual(result["grasp_step_record"]["target_pixel"]["y"], 70.0)
+
+    async def test_agent_top_left_y_is_kept_without_conversion(self):
+        self.service.set_grasp_point_pixel(320, 147)
+        self.service._last_rgb_frame_size = (640, 480)
+
+        result = await self.service.control_to_target_pixel(
+            320,
+            70,
+            target_vertical_relation="above",
+        )
+
+        self.assertEqual(result["direction"], "forward")
+        self.assertEqual(
+            result["target_coordinate_validation"]["normalization"],
+            "none_top_left_y_down_confirmed",
+        )
+
+    async def test_unresolvable_agent_y_relation_is_rejected_before_motion(self):
+        self.service.set_grasp_point_pixel(320, 147)
+        self.service._last_rgb_frame_size = (640, 480)
+
+        with self.assertRaisesRegex(RuntimeError, "无法按原图高度安全转换"):
+            await self.service.control_to_target_pixel(
+                320,
+                300,
+                target_vertical_relation="same_y",
+            )
+
+    async def test_agent_receives_high_detail_top_left_coordinate_contract(self):
+        image_part = ToolImage("anBlZw==", "image/jpeg").openai_content_part()
+        instruction = ToolCallingSession._rgb_coordinate_instruction(
+            {
+                "camera": {
+                    "width": 640,
+                    "height": 480,
+                    "grasp_point_pixel": {"x": 320, "y": 147},
+                }
+            }
+        )
+
+        self.assertEqual(image_part["image_url"]["detail"], "high")
+        self.assertIn("左上角(0,0)", instruction)
+        self.assertIn("Y向下增大", instruction)
+        self.assertIn("320", instruction)
 
     async def test_final_alignment_automatically_descends_grips_and_homes(self):
         fake = SimpleNamespace(

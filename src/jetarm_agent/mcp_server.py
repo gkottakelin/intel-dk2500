@@ -11,7 +11,7 @@ import logging
 import math
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 from .arm_control import (
     DEFAULT_DESCENT_RECALIBRATION_CM,
@@ -63,6 +63,7 @@ class JetArmMCPService:
         self._controller: JetArmToolController | None = None
         self._configured_grasp_point_pixel: dict[str, Any] | None = None
         self._last_grasp_point_pixel: dict[str, Any] | None = None
+        self._last_rgb_frame_size: tuple[int, int] | None = None
         self._grasp_final_phase = False
         self._gripper_prepared_for_grasp = False
         self._awaiting_grasp_visual_confirmation = False
@@ -217,6 +218,73 @@ class JetArmMCPService:
                 f"point=({x:g}, {y:g}), image={width}x{height}"
             )
         return dict(point)
+
+    @staticmethod
+    def _pixel_vertical_relation(target_y: float, grasp_y: float) -> str:
+        if target_y < grasp_y - 2.0:
+            return "above"
+        if target_y > grasp_y + 2.0:
+            return "below"
+        return "same_y"
+
+    def _normalize_agent_target_y(
+        self,
+        target_y: float,
+        grasp_y: float,
+        declared_relation: str | None,
+    ) -> tuple[float, dict[str, Any]]:
+        received_y = float(target_y)
+        if declared_relation is None:
+            return received_y, {
+                "coordinate_origin": "top_left",
+                "y_axis_direction": "down",
+                "declared_vertical_relation": None,
+                "normalization": "compatibility_no_relation_check",
+                "received_target_y": received_y,
+                "normalized_target_y": received_y,
+            }
+        relation = str(declared_relation).strip().lower()
+        if relation not in {"above", "below", "same_y"}:
+            raise RuntimeError(
+                "target_vertical_relation必须是above、below或same_y"
+            )
+        direct_relation = self._pixel_vertical_relation(received_y, grasp_y)
+        if direct_relation == relation:
+            return received_y, {
+                "coordinate_origin": "top_left",
+                "y_axis_direction": "down",
+                "declared_vertical_relation": relation,
+                "numeric_vertical_relation": direct_relation,
+                "normalization": "none_top_left_y_down_confirmed",
+                "received_target_y": received_y,
+                "normalized_target_y": received_y,
+            }
+        if self._last_rgb_frame_size is None:
+            raise RuntimeError(
+                "没有最新RGB原图尺寸，无法校验Agent目标Y坐标方向"
+            )
+        _width, height = self._last_rgb_frame_size
+        candidates = [float(height) - received_y, float(height - 1) - received_y]
+        for candidate in candidates:
+            if (
+                0.0 <= candidate < float(height)
+                and self._pixel_vertical_relation(candidate, grasp_y) == relation
+            ):
+                return candidate, {
+                    "coordinate_origin": "top_left",
+                    "y_axis_direction": "down",
+                    "declared_vertical_relation": relation,
+                    "numeric_vertical_relation_before": direct_relation,
+                    "numeric_vertical_relation_after": relation,
+                    "normalization": "bottom_origin_y_up_converted_to_top_left_y_down",
+                    "received_target_y": received_y,
+                    "normalized_target_y": candidate,
+                    "image_height": height,
+                }
+        raise RuntimeError(
+            "Agent目标Y坐标与其声明的上下关系矛盾，且无法按原图高度安全转换："
+            f"target_y={received_y:g}, grasp_y={grasp_y:g}, relation={relation}"
+        )
 
     async def set_gripper_position(
         self,
@@ -461,6 +529,7 @@ class JetArmMCPService:
         speed_saturation_px: float = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
         final_alignment_threshold_cm: float | None = None,
         final_grasp_height_cm: float | None = None,
+        target_vertical_relation: str | None = None,
     ) -> dict[str, Any]:
         if self._awaiting_grasp_visual_confirmation:
             raise RuntimeError(
@@ -481,6 +550,11 @@ class JetArmMCPService:
             raise RuntimeError(
                 "未输入抓取点像素；请在Agent抓取调用前先设置抓取点x/y"
             )
+        normalized_target_y, coordinate_validation = self._normalize_agent_target_y(
+            target_y,
+            float(resolved_grasp_y),
+            target_vertical_relation,
+        )
         if not self._gripper_prepared_for_grasp:
             await self.controller().set_gripper_position(
                 DEFAULT_GRIPPER_RELEASE_POSITION,
@@ -501,7 +575,7 @@ class JetArmMCPService:
             kwargs["final_grasp_height_cm"] = float(final_grasp_height_cm)
         result = await self.controller().control_to_target_pixel(
             target_x,
-            target_y,
+            normalized_target_y,
             resolved_grasp_x,
             resolved_grasp_y,
             **kwargs,
@@ -515,7 +589,12 @@ class JetArmMCPService:
         result["agent_grasp_workflow"] = "manual_pixel_test_v2"
         result["camera_vector_version"] = "v2"
         result["progress_check_enabled"] = False
-        record = self._record_grasp_step(target_x, target_y, result)
+        result["agent_target_pixel_received"] = {
+            "x": round(float(target_x), 3),
+            "y": round(float(target_y), 3),
+        }
+        result["target_coordinate_validation"] = coordinate_validation
+        record = self._record_grasp_step(target_x, normalized_target_y, result)
         if result.get("status") != "ok":
             return self._attach_grasp_step_records(result, [record])
         if result.get("controller_decision") != "aligned_hold":
@@ -525,7 +604,9 @@ class JetArmMCPService:
             result["final_alignment_phase"] = True
             result["requires_new_target_pixel"] = True
             return self._attach_grasp_step_records(result, [record])
-        return await self._complete_final_grasp(target_x, target_y, result)
+        return await self._complete_final_grasp(
+            target_x, normalized_target_y, result
+        )
 
     def close(self) -> None:
         if self._controller is not None:
@@ -601,6 +682,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
         service._last_grasp_point_pixel = (
             dict(grasp_point_pixel) if grasp_point_pixel is not None else None
         )
+        service._last_rgb_frame_size = (int(frame.width), int(frame.height))
         result["camera"] = {
             "status": "ok",
             "device": service.devices.rgb_camera,
@@ -765,8 +847,9 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     @mcp.tool(
         description=(
             "Manual-pixel-test V2 grasp workflow with progress detection disabled. "
-            "The Agent must supply only the center pixel target_x/target_y of the "
-            "requested object from the latest RGB image. The controller uses the "
+            "The Agent must supply the center pixel target_x/target_y of the requested "
+            "object using top-left origin, X-right, Y-down original-image coordinates, "
+            "plus target_vertical_relation=above/below/same_y for validation. The controller uses the "
             "user-entered grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (40/25/13/8 px), performs V2 front/back/left/right "
             "alignment with a height-linear px/cm scale "
@@ -781,11 +864,13 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     async def control_jetarm_to_target_pixel(
         target_x: float,
         target_y: float,
+        target_vertical_relation: Literal["above", "below", "same_y"],
     ) -> Any:
         return content_result(
             await service.control_to_target_pixel(
                 target_x,
                 target_y,
+                target_vertical_relation=target_vertical_relation,
             )
         )
 

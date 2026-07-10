@@ -134,7 +134,7 @@ class ToolCallingSession:
                 }
             )
             if images:
-                self._append_latest_images(turn, images)
+                self._append_latest_images(turn, images, observation=result)
             if selected_tool_name == RGB_CAMERA_TOOL:
                 fresh_rgb_observation = self._successful_rgb_result(result, images)
 
@@ -181,6 +181,7 @@ class ToolCallingSession:
                 return ToolAgentResult(answer, tuple(executed))
 
             latest_images: tuple[ToolImage, ...] = ()
+            latest_image_observation: object | None = None
             motion_call_seen = False
             successful_motion = False
             rgb_was_visible_to_model = fresh_rgb_observation
@@ -255,9 +256,14 @@ class ToolCallingSession:
                 )
                 if images:
                     latest_images = images
+                    latest_image_observation = result
 
             if latest_images:
-                self._append_latest_images(turn, latest_images)
+                self._append_latest_images(
+                    turn,
+                    latest_images,
+                    observation=latest_image_observation,
+                )
 
             if successful_motion and camera_tool_available:
                 camera_call_id = f"auto-rgb-after-motion-{len(executed)}"
@@ -300,7 +306,7 @@ class ToolCallingSession:
                 )
                 fresh_rgb_observation = self._successful_rgb_result(result, images)
                 if images:
-                    self._append_latest_images(turn, images)
+                    self._append_latest_images(turn, images, observation=result)
 
             tool_choice = "auto" if allow_additional_tools else "none"
 
@@ -356,7 +362,11 @@ class ToolCallingSession:
         messages[:] = retained
 
     def _append_latest_images(
-        self, turn: list[dict[str, Any]], images: tuple[ToolImage, ...]
+        self,
+        turn: list[dict[str, Any]],
+        images: tuple[ToolImage, ...],
+        *,
+        observation: object | None = None,
     ) -> None:
         self._remove_images(self.history)
         self._remove_images(turn)
@@ -369,11 +379,35 @@ class ToolCallingSession:
                         "text": (
                             "这是JetArm单路RGB相机刚刚返回的最新画面；"
                             "与它对应的抓取点坐标和相机姿态位于紧邻的工具结果arm_pose中。"
+                            + self._rgb_coordinate_instruction(observation)
                         ),
                     },
                     *(image.openai_content_part() for image in images),
                 ],
             }
+        )
+
+    @staticmethod
+    def _rgb_coordinate_instruction(observation: object | None) -> str:
+        camera = (
+            observation.get("camera")
+            if isinstance(observation, dict)
+            else None
+        )
+        if not isinstance(camera, dict):
+            return (
+                "像素坐标必须使用原图左上角为(0,0)、X向右、Y向下的标准图像坐标。"
+            )
+        width = camera.get("width")
+        height = camera.get("height")
+        grasp = camera.get("grasp_point_pixel")
+        return (
+            f"原始图像尺寸={width}x{height}；"
+            "坐标原点严格为左上角(0,0)，X向右增大，Y向下增大；"
+            f"用户抓取点像素={grasp}。"
+            "目标物品在抓取点上方时target_y必须小于抓取点y，"
+            "在下方时target_y必须大于抓取点y；"
+            "禁止使用左下角原点、Y向上坐标、缩放后坐标或上下翻转坐标。"
         )
 
     def _trim_history(self) -> None:

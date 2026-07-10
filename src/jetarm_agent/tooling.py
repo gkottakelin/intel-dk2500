@@ -26,7 +26,7 @@ class ToolImage:
             "type": "image_url",
             "image_url": {
                 "url": f"data:{self.mime_type};base64,{self.data}",
-                "detail": "low",
+                "detail": "high",
             },
         }
 

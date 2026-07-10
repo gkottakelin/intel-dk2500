@@ -231,6 +231,16 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
 
 
 def _print_agent_grasp_step_records(result: dict[str, object]) -> None:
+    coordinate_validation = result.get("target_coordinate_validation")
+    if isinstance(coordinate_validation, dict) and coordinate_validation.get(
+        "normalization"
+    ) == "bottom_origin_y_up_converted_to_top_left_y_down":
+        print(
+            "Agent目标Y坐标已修正 | "
+            f"收到={coordinate_validation.get('received_target_y')} | "
+            f"修正后={coordinate_validation.get('normalized_target_y')} | "
+            "原因=检测到左下角原点/Y向上坐标，已转换为左上角原点/Y向下"
+        )
     raw_records = result.get("new_grasp_step_records")
     if not isinstance(raw_records, list):
         record = result.get("grasp_step_record")
