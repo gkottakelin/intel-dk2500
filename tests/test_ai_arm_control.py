@@ -439,9 +439,14 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
     def test_manual_pixel_v2_has_independent_mode_and_fixed_default_grasp_point(self):
         args = build_parser().parse_args(["--manual-pixel-test-v2"])
+        disabled_args = build_parser().parse_args(
+            ["--manual-pixel-test-v2", "--manual-progress-check", "off"]
+        )
 
         self.assertTrue(args.manual_pixel_test_v2)
         self.assertFalse(args.manual_pixel_test)
+        self.assertEqual(args.manual_progress_check, "on")
+        self.assertEqual(disabled_args.manual_progress_check, "off")
         self.assertEqual(DEFAULT_MANUAL_GRASP_X, 320.0)
         self.assertEqual(DEFAULT_MANUAL_GRASP_Y, 147.0)
         self.assertEqual(CAMERA_VECTOR_VERSION, "v2")
@@ -462,6 +467,25 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.camera_vector_version, "v2")
         self.assertEqual(config.max_distance_cm, 100.0)
         self.assertTrue(config.allow_extended_distance)
+        self.assertTrue(config.manual_progress_check_enabled)
+
+    def test_manual_pixel_config_can_disable_progress_check(self):
+        args = build_parser().parse_args(
+            [
+                "--manual-pixel-test-v2",
+                "--arm-mode",
+                "dry-run",
+                "--manual-progress-check",
+                "off",
+            ]
+        )
+
+        config = _resolve_manual_pixel_arm_config(
+            args,
+            camera_vector_version="v2",
+        )
+
+        self.assertFalse(config.manual_progress_check_enabled)
 
     async def test_v2_controller_reuses_pixel_parameters_with_v2_motion_runtime(self):
         controller = JetArmToolController(
@@ -773,6 +797,43 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["status"], "error")
             self.assertEqual(result["estimated_distance_cm"], 0.0)
             self.assertIn("forced no progress", result["error"])
+        finally:
+            controller.close()
+
+    async def test_disabled_progress_check_records_executed_v2_error_and_continues(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+                manual_progress_check_enabled=False,
+            )
+        )
+        try:
+            executor = controller.terminal.execute_terminal_motion
+
+            async def executed_with_progress_error(*args, **kwargs):
+                result = await executor(*args, **kwargs)
+                self.assertGreater(result["steps"], 0)
+                result["status"] = "error"
+                result["error"] = "forced feedback progress rejection"
+                return result
+
+            with patch.object(
+                controller.terminal,
+                "execute_terminal_motion",
+                side_effect=executed_with_progress_error,
+            ):
+                result = await controller.move_tcp("forward", 0.1, 1.0)
+
+            self.assertEqual(result["status"], "ok")
+            judgement = result["progress_judgement"]
+            self.assertFalse(judgement["enabled"])
+            self.assertTrue(judgement["bypassed"])
+            self.assertEqual(
+                judgement["warning"], "forced feedback progress rejection"
+            )
         finally:
             controller.close()
 

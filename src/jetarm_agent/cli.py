@@ -101,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="人工像素测试抓取点y；V1默认图像中心，V2默认147",
     )
+    parser.add_argument(
+        "--manual-progress-check",
+        choices=("on", "off"),
+        default="on",
+        help="人工像素测试有效进展检测开关，默认on；off时只记录进展异常",
+    )
     return parser
 
 
@@ -311,6 +317,16 @@ def _print_motion_step_diagnostics(result: dict[str, object]) -> None:
                     if isinstance(progress_judgement, dict)
                     else result.get("status") == "ok"
                 ),
+                "progress_check_enabled": (
+                    progress_judgement.get("enabled")
+                    if isinstance(progress_judgement, dict)
+                    else True
+                ),
+                "progress_check_warning": (
+                    progress_judgement.get("warning")
+                    if isinstance(progress_judgement, dict)
+                    else None
+                ),
                 "no_progress_reasons": reasons,
             }
         ]
@@ -322,11 +338,21 @@ def _print_motion_step_diagnostics(result: dict[str, object]) -> None:
         if original is None and expected is None and actual is None:
             continue
         effective = bool(step.get("effective"))
+        progress_check_enabled = step.get("progress_check_enabled", True) is not False
+        progress_check_warning = step.get("progress_check_warning")
         reasons = [str(item) for item in step.get("no_progress_reasons", [])]
-        if not effective and not reasons:
+        if not progress_check_enabled:
+            reason_text = "检测已关闭（本步不判定）"
+            if progress_check_warning:
+                reason_text += f"；记录={progress_check_warning}"
+            if reasons:
+                reason_text += "；安全/运动错误=" + "；".join(reasons)
+        elif not effective and not reasons:
             fallback = result.get("error")
             reasons = [str(fallback or "运动结果未通过有效进展判定")]
-        reason_text = "无（本步有效）" if effective else "；".join(reasons)
+            reason_text = "；".join(reasons)
+        else:
+            reason_text = "无（本步有效）" if effective else "；".join(reasons)
         print(
             f"运动步骤{step.get('step', 1)} | "
             f"原本抓取点XYZ={original} | "
@@ -347,6 +373,12 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     angle_segment = f" | {angle_text}" if angle_text else ""
     pose_segment = ""
     progress_segment = ""
+    progress_judgement = result.get("progress_judgement")
+    if (
+        isinstance(progress_judgement, dict)
+        and progress_judgement.get("enabled") is False
+    ):
+        progress_segment = " | 有效进展检测=关闭"
     pose_constraint = result.get("camera_pose_constraint")
     if isinstance(pose_constraint, dict) and pose_constraint.get("relaxed"):
         reason = pose_constraint.get("reason") or pose_constraint.get("reasons")
@@ -368,13 +400,13 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
         )
     ):
         if progress_validation.get("rule") == "manual_v2_relaxed_vertical_progress":
-            progress_segment = (
+            progress_segment += (
                 " | 竖直进展=放宽接受"
                 f"（|ΔZ|={progress_validation.get('z_change_cm')}cm，"
                 f"XY={progress_validation.get('xy_change_cm')}cm）"
             )
         else:
-            progress_segment = (
+            progress_segment += (
                 " | 水平进展=放宽接受"
                 f"（XY={progress_validation.get('xy_change_cm')}cm，"
                 f"|ΔZ|={progress_validation.get('z_change_cm')}cm，"
@@ -461,6 +493,9 @@ def _resolve_manual_pixel_arm_config(
         max_distance_cm=100.0,
         allow_extended_distance=True,
         camera_vector_version=camera_vector_version,
+        manual_progress_check_enabled=(
+            getattr(args, "manual_progress_check", "on") == "on"
+        ),
     )
 
 
@@ -538,6 +573,14 @@ async def _run_manual_pixel_test(
         print(
             f"模拟图像: {args.manual_image_width}x{args.manual_image_height}, "
             f"固定抓取点像素=({grasp_x:g}, {grasp_y:g})"
+        )
+        print(
+            "有效进展检测: "
+            + (
+                "开启"
+                if arm_config.manual_progress_check_enabled
+                else "关闭（异常仍输出但不作为中止条件）"
+            )
         )
         print(
             f"J6已保持松开: {release['target_position']}；"

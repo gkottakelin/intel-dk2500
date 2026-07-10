@@ -189,6 +189,7 @@ class ArmControlConfig:
     max_speed_cm_s: float = MAX_TCP_SPEED_CM_S
     max_motor_duration_s: float = 2.0
     camera_vector_version: str = "v1"
+    manual_progress_check_enabled: bool = True
 
     def validate(self) -> None:
         if self.mode not in {"dry-run", "hardware"}:
@@ -222,6 +223,8 @@ class ArmControlConfig:
                 "camera_vector_version必须是v1或v2，收到: "
                 f"{self.camera_vector_version}"
             )
+        if not isinstance(self.manual_progress_check_enabled, bool):
+            raise ArmControlError("manual_progress_check_enabled必须是布尔值")
 
 
 def _load_terminal_module(camera_vector_version: str = "v1") -> Any:
@@ -792,6 +795,9 @@ class JetArmToolController:
         horizontal_motion = direction in horizontal_directions
         horizontal_progress_validation: dict[str, Any] | None = None
         vertical_progress_validation: dict[str, Any] | None = None
+        progress_check_enabled = self.config.manual_progress_check_enabled
+        progress_check_bypassed = False
+        progress_check_warning: str | None = None
         if (
             self.config.camera_vector_version == "v2"
             and horizontal_motion
@@ -812,6 +818,7 @@ class JetArmToolController:
                 if v2_terminal_result is not None
                 else None
             )
+            horizontal_progress_validation["enabled"] = progress_check_enabled
         elif self.config.camera_vector_version == "v2" and direction in {
             "up",
             "down",
@@ -831,6 +838,7 @@ class JetArmToolController:
                 if v2_terminal_result is not None
                 else None
             )
+            vertical_progress_validation["enabled"] = progress_check_enabled
         relaxed_progress_validation = (
             horizontal_progress_validation or vertical_progress_validation
         )
@@ -841,8 +849,15 @@ class JetArmToolController:
             and v2_terminal_result is not None
             and v2_terminal_result.get("status") != "ok"
         ):
-            if (
-                relaxed_progress_validation is not None
+            if not progress_check_enabled and steps > 0:
+                progress_check_bypassed = True
+                progress_check_warning = str(
+                    v2_terminal_result.get("error")
+                    or "V2运动反馈未通过原有效进展检测"
+                )
+            elif (
+                progress_check_enabled
+                and relaxed_progress_validation is not None
                 and relaxed_progress_validation["accepted"]
             ):
                 relaxed_progress_validation["overrode_v2_error"] = True
@@ -854,6 +869,7 @@ class JetArmToolController:
                 )
         elif (
             self.config.camera_vector_version == "v2"
+            and progress_check_enabled
             and distance_cm > 0.0
             and estimated_distance <= 1e-6
         ):
@@ -963,7 +979,12 @@ class JetArmToolController:
             ),
             "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(grasp_after_cm),
             "progress_judgement": {
-                "effective": motion_status == "ok",
+                "enabled": progress_check_enabled,
+                "effective": (
+                    motion_status == "ok" if progress_check_enabled else None
+                ),
+                "bypassed": progress_check_bypassed,
+                "warning": progress_check_warning,
                 "no_progress_reasons": no_progress_reasons,
             },
             "estimated_delta_cm": {
@@ -1499,6 +1520,12 @@ class JetArmToolController:
                         "grasp_point_xyz_after_cm"
                     ),
                     "effective": result.get("status") == "ok",
+                    "progress_check_enabled": self.config.manual_progress_check_enabled,
+                    "progress_check_warning": (
+                        progress_judgement.get("warning")
+                        if isinstance(progress_judgement, Mapping)
+                        else None
+                    ),
                     "no_progress_reasons": step_reasons,
                 }
             )
