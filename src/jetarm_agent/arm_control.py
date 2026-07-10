@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .tooling import ToolDefinition, ToolRegistry
 
 
@@ -525,10 +527,10 @@ class JetArmToolController:
         *,
         collect_tcp_samples: bool = False,
     ) -> dict[str, Any]:
-        """Execute one Cartesian segment by driving the runtime's joystick and
-        tick loop, exactly as the camera_vector GUI terminal does."""
+        """Execute one Cartesian segment through the selected terminal runtime."""
 
-        self._refresh_hardware_positions()
+        if self.config.camera_vector_version != "v2":
+            self._refresh_hardware_positions()
         start_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
         horizontal_directions = {"forward", "backward", "left", "right"}
         duration_s = distance_cm / speed_cm_s
@@ -536,6 +538,7 @@ class JetArmToolController:
         steps = 0
         tcp_samples: list[dict[str, Any]] = []
         terminal_input_status: dict[str, Any] | None = None
+        v2_terminal_result: dict[str, Any] | None = None
 
         def append_current_tcp_sample(source: str) -> None:
             if not collect_tcp_samples:
@@ -574,6 +577,10 @@ class JetArmToolController:
                 real_time=self.config.mode == "hardware",
                 sleep=self.sleep,
                 collect_tcp_samples=collect_tcp_samples,
+            )
+            v2_terminal_result = dict(terminal_result)
+            start_tcp = np.asarray(
+                v2_terminal_result["start_grasp_point_m"], dtype=float
             )
             terminal_input_status = dict(terminal_result["terminal_input"])
             direction_unit = tuple(
@@ -643,17 +650,35 @@ class JetArmToolController:
             finally:
                 self._stop_cartesian()
 
-        if self.config.mode == "hardware":
+        if (
+            self.config.mode == "hardware"
+            and self.config.camera_vector_version != "v2"
+        ):
             await self.sleep(0.05)
             self._refresh_hardware_positions()
-        end_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
+        if v2_terminal_result is not None:
+            end_tcp = np.asarray(
+                v2_terminal_result["actual_grasp_point_m"], dtype=float
+            )
+        else:
+            end_tcp = self.runtime.model.tcp(self.runtime.positions).copy()
         camera_pose_after_move = self._camera_pose()
-        camera_angle_before_deg = float(
-            camera_reference_before_move["line_of_sight_angle_from_vertical_deg"]
-        )
-        camera_angle_after_deg = float(
-            camera_pose_after_move["line_of_sight_angle_from_vertical_deg"]
-        )
+        if v2_terminal_result is not None:
+            camera_angle_before_deg = float(
+                v2_terminal_result["target_camera_line_angle_deg"]
+            )
+            camera_angle_after_deg = float(
+                v2_terminal_result["actual_camera_line_angle_deg"]
+            )
+        else:
+            camera_angle_before_deg = float(
+                camera_reference_before_move[
+                    "line_of_sight_angle_from_vertical_deg"
+                ]
+            )
+            camera_angle_after_deg = float(
+                camera_pose_after_move["line_of_sight_angle_from_vertical_deg"]
+            )
         line_before = camera_reference_before_move["view_up_unit_base"]
         line_after = camera_pose_after_move["view_up_unit_base"]
         line_dot = (
@@ -670,6 +695,16 @@ class JetArmToolController:
         motion_status = "ok"
         motion_error: str | None = None
         if (
+            self.config.camera_vector_version == "v2"
+            and v2_terminal_result is not None
+            and v2_terminal_result.get("status") != "ok"
+        ):
+            motion_status = "error"
+            motion_error = str(
+                v2_terminal_result.get("error")
+                or "V2 absolute grasp-point motion failed"
+            )
+        elif (
             self.config.camera_vector_version == "v2"
             and distance_cm > 0.0
             and estimated_distance <= 1e-6
@@ -701,14 +736,37 @@ class JetArmToolController:
             "speed_cm_s": speed_cm_s,
             "estimated_distance_cm": round(estimated_distance, 3),
             "motion_loop": (
-                "camera_vector_terminal_v2_terminal_input"
+                str(v2_terminal_result.get("execution_path"))
                 if self.config.camera_vector_version == "v2"
+                and v2_terminal_result is not None
                 else "camera_vector_continuous_command"
             ),
             "terminal_input": terminal_input_status,
             "terminal_hold_duration_s": duration_s,
+            "v2_motion_workflow": (
+                v2_terminal_result.get("workflow")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "v2_motion_plan": (
+                v2_terminal_result.get("motion_plan")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "v2_returned_camera_line_angle_deg": (
+                v2_terminal_result.get("actual_camera_line_angle_deg")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "v2_feedback_corrections": (
+                v2_terminal_result.get("feedback_corrections")
+                if v2_terminal_result is not None
+                else None
+            ),
             "feedback_read_policy": (
-                "before_and_after_motion"
+                "v2_executor_start_and_verified_final_feedback"
+                if v2_terminal_result is not None
+                else "before_and_after_motion"
                 if self.config.mode == "hardware"
                 else "dry_run_command_integrated"
             ),
@@ -988,9 +1046,13 @@ class JetArmToolController:
                 "controller_decision": "horizontal_align",
                 "target_pixel": {"x": target_px, "y": target_py},
                 "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
-                "grasp_point_before_cm": tcp_before,
+                "grasp_point_before_cm": result.get(
+                    "grasp_point_before_cm", tcp_before
+                ),
                 "grasp_point_after_cm": result.get("grasp_point_after_cm"),
-                "grasp_point_xyz_before_cm": xyz_before,
+                "grasp_point_xyz_before_cm": result.get(
+                    "grasp_point_xyz_before_cm", xyz_before
+                ),
                 "grasp_point_xyz_after_cm": result.get("grasp_point_xyz_after_cm"),
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
@@ -1074,9 +1136,37 @@ class JetArmToolController:
             DESCENT_SPEED_CM_S,
             collect_tcp_samples=True,
         )
-        self._refresh_hardware_positions()
-        tcp_after = self._current_tcp_cm()
-        xyz_after = self._grasp_point_xyz_cm(tcp_after)
+        if self.config.camera_vector_version == "v2":
+            reported_after = result.get("grasp_point_after_cm")
+            reported_xyz_after = result.get("grasp_point_xyz_after_cm")
+            reported_before = result.get("grasp_point_before_cm")
+            reported_xyz_before = result.get("grasp_point_xyz_before_cm")
+            tcp_after = (
+                dict(reported_after)
+                if isinstance(reported_after, Mapping)
+                else self._current_tcp_cm()
+            )
+            xyz_after = (
+                dict(reported_xyz_after)
+                if isinstance(reported_xyz_after, Mapping)
+                else self._grasp_point_xyz_cm(tcp_after)
+            )
+            move_tcp_before = (
+                dict(reported_before)
+                if isinstance(reported_before, Mapping)
+                else tcp_before
+            )
+            move_xyz_before = (
+                dict(reported_xyz_before)
+                if isinstance(reported_xyz_before, Mapping)
+                else xyz_before
+            )
+        else:
+            self._refresh_hardware_positions()
+            tcp_after = self._current_tcp_cm()
+            xyz_after = self._grasp_point_xyz_cm(tcp_after)
+            move_tcp_before = tcp_before
+            move_xyz_before = xyz_before
         return {
             **result,
             "action": "controller_pixel_align_and_descend",
@@ -1086,11 +1176,11 @@ class JetArmToolController:
             "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
             "target_pixel": {"x": target_px, "y": target_py},
             "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
-            "grasp_point_before_cm": tcp_before,
+            "grasp_point_before_cm": move_tcp_before,
             "grasp_point_after_cm": tcp_after,
-            "grasp_point_xyz_before_cm": xyz_before,
+            "grasp_point_xyz_before_cm": move_xyz_before,
             "grasp_point_xyz_after_cm": xyz_after,
-            "height_before_cm": height_cm,
+            "height_before_cm": move_tcp_before["up_z"],
             "height_after_cm": tcp_after["up_z"],
             "height_source": "joint_feedback_fk",
             "dynamic_tolerance_px": tolerance,
@@ -1183,8 +1273,16 @@ class JetArmToolController:
                 "down", effective_cm, speed_cm_s, collect_tcp_samples=True
             )
             record_pose_relaxation(result)
-            self._refresh_hardware_positions()
-            after = self._current_tcp_cm()
+            if self.config.camera_vector_version == "v2":
+                reported_after = result.get("grasp_point_after_cm")
+                after = (
+                    dict(reported_after)
+                    if isinstance(reported_after, Mapping)
+                    else self._current_tcp_cm()
+                )
+            else:
+                self._refresh_hardware_positions()
+                after = self._current_tcp_cm()
             current_height = after["up_z"]
             heights.append(current_height)
             steps += 1

@@ -260,6 +260,9 @@ def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
 
 def _extract_camera_grasp_vertical_angle(result: dict[str, object]) -> float | None:
     """Extract the camera-grasp line angle from vertical from a move result dict."""
+    v2_angle = result.get("v2_returned_camera_line_angle_deg")
+    if isinstance(v2_angle, (int, float)):
+        return float(v2_angle)
     for key in ("camera_pose_after_move", "camera_pose_before_move"):
         camera_pose = result.get(key)
         if isinstance(camera_pose, dict):

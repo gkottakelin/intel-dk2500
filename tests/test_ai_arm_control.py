@@ -320,6 +320,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             "height_after_cm": 6.0,
             "pixel_error": {"dx": 0.0, "dy": 0.0},
             "dynamic_tolerance_px": 13.0,
+            "v2_returned_camera_line_angle_deg": 12.3,
+            "camera_pose_after_move": {
+                "line_of_sight_angle_from_vertical_deg": 99.0,
+            },
             "camera_pose_constraint": {
                 "relaxed": True,
                 "reason": "V2严格姿态目标超出工作空间或关节限位",
@@ -335,6 +339,8 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("仅下降", text)
         self.assertIn("关节限位", text)
         self.assertIn("步数=3", text)
+        self.assertIn("12.3°", text)
+        self.assertNotIn("99.0°", text)
 
     def test_manual_pixel_arm_config_uses_hardware_device_config(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -396,12 +402,18 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         try:
             state = await controller.state()
             parameters = state["arm_parameters"]["vision_guided_grasp"]
-            result = await controller.control_to_target_pixel(
-                370,
-                147,
-                DEFAULT_MANUAL_GRASP_X,
-                DEFAULT_MANUAL_GRASP_Y,
-            )
+            terminal_executor = controller.terminal.execute_terminal_motion
+            with patch.object(
+                controller.terminal,
+                "execute_terminal_motion",
+                new=AsyncMock(wraps=terminal_executor),
+            ) as execute_spy:
+                result = await controller.control_to_target_pixel(
+                    370,
+                    147,
+                    DEFAULT_MANUAL_GRASP_X,
+                    DEFAULT_MANUAL_GRASP_Y,
+                )
 
             self.assertEqual(controller.terminal.__name__, "camera_vector_terminal_v2")
             self.assertEqual(type(controller.runtime).__name__, "CameraVectorV2Runtime")
@@ -413,9 +425,24 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["direction"], "right")
             self.assertEqual(
                 result["motion_loop"],
-                "camera_vector_terminal_v2_terminal_input",
+                "camera_vector_terminal_v2_absolute_grasp_target",
             )
             self.assertEqual(result["terminal_input"]["direction"], "right")
+            execute_spy.assert_awaited_once()
+            self.assertIs(
+                execute_spy.await_args.args[0],
+                controller.runtime,
+            )
+            self.assertEqual(execute_spy.await_args.kwargs["direction"], "right")
+            self.assertAlmostEqual(
+                execute_spy.await_args.kwargs["duration_s"],
+                result["requested_distance_cm"] / result["speed_cm_s"],
+            )
+            self.assertAlmostEqual(
+                result["v2_returned_camera_line_angle_deg"],
+                result["camera_line_angle_hold"]["actual_after_deg"],
+                places=3,
+            )
             self.assertAlmostEqual(
                 result["terminal_hold_duration_s"],
                 result["requested_distance_cm"] / result["speed_cm_s"],
@@ -431,6 +458,47 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         finally:
             controller.close()
 
+    async def test_manual_v2_motion_matches_direct_v2_executor(self):
+        config = ArmControlConfig(
+            mode="dry-run",
+            max_distance_cm=100.0,
+            allow_extended_distance=True,
+            camera_vector_version="v2",
+        )
+        manual = JetArmToolController(config)
+        direct = JetArmToolController(config)
+        try:
+            manual_result = await manual.control_to_target_pixel(
+                370,
+                147,
+                DEFAULT_MANUAL_GRASP_X,
+                DEFAULT_MANUAL_GRASP_Y,
+            )
+            direct_result = await direct.terminal.execute_terminal_motion(
+                direct.runtime,
+                direction=manual_result["direction"],
+                speed_cm_s=manual_result["speed_cm_s"],
+                duration_s=manual_result["terminal_hold_duration_s"],
+                real_time=False,
+            )
+
+            self.assertEqual(
+                manual_result["v2_motion_plan"]["target_grasp_point_m"],
+                direct_result["target_grasp_point_m"],
+            )
+            self.assertEqual(
+                manual_result["v2_motion_plan"]["target_joint_positions"],
+                direct_result["target_joint_positions"],
+            )
+            self.assertAlmostEqual(
+                manual_result["v2_returned_camera_line_angle_deg"],
+                direct_result["actual_camera_line_angle_deg"],
+                places=9,
+            )
+        finally:
+            manual.close()
+            direct.close()
+
     async def test_v2_zero_progress_is_reported_as_error(self):
         controller = JetArmToolController(
             ArmControlConfig(
@@ -441,16 +509,26 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         try:
+            rejected_plan = {
+                "accepted": False,
+                "strict_pose": True,
+                "relaxed": False,
+                "message": "forced no progress",
+                "target_joint_positions": dict(controller.runtime.positions),
+                "target_camera_line_angle_deg": (
+                    controller.runtime.camera_line_vertical_angle_deg()
+                ),
+            }
             with patch.object(
                 controller.runtime,
-                "step_cartesian",
-                return_value=True,
+                "plan_grasp_target",
+                return_value=rejected_plan,
             ):
                 result = await controller.move_tcp("forward", 0.1, 1.0)
 
             self.assertEqual(result["status"], "error")
             self.assertEqual(result["estimated_distance_cm"], 0.0)
-            self.assertIn("无有效进展", result["error"])
+            self.assertIn("forced no progress", result["error"])
         finally:
             controller.close()
 
