@@ -173,6 +173,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["sequence"], ["home", "open_j6_to_350"])
         self.assertEqual(result["j6_target_position"], 350)
+        self.assertEqual(result["home"]["joint_positions"]["J5"], 500)
         self.assertEqual(
             self.controller.controller.move_calls[-1],
             (self.controller.settings.servo_id("J6"), 350, 500),
@@ -1063,7 +1064,11 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         stopped = await self.controller.stop_all()
         state = await self.controller.state()
 
-        self.assertEqual(home["joint_positions"], {"J1": 500, "J2": 410, "J3": 800, "J4": 800})
+        self.assertEqual(
+            home["joint_positions"],
+            {"J1": 500, "J2": 410, "J3": 800, "J4": 800, "J5": 500},
+        )
+        self.assertEqual(home["j5_home_position"], 500)
         self.assertEqual(stopped["action"], "stop_all")
         self.assertIn("tcp_cm", state)
         self.assertGreater(
@@ -1115,6 +1120,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             for servo_id, _target, _run_time in self.controller.controller.move_calls
         }
         self.assertEqual(home_servo_ids, {1, 2, 3, 4, 5})
+        self.assertIn(
+            (5, 500, self.controller.settings.home_run_time_ms),
+            self.controller.controller.move_calls,
+        )
 
     async def test_camera_relative_up_rotates_with_current_pose(self):
         self.controller.runtime.positions["J4"] -= 100

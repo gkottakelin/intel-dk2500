@@ -1788,11 +1788,18 @@ class JetArmToolController:
         if self.config.mode == "hardware":
             await self.sleep(self.settings.home_run_time_ms / 1000.0)
             self._refresh_hardware_positions()
+        home_joint_positions = dict(self.runtime.positions)
+        if "J5" in self.settings.home:
+            # J5 is not part of the J1-J4 Cartesian state dictionary, but the
+            # shared terminal Home action does issue its configured position
+            # command. Include that commanded Home position in the result.
+            home_joint_positions["J5"] = int(self.settings.home["J5"])
         return {
             "status": "ok",
             "mode": self.config.mode,
             "action": "home",
-            "joint_positions": dict(self.runtime.positions),
+            "joint_positions": home_joint_positions,
+            "j5_home_position": int(self.settings.home["J5"]),
         }
 
     async def initialize_for_agent(self) -> dict[str, Any]:
