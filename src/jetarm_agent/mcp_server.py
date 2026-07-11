@@ -671,12 +671,10 @@ class JetArmMCPService:
             normalized_target_x, normalized_target_y, result
         )
 
-    async def detect_red_block_target(self) -> tuple[dict[str, Any], RGBJpegFrame | None]:
-        """Capture a fresh RGB frame and auto-detect the largest red block.
+    async def _detect_red_block(self) -> dict[str, Any]:
+        """Capture a frame and detect the largest red block (internal).
 
-        Returns a result dict and optionally an annotated JPEG of the frame.
-        When no red block is found the result has ``status: "error"`` and the
-        raw (unannotated) frame is still returned for visual inspection.
+        Returns a plain dict — not exposed as an MCP tool.
         """
         import cv2
 
@@ -685,25 +683,21 @@ class JetArmMCPService:
         except Exception as exc:
             return {
                 "status": "error",
-                "mcp": "detect_red_block_target",
                 "error": f"RGB画面采集失败: {exc}",
                 "red_block_detected": False,
-            }, None
+            }
 
         nparr = np.frombuffer(frame.data, np.uint8)
         bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if bgr is None:
             return {
                 "status": "error",
-                "mcp": "detect_red_block_target",
-                "error": "无法将JPEG解码为BGR图像用于红色检测",
+                "error": "无法将JPEG解码为BGR图像",
                 "red_block_detected": False,
-            }, None
+            }
 
-        # Store frame size so pixel coordinate validation works.
         self._last_rgb_frame_size = (int(frame.width), int(frame.height))
 
-        # Update grasp-point pixel for the current frame size.
         try:
             grasp_point_pixel = self.grasp_point_pixel_for_frame(
                 frame.width, frame.height
@@ -711,113 +705,123 @@ class JetArmMCPService:
         except RuntimeError as exc:
             return {
                 "status": "error",
-                "mcp": "detect_red_block_target",
                 "error": str(exc),
                 "red_block_detected": False,
-            }, None
+            }
         self._last_grasp_point_pixel = (
             dict(grasp_point_pixel) if grasp_point_pixel is not None else None
         )
 
-        # Run HSV red detection with parameters tuned for real camera images.
-        result = detect_red_block_from_bgr(
-            bgr,
-            sat_min=150,
-            val_min=100,
-            min_area=150.0,
-            kernel_size=7,
+        detection = detect_red_block_from_bgr(
+            bgr, sat_min=150, val_min=100, min_area=150.0, kernel_size=7,
         )
 
-        camera_info: dict[str, Any] = {
-            "status": "ok",
-            "device": self.devices.rgb_camera,
-            "name": self.devices.rgb_camera_name or None,
-            "width": frame.width,
-            "height": frame.height,
-            "mime_type": frame.mime_type,
-            "grasp_point_pixel": grasp_point_pixel,
-            "pixel_coordinate_system": {
-                "coordinate_space": "original_rgb_image_pixels",
-                "origin": "top_left",
-                "origin_pixel": {"x": 0, "y": 0},
-                "x_axis": "right",
-                "y_axis": "down",
-                "x_range_inclusive": [0, frame.width - 1],
-                "y_range_inclusive": [0, frame.height - 1],
-                "top_right": {"x": frame.width - 1, "y": 0},
-                "bottom_left": {"x": 0, "y": frame.height - 1},
-                "bottom_right": {"x": frame.width - 1, "y": frame.height - 1},
-                "resize_or_flip_forbidden": True,
-            },
-        }
-
-        arm_pose = await self.observation_arm_pose()
-
-        if result is None:
+        if detection is None:
             return {
                 "status": "error",
-                "mcp": "detect_red_block_target",
-                "error": (
-                    "当前画面中未检测到红色物块。"
-                    "请确认：1) 红色目标在RGB画面中可见 "
-                    "2) 光照充足 3) 红色饱和度足够。"
-                    "可调整摄像头位置后重试。"
-                ),
+                "error": "当前画面中未检测到红色物块",
                 "red_block_detected": False,
-                "camera": camera_info,
-                "arm_pose": arm_pose,
-                "detector_params": {
-                    "hue_ranges": [[0, 8], [172, 180]],
-                    "sat_min": 150,
-                    "val_min": 100,
-                    "min_area": 150.0,
-                    "kernel_size": 7,
-                },
-            }, frame
+                "image_size": {"width": frame.width, "height": frame.height},
+            }
 
-        cx, cy = result.center
-        bx, by, bw, bh = result.bbox
-
-        # Draw annotation on the BGR frame for visual verification.
-        cv2.rectangle(bgr, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
-        cv2.circle(bgr, (cx, cy), 4, (255, 0, 0), -1)
-        cv2.putText(
-            bgr,
-            f"Red Block (X:{cx}, Y:{cy})",
-            (bx, max(by - 10, 16)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
-
-        encode_ok, encoded = cv2.imencode(
-            ".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-        )
-        annotated_frame: RGBJpegFrame | None = None
-        if encode_ok:
-            annotated_frame = RGBJpegFrame(
-                data=encoded.tobytes(),
-                width=int(frame.width),
-                height=int(frame.height),
-            )
-
+        cx, cy = detection.center
         return {
             "status": "ok",
-            "mcp": "detect_red_block_target",
             "red_block_detected": True,
-            "target_pixel": {"x": cx, "y": cy},
-            "bounding_box": {"x": bx, "y": by, "width": bw, "height": bh},
-            "area_px2": result.area,
+            "target_x": cx,
+            "target_y": cy,
+            "bounding_box": {
+                "x": detection.bbox[0],
+                "y": detection.bbox[1],
+                "width": detection.bbox[2],
+                "height": detection.bbox[3],
+            },
+            "area_px2": detection.area,
             "image_size": {"width": frame.width, "height": frame.height},
-            "camera": camera_info,
-            "arm_pose": arm_pose,
-            "usage": (
-                "将target_pixel的x和y直接作为"
-                "control_jetarm_to_target_pixel的target_x和target_y参数。"
-                "每次运动后旧检测结果自动失效，必须重新调用本工具。"
-            ),
-        }, annotated_frame
+        }
+
+    async def run_red_block_grasp(
+        self, max_rounds: int = 50
+    ) -> dict[str, Any]:
+        """Autonomous red-block grasp loop — no AI involvement mid-loop.
+
+        Repeatedly: detect red block → V2 motion → repeat until grasp completes
+        or an error occurs.  After returning, the caller (AI) must verify the
+        final Home image with ``confirm_jetarm_grasp_result``.
+        """
+        if self._awaiting_grasp_visual_confirmation:
+            raise RuntimeError(
+                "必须先根据最新RGB图像调用confirm_jetarm_grasp_result"
+            )
+
+        if max_rounds < 1:
+            raise RuntimeError("max_rounds必须大于0")
+
+        # Prepare gripper once at the start.
+        if not self._gripper_prepared_for_grasp:
+            await self.controller().set_gripper_position(
+                DEFAULT_GRIPPER_RELEASE_POSITION,
+                DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
+            )
+            self._gripper_prepared_for_grasp = True
+
+        for round_num in range(1, max_rounds + 1):
+            # --- Step 1: detect red block ---
+            detect_result = await self._detect_red_block()
+            if detect_result.get("status") != "ok":
+                return {
+                    "status": "error",
+                    "mcp": "run_red_block_grasp",
+                    "error": (
+                        f"第{round_num}轮红色检测失败: "
+                        f"{detect_result.get('error')}"
+                    ),
+                    "round": round_num,
+                    "detect_result": detect_result,
+                    "grasp_step_records": list(self._grasp_step_records),
+                }
+
+            target_x = float(detect_result["target_x"])
+            target_y = float(detect_result["target_y"])
+
+            # --- Step 2: execute one V2 motion step ---
+            motion_result = await self.control_to_target_pixel(
+                target_x, target_y,
+            )
+
+            if motion_result.get("status") != "ok":
+                return {
+                    **motion_result,
+                    "mcp": "run_red_block_grasp",
+                    "round": round_num,
+                }
+
+            # --- Step 3: check terminal states ---
+            if motion_result.get(
+                "grasp_completion_status"
+            ) == "awaiting_visual_verification":
+                return {
+                    **motion_result,
+                    "mcp": "run_red_block_grasp",
+                    "total_rounds": round_num,
+                    "autonomous_loop_completed": True,
+                    "next_step": (
+                        "请调用get_rgb_camera_frame获取Home后最新画面，"
+                        "检查目标物块是否确实被抓起，"
+                        "然后调用confirm_jetarm_grasp_result(success=...)"
+                    ),
+                }
+
+            # Otherwise (horizontal_align / descend_after_alignment /
+            # aligned_hold with requires_new_target_pixel), loop continues.
+
+        return {
+            "status": "error",
+            "mcp": "run_red_block_grasp",
+            "error": f"超过最大轮数{max_rounds}，抓取未完成",
+            "total_rounds": max_rounds,
+            "grasp_step_records": list(self._grasp_step_records),
+        }
 
     def close(self) -> None:
         if self._controller is not None:
@@ -1116,23 +1120,21 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
 
     @mcp.tool(
         description=(
-            "自动检测RGB画面中的红色物块并返回其中心像素坐标。"
-            "工具内部会重新采集一帧RGB画面，使用HSV颜色空间检测红色区域，"
-            "返回最大红色物块的中心坐标(target_x, target_y)和标注图像。"
-            "调用此工具前建议先调用get_rgb_camera_frame确认目标在画面中可见。"
-            "若未检测到红色物块则返回status=error，"
-            "请检查光照条件并确认红色目标在画面中后重试。"
-            "检测成功后直接将target_pixel的x/y作为"
-            "control_jetarm_to_target_pixel的target_x/target_y参数。"
-            "这是抓取工作流的选项二：自动红色物块检测模式，"
-            "可替代zoom_rgb_target_tile的四层分块定位。"
-            "每次运动后旧检测结果自动失效，Agent必须重新调用本工具获取最新坐标。"
+            "选项二：红色物块全自动抓取闭环。"
+            "Agent只需调用此工具一次，内部自动循环执行："
+            "采集RGB画面→HSV红色检测→V2水平对准/下降→重新采集→重新检测→..."
+            "直到完成夹取、J6稳定、回Home。"
+            "AI不参与中间环节的决策。"
+            "返回结果后Agent必须检查最新RGB图像，"
+            "调用confirm_jetarm_grasp_result确认抓取是否成功。"
+            "若画面中未检测到红色物块则返回status=error。"
+            "调用前必须先完成initialize_jetarm并设置抓取点像素。"
+            "max_rounds控制最大检测-运动轮数，默认50。"
         ),
         structured_output=False,
     )
-    async def detect_red_block_target() -> Any:
-        result, annotated_frame = await service.detect_red_block_target()
-        return content_result(result, annotated_frame)
+    async def run_red_block_grasp(max_rounds: int = 50) -> Any:
+        return content_result(await service.run_red_block_grasp(max_rounds))
 
     @mcp.tool(
         description=(

@@ -29,7 +29,6 @@ SEQUENTIAL_MOTION_TOOLS = frozenset(
     }
 )
 RGB_CAMERA_TOOL = "get_rgb_camera_frame"
-RED_BLOCK_DETECTOR_TOOL = "detect_red_block_target"
 MAX_VISUAL_CLOSED_LOOP_ROUNDS = 200
 
 
@@ -73,13 +72,9 @@ class ToolCallingSession:
         self.system_prompt = system_prompt or settings.system_prompt
         self.max_rounds = max_rounds
         self.history: list[dict[str, Any]] = []
-        self._red_block_target_pixel: tuple[float, float] | None = None
-        self._red_block_pixel_applied: bool = False
 
     def clear(self) -> None:
         self.history.clear()
-        self._red_block_target_pixel = None
-        self._red_block_pixel_applied = False
         if self.visual_tile_locator is not None:
             self.visual_tile_locator.clear()
 
@@ -243,7 +238,6 @@ class ToolCallingSession:
                     tool_call.name == TARGET_PIXEL_CONTROL_TOOL
                     and self.visual_tile_locator is not None
                     and not self.visual_tile_locator.ready
-                    and self._red_block_target_pixel is None
                 ):
                     try:
                         parsed_arguments = json.loads(tool_call.arguments or "{}")
@@ -255,11 +249,10 @@ class ToolCallingSession:
                     result = {
                         "status": "error",
                         "error": (
-                            "目标像素控制前必须完成数据层分块定位或检测红色物块："
-                            f"当前分块{self.visual_tile_locator.depth}/"
+                            "目标像素控制前必须完成数据层分块定位："
+                            f"当前{self.visual_tile_locator.depth}/"
                             f"{self.visual_tile_locator.required_depth}层。"
-                            f"请调用{VISUAL_TILE_TOOL}完成分块定位，"
-                            f"或调用{RED_BLOCK_DETECTOR_TOOL}自动检测红色物块中心。"
+                            f"请调用{VISUAL_TILE_TOOL}，每次查看返回的新图后再选择下一层。"
                         ),
                         "visual_tile_localization": self.visual_tile_locator.summary(),
                     }
@@ -307,34 +300,22 @@ class ToolCallingSession:
                     if tool_call.name in SEQUENTIAL_MOTION_TOOLS:
                         motion_call_seen = True
                     raw_arguments = tool_call.arguments
-                    if tool_call.name == TARGET_PIXEL_CONTROL_TOOL:
-                        if self._red_block_target_pixel is not None:
-                            try:
-                                parsed_arguments = json.loads(raw_arguments or "{}")
-                            except json.JSONDecodeError:
-                                parsed_arguments = {}
-                            if not isinstance(parsed_arguments, dict):
-                                parsed_arguments = {}
-                            target_x, target_y = self._red_block_target_pixel
-                            parsed_arguments["target_x"] = target_x
-                            parsed_arguments["target_y"] = target_y
-                            raw_arguments = json.dumps(
-                                parsed_arguments, ensure_ascii=False
-                            )
-                            self._red_block_pixel_applied = True
-                        elif self.visual_tile_locator is not None:
-                            try:
-                                parsed_arguments = json.loads(raw_arguments or "{}")
-                            except json.JSONDecodeError:
-                                parsed_arguments = {}
-                            if not isinstance(parsed_arguments, dict):
-                                parsed_arguments = {}
-                            target_x, target_y = self.visual_tile_locator.target_pixel()
-                            parsed_arguments["target_x"] = target_x
-                            parsed_arguments["target_y"] = target_y
-                            raw_arguments = json.dumps(
-                                parsed_arguments, ensure_ascii=False
-                            )
+                    if (
+                        tool_call.name == TARGET_PIXEL_CONTROL_TOOL
+                        and self.visual_tile_locator is not None
+                    ):
+                        try:
+                            parsed_arguments = json.loads(raw_arguments or "{}")
+                        except json.JSONDecodeError:
+                            parsed_arguments = {}
+                        if not isinstance(parsed_arguments, dict):
+                            parsed_arguments = {}
+                        target_x, target_y = self.visual_tile_locator.target_pixel()
+                        parsed_arguments["target_x"] = target_x
+                        parsed_arguments["target_y"] = target_y
+                        raw_arguments = json.dumps(
+                            parsed_arguments, ensure_ascii=False
+                        )
                     arguments, result, images = await self._execute(
                         tool_call.name, raw_arguments
                     )
@@ -345,47 +326,17 @@ class ToolCallingSession:
                             result, images
                         )
                         self._remember_rgb_frame(result, images)
-                    elif tool_call.name == RED_BLOCK_DETECTOR_TOOL:
-                        fresh_rgb_observation = self._successful_rgb_result(
-                            result, images
-                        )
-                        self._remember_rgb_frame(result, images)
-                        if self._successful_result(result) and isinstance(
-                            result, dict
-                        ):
-                            target_pixel = result.get("target_pixel")
-                            if isinstance(target_pixel, dict):
-                                tx = target_pixel.get("x")
-                                ty = target_pixel.get("y")
-                                if isinstance(tx, (int, float)) and isinstance(
-                                    ty, (int, float)
-                                ):
-                                    self._red_block_target_pixel = (
-                                        float(tx),
-                                        float(ty),
-                                    )
                     elif tool_call.name in SEQUENTIAL_MOTION_TOOLS:
                         fresh_rgb_observation = False
                         successful_motion = self._successful_result(result)
-                        if tool_call.name == TARGET_PIXEL_CONTROL_TOOL and isinstance(
-                            result, dict
+                        if (
+                            tool_call.name == TARGET_PIXEL_CONTROL_TOOL
+                            and isinstance(result, dict)
+                            and self.visual_tile_locator is not None
                         ):
-                            if self.visual_tile_locator is not None:
-                                result["target_pixel_localization"] = (
-                                    self.visual_tile_locator.summary()
-                                )
-                            if self._red_block_pixel_applied:
-                                result["target_pixel_source"] = "red_block_detector"
-                                # Single-use: consume after annotation.
-                                self._red_block_target_pixel = None
-                                self._red_block_pixel_applied = False
-                            elif (
-                                self.visual_tile_locator is not None
-                                and self.visual_tile_locator.ready
-                            ):
-                                result["target_pixel_source"] = "visual_tile_locator"
-                            else:
-                                result["target_pixel_source"] = "agent_direct"
+                            result["target_pixel_localization"] = (
+                                self.visual_tile_locator.summary()
+                            )
                 executed_call = ExecutedToolCall(
                     call_id=tool_call.call_id,
                     name=tool_call.name,

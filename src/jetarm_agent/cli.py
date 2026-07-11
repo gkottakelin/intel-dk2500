@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--red-block-grasp",
         action="store_true",
-        help="提示Agent优先使用detect_red_block_target自动检测红色物块，而非zoom_rgb_target_tile分块定位",
+        help="提示Agent对抓取任务使用run_red_block_grasp全自动闭环，AI仅在入口判断和出口确认时参与",
     )
     return parser
 
@@ -319,12 +319,12 @@ def _workflow_text() -> str:
 
 def _print_workflow_summary(*, red_block_mode: bool = False) -> None:
     if red_block_mode:
-        print("MCP执行工作流（红色物块检测模式）:")
+        print("MCP执行工作流（红色物块全自动抓取模式）:")
         print("  1. 从接口与抓取点配置读取固定抓取点像素")
-        print("  2. Agent调用detect_red_block_target自动检测红色物块中心")
-        print("  3. 控制端以检测到的坐标执行V2动作")
-        print("  4. 每次动作结束后重新取图并重新检测")
-        print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
+        print("  2. Agent调用run_red_block_grasp一次，全自动闭环")
+        print("  3. 内部自动循环：检测→对准→下降→夹取→Home")
+        print("  4. AI仅在入口判断和出口确认时参与")
+        print("  5. Agent用Home后新图确认抓取结果")
     else:
         print("MCP执行工作流:")
         print("  1. 从接口与抓取点配置读取固定抓取点像素")
@@ -998,11 +998,13 @@ async def run(args: argparse.Namespace) -> int:
                 workflow = _workflow_text()
                 if red_block_mode:
                     workflow += (
-                        "\n\n**当前模式提示：优先使用 detect_red_block_target "
-                        "自动检测红色物块中心作为目标点像素，"
-                        "而不是 zoom_rgb_target_tile 分块定位。"
-                        "每次视觉闭环回合都必须重新调用 detect_red_block_target "
-                        "获取最新检测坐标。**"
+                        "\n\n**当前模式提示：优先使用 run_red_block_grasp "
+                        "全自动红色物块抓取闭环。"
+                        "Agent只需调用此工具一次，内部自动完成"
+                        "检测→对准→下降→夹取→Home全部环节，"
+                        "AI不在中间参与决策。"
+                        "返回后调用get_rgb_camera_frame获取最新画面，"
+                        "再调用confirm_jetarm_grasp_result确认抓取结果。**"
                     )
                 arm_session = ToolCallingSession(
                     settings,
