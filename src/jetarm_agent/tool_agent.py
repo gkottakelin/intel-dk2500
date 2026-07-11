@@ -14,6 +14,11 @@ from .tooling import (
     ToolImage,
     ToolRegistry,
 )
+from .visual_tiles import (
+    TARGET_PIXEL_CONTROL_TOOL,
+    VISUAL_TILE_TOOL,
+    VisualTileLocator,
+)
 
 SEQUENTIAL_MOTION_TOOLS = frozenset(
     {
@@ -59,12 +64,19 @@ class ToolCallingSession:
         self.settings = settings
         self.client = client
         self.registry = registry
+        self.visual_tile_locator: VisualTileLocator | None = None
+        if RGB_CAMERA_TOOL in self.registry.names():
+            self.visual_tile_locator = VisualTileLocator()
+            if VISUAL_TILE_TOOL not in self.registry.names():
+                self.registry.register(self.visual_tile_locator.definition())
         self.system_prompt = system_prompt or settings.system_prompt
         self.max_rounds = max_rounds
         self.history: list[dict[str, Any]] = []
 
     def clear(self) -> None:
         self.history.clear()
+        if self.visual_tile_locator is not None:
+            self.visual_tile_locator.clear()
 
     async def ask(
         self,
@@ -139,6 +151,7 @@ class ToolCallingSession:
                 self._append_latest_images(turn, images, observation=result)
             if selected_tool_name == RGB_CAMERA_TOOL:
                 fresh_rgb_observation = self._successful_rgb_result(result, images)
+                self._remember_rgb_frame(result, images)
 
         for _ in range(self.max_rounds):
             messages = [
@@ -185,10 +198,67 @@ class ToolCallingSession:
             latest_images: tuple[ToolImage, ...] = ()
             latest_image_observation: object | None = None
             motion_call_seen = False
+            tile_call_seen = False
             successful_motion = False
             rgb_was_visible_to_model = fresh_rgb_observation
             for tool_call in response.tool_calls:
-                if tool_call.name in SEQUENTIAL_MOTION_TOOLS and motion_call_seen:
+                if tool_call.name == VISUAL_TILE_TOOL and not rgb_was_visible_to_model:
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": (
+                            "本回合开始时模型尚未看到最新RGB图像或上一层裁剪图。"
+                            "请先查看已返回的图像，下一回合再选择目标分块。"
+                        ),
+                    }
+                    images = ()
+                elif tool_call.name == VISUAL_TILE_TOOL and tile_call_seen:
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": (
+                            "每个模型回合只允许选择一层目标分块。"
+                            "必须先查看上一层返回的新裁剪图，再选择下一层。"
+                        ),
+                    }
+                    images = ()
+                elif (
+                    tool_call.name == TARGET_PIXEL_CONTROL_TOOL
+                    and self.visual_tile_locator is not None
+                    and not self.visual_tile_locator.ready
+                ):
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": (
+                            "目标像素控制前必须完成数据层分块定位："
+                            f"当前{self.visual_tile_locator.depth}/"
+                            f"{self.visual_tile_locator.required_depth}层。"
+                            f"请调用{VISUAL_TILE_TOOL}，每次查看返回的新图后再选择下一层。"
+                        ),
+                        "visual_tile_localization": self.visual_tile_locator.summary(),
+                    }
+                    images = ()
+                    motion_call_seen = True
+                elif tool_call.name in SEQUENTIAL_MOTION_TOOLS and motion_call_seen:
                     try:
                         parsed_arguments = json.loads(tool_call.arguments or "{}")
                     except json.JSONDecodeError:
@@ -229,16 +299,44 @@ class ToolCallingSession:
                 else:
                     if tool_call.name in SEQUENTIAL_MOTION_TOOLS:
                         motion_call_seen = True
+                    raw_arguments = tool_call.arguments
+                    if (
+                        tool_call.name == TARGET_PIXEL_CONTROL_TOOL
+                        and self.visual_tile_locator is not None
+                    ):
+                        try:
+                            parsed_arguments = json.loads(raw_arguments or "{}")
+                        except json.JSONDecodeError:
+                            parsed_arguments = {}
+                        if not isinstance(parsed_arguments, dict):
+                            parsed_arguments = {}
+                        target_x, target_y = self.visual_tile_locator.target_pixel()
+                        parsed_arguments["target_x"] = target_x
+                        parsed_arguments["target_y"] = target_y
+                        raw_arguments = json.dumps(
+                            parsed_arguments, ensure_ascii=False
+                        )
                     arguments, result, images = await self._execute(
-                        tool_call.name, tool_call.arguments
+                        tool_call.name, raw_arguments
                     )
+                    if tool_call.name == VISUAL_TILE_TOOL:
+                        tile_call_seen = True
                     if tool_call.name == RGB_CAMERA_TOOL:
                         fresh_rgb_observation = self._successful_rgb_result(
                             result, images
                         )
+                        self._remember_rgb_frame(result, images)
                     elif tool_call.name in SEQUENTIAL_MOTION_TOOLS:
                         fresh_rgb_observation = False
                         successful_motion = self._successful_result(result)
+                        if (
+                            tool_call.name == TARGET_PIXEL_CONTROL_TOOL
+                            and isinstance(result, dict)
+                            and self.visual_tile_locator is not None
+                        ):
+                            result["target_pixel_localization"] = (
+                                self.visual_tile_locator.summary()
+                            )
                 executed_call = ExecutedToolCall(
                     call_id=tool_call.call_id,
                     name=tool_call.name,
@@ -309,6 +407,7 @@ class ToolCallingSession:
                     }
                 )
                 fresh_rgb_observation = self._successful_rgb_result(result, images)
+                self._remember_rgb_frame(result, images)
                 if images:
                     self._append_latest_images(turn, images, observation=result)
 
@@ -325,6 +424,19 @@ class ToolCallingSession:
         cls, result: object, images: tuple[ToolImage, ...]
     ) -> bool:
         return cls._successful_result(result) and bool(images)
+
+    def _remember_rgb_frame(
+        self, result: object, images: tuple[ToolImage, ...]
+    ) -> None:
+        if (
+            self.visual_tile_locator is None
+            or not self._successful_rgb_result(result, images)
+        ):
+            return
+        try:
+            self.visual_tile_locator.set_frame(images[0])
+        except ToolExecutionError:
+            self.visual_tile_locator.clear()
 
     async def _execute(
         self, name: str, raw_arguments: str
@@ -393,6 +505,30 @@ class ToolCallingSession:
 
     @staticmethod
     def _rgb_coordinate_instruction(observation: object | None) -> str:
+        localization = (
+            observation.get("visual_tile_localization")
+            if isinstance(observation, dict)
+            else None
+        )
+        if isinstance(localization, dict):
+            bounds = localization.get("original_bounds_inclusive")
+            depth = localization.get("depth")
+            required_depth = localization.get("required_depth")
+            ready = bool(localization.get("ready"))
+            target = localization.get("estimated_target_pixel")
+            return (
+                "这是数据层分块后的原始RGB局部图，没有在像素上绘制坐标标签；"
+                f"它对应原图边界={bounds}，当前定位层数={depth}/{required_depth}。"
+                + (
+                    f"分块定位已完成，最终目标像素={target}；"
+                    "调用control_jetarm_to_target_pixel时程序会强制使用该坐标，禁止自行改写。"
+                    if ready
+                    else (
+                        f"请把当前局部图在数据层看作{localization.get('grid')}，"
+                        f"只调用一次{VISUAL_TILE_TOOL}选择目标物品中心所在行列。"
+                    )
+                )
+            )
         camera = (
             observation.get("camera")
             if isinstance(observation, dict)

@@ -793,7 +793,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "通过Orbbec SDK从已配置序列号/UID的Gemini相机采集最新彩色画面并返回JPEG。"
             "同一结果还返回抓取点基座坐标、关节位置、相机视线与竖直方向夹角及相机视角上方向。"
             "每次视觉定位和机械臂移动前必须调用；抓取点像素来自用户调用前输入。"
-            "视觉抓取时Agent只返回目标物品中心像素，"
+            "视觉抓取时Agent先用数据层分块定位目标物品中心，"
             "运动由control_jetarm_to_target_pixel决策；不启动深度流。"
         ),
         structured_output=False,
@@ -933,8 +933,10 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     @mcp.tool(
         description=(
             "Manual-pixel-test V2 grasp workflow with progress detection disabled. "
-            "The Agent must supply the center pixel target_x/target_y of the requested "
-            "object using top-left origin, X-right, Y-down original-image coordinates, "
+            "Before calling this tool, the Agent session must complete four levels of "
+            "zoom_rgb_target_tile data-layer localization. The session replaces "
+            "target_x/target_y with the final tile center in top-left-origin, X-right, "
+            "Y-down original-image coordinates, "
             "with (0,0) at the top-left and (width-1,height-1) at the bottom-right. "
             "The controller uses the "
             "user-entered grasp-point pixel, reads joint feedback/FK height, chooses "

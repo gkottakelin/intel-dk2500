@@ -315,9 +315,9 @@ def _workflow_text() -> str:
 def _print_workflow_summary() -> None:
     print("MCP执行工作流:")
     print("  1. 从接口与抓取点配置读取固定抓取点像素")
-    print("  2. Agent根据自然语言判断是否抓取，并识别目标物品中心像素")
-    print("  3. 控制端以人工测试V2流程执行一次对准或下降（进展检测关闭）")
-    print("  4. 每次动作结束后自动重新取图，Agent重新发送目标中心像素")
+    print("  2. Agent识别目标，使用数据层3x3四级分块得到原图中心像素")
+    print("  3. 控制端强制采用分块坐标，以人工测试V2执行一次动作")
+    print("  4. 每次动作结束后重新取图并清空旧分块路径，再次定位")
     print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
 
 
@@ -1040,6 +1040,9 @@ async def run(args: argparse.Namespace) -> int:
                         ),
                         "agent_grasp_workflow": "manual_pixel_test_v2",
                         "agent_grasp_progress_check_enabled": False,
+                        "agent_target_pixel_localization": (
+                            "hierarchical_data_layer_tiles_3x3_depth4"
+                        ),
                     }
                     print(json.dumps(summary, ensure_ascii=False, indent=2))
                     continue
