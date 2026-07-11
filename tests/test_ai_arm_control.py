@@ -667,6 +667,57 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 finally:
                     controller.close()
 
+    async def test_v2_low_z_forward_replans_all_joints_toward_one_cm(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=100.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+            )
+        )
+        try:
+            low_z_positions = {"J1": 340, "J2": 712, "J3": 864, "J4": 519}
+            controller.runtime.positions.update(low_z_positions)
+            for joint_name, position in low_z_positions.items():
+                controller.controller.positions[
+                    controller.settings.servo_id(joint_name)
+                ] = position
+            controller.runtime.capture_camera_pose_reference()
+
+            result = await controller.move_tcp("forward", 0.5, 1.0)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["v2_forward_low_z_recovery"]["used"])
+            self.assertEqual(
+                result["v2_forward_low_z_recovery"]["joint_planning"],
+                "absolute_whole_arm_ik_j1_j2_j3_j4",
+            )
+            self.assertFalse(result["v2_forward_low_z_recovery"]["j2_locked"])
+            self.assertLess(result["grasp_point_xyz_before_cm"]["z"], -1.0)
+            self.assertAlmostEqual(
+                result["grasp_point_xyz_expected_cm"]["z"], 1.0, places=6
+            )
+            self.assertAlmostEqual(
+                result["grasp_point_xyz_after_cm"]["z"], 1.0, delta=0.4
+            )
+            self.assertLess(
+                result["grasp_point_xyz_after_cm"]["y"],
+                result["grasp_point_xyz_before_cm"]["y"],
+            )
+            self.assertNotEqual(result["joint_positions"]["J3"], low_z_positions["J3"])
+            self.assertNotEqual(result["joint_positions"]["J4"], low_z_positions["J4"])
+            self.assertEqual(
+                result["horizontal_height_hold"]["mode"],
+                "forward_low_z_recovery_to_1cm",
+            )
+            self.assertGreater(
+                result["v2_execution_duration_s"],
+                result["terminal_hold_duration_s"],
+            )
+        finally:
+            controller.close()
+
     async def test_v2_up_uses_positive_z_and_reports_nearest_limit_fallback(self):
         controller = JetArmToolController(
             ArmControlConfig(

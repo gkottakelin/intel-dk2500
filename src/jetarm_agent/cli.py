@@ -482,6 +482,15 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     angle_segment = f" | {angle_text}" if angle_text else ""
     pose_segment = ""
     progress_segment = ""
+    recovery_segment = ""
+    low_z_recovery = result.get("v2_forward_low_z_recovery")
+    if isinstance(low_z_recovery, dict) and low_z_recovery.get("used"):
+        recovery_segment = (
+            " | 低Z前移恢复=已触发"
+            f"（Z={low_z_recovery.get('start_z_cm')}cm→"
+            f"{low_z_recovery.get('target_z_cm')}cm；"
+            "J1-J4绝对坐标重规划，J2未锁定）"
+        )
     progress_judgement = result.get("progress_judgement")
     if (
         isinstance(progress_judgement, dict)
@@ -535,7 +544,9 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
                 "夹角误差="
                 f"{progress_validation.get('camera_line_angle_error_deg')}°）"
             )
-    status_segment = angle_segment + pose_segment + progress_segment
+    status_segment = (
+        angle_segment + pose_segment + progress_segment + recovery_segment
+    )
     if decision == "horizontal_align":
         print(
             "控制结果: 水平对准 | "

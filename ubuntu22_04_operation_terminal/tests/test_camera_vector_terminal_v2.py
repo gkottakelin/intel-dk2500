@@ -13,6 +13,8 @@ sys.path.insert(0, str(APP_ROOT))
 
 from camera_vector_terminal import CameraLineConfig  # noqa: E402
 from camera_vector_terminal_v2 import (  # noqa: E402
+    FORWARD_LOW_Z_TRIGGER_M,
+    FORWARD_RECOVERY_TARGET_Z_M,
     INITIAL_J6_POSITION,
     CameraVectorV2Runtime,
     HorizontalDirectionUndefined,
@@ -147,10 +149,51 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         np.testing.assert_allclose(
             result["target_grasp_point_m"], expected_target, atol=1e-12
         )
+        self.assertFalse(result["forward_low_z_recovery"]["used"])
         self.assertLessEqual(len(controller.move_calls), 4)
         self.assertTrue(
             all(run_time_ms == 2000 for _sid, _target, run_time_ms in controller.move_calls)
         )
+
+    def test_forward_below_minus_one_cm_replans_combined_forward_and_z_target(self):
+        runtime, controller = self.make_runtime()
+        low_z_positions = {"J1": 340, "J2": 712, "J3": 864, "J4": 519}
+        runtime.positions.update(low_z_positions)
+        for joint_name, position in low_z_positions.items():
+            controller.positions[self.settings.servo_id(joint_name)] = position
+        runtime.capture_camera_pose_reference()
+        before_tcp = runtime.model.tcp(runtime.positions).copy()
+        before_joints = dict(runtime.positions)
+
+        self.assertLess(before_tcp[2], FORWARD_LOW_Z_TRIGGER_M)
+        result = asyncio.run(
+            execute_terminal_motion(
+                runtime,
+                direction="forward",
+                speed_cm_s=1.0,
+                duration_s=0.5,
+                real_time=False,
+            )
+        )
+
+        target = np.asarray(result["target_grasp_point_m"], dtype=float)
+        actual = np.asarray(result["actual_grasp_point_m"], dtype=float)
+        recovery = result["forward_low_z_recovery"]
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(recovery["used"])
+        self.assertFalse(recovery["j2_locked"])
+        self.assertEqual(
+            recovery["joint_planning"], "absolute_whole_arm_ik_j1_j2_j3_j4"
+        )
+        self.assertAlmostEqual(target[0], before_tcp[0] + 0.005, places=9)
+        self.assertAlmostEqual(target[1], before_tcp[1], places=9)
+        self.assertAlmostEqual(target[2], FORWARD_RECOVERY_TARGET_Z_M, places=9)
+        self.assertGreater(actual[0], before_tcp[0])
+        self.assertAlmostEqual(actual[2], FORWARD_RECOVERY_TARGET_Z_M, delta=0.004)
+        self.assertNotEqual(result["joint_positions"]["J3"], before_joints["J3"])
+        self.assertNotEqual(result["joint_positions"]["J4"], before_joints["J4"])
+        self.assertGreater(result["execution_duration_s"], 0.5)
+        self.assertLess(result["camera_line_angle_error_deg"], 1.0)
 
     def test_feedback_error_does_not_replace_session_pose_reference(self):
         runtime, controller = self.make_runtime()

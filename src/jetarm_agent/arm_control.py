@@ -923,6 +923,16 @@ class JetArmToolController:
             "left_y": round(float(expected_tcp[1] * 100.0), 3),
             "up_z": round(float(expected_tcp[2] * 100.0), 3),
         }
+        raw_forward_low_z_recovery = (
+            v2_terminal_result.get("forward_low_z_recovery")
+            if v2_terminal_result is not None
+            else None
+        )
+        forward_low_z_recovery = (
+            dict(raw_forward_low_z_recovery)
+            if isinstance(raw_forward_low_z_recovery, Mapping)
+            else None
+        )
         no_progress_reasons: list[str] = []
         if motion_status != "ok":
             if motion_error:
@@ -936,7 +946,6 @@ class JetArmToolController:
                         no_progress_reasons.append(reason_text)
             if not no_progress_reasons:
                 no_progress_reasons.append("运动结果未通过有效进展判定")
-        height_error_cm = float((end_tcp[2] - start_tcp[2]) * 100.0)
         result = {
             "status": motion_status,
             "mode": self.config.mode,
@@ -972,6 +981,12 @@ class JetArmToolController:
                 if v2_terminal_result is not None
                 else None
             ),
+            "v2_execution_duration_s": (
+                v2_terminal_result.get("execution_duration_s")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "v2_forward_low_z_recovery": forward_low_z_recovery,
             "v2_limit_fallback": (
                 v2_terminal_result.get("limit_fallback")
                 if v2_terminal_result is not None
@@ -1034,9 +1049,17 @@ class JetArmToolController:
             ),
             "horizontal_height_hold": (
                 {
-                    "target_z_cm": round(float(start_tcp[2] * 100.0), 3),
+                    "target_z_cm": round(float(expected_tcp[2] * 100.0), 3),
                     "actual_after_z_cm": round(float(end_tcp[2] * 100.0), 3),
-                    "error_cm": round(height_error_cm, 4),
+                    "error_cm": round(
+                        float((end_tcp[2] - expected_tcp[2]) * 100.0), 4
+                    ),
+                    "mode": (
+                        "forward_low_z_recovery_to_1cm"
+                        if forward_low_z_recovery is not None
+                        and bool(forward_low_z_recovery.get("used"))
+                        else "hold_start_z"
+                    ),
                     "z_participates_in_command": (
                         self.config.camera_vector_version == "v2"
                     ),
@@ -2085,6 +2108,14 @@ class JetArmToolController:
                     "negative_dx": "left",
                     "positive_dy": "backward",
                     "negative_dy": "forward",
+                },
+                "forward_low_z_recovery": {
+                    "condition": "actual_grasp_z_cm < -1 and direction == forward",
+                    "absolute_target_z_cm": 1.0,
+                    "planner": "camera_vector_v2 absolute whole-arm IK J1-J4",
+                    "j2_locked": False,
+                    "camera_grasp_pose_held": True,
+                    "limit_policy": "nearest reachable point on combined forward/up segment",
                 },
             },
         }
