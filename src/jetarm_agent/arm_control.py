@@ -599,14 +599,14 @@ class JetArmToolController:
         )
 
     @staticmethod
-    def _pixel_tolerance_for_height(height_cm: float) -> float:
+    def _pixel_tolerances_for_height(height_cm: float) -> dict[str, float]:
         if height_cm > 15.0:
-            return 40.0
+            return {"x": 25.0, "y": 18.0}
         if height_cm > 10.0:
-            return 25.0
+            return {"x": 20.0, "y": 13.0}
         if height_cm > 5.0:
-            return 13.0
-        return 8.0
+            return {"x": 15.0, "y": 10.0}
+        return {"x": 10.0, "y": 8.0}
 
     def _current_tcp_cm(self) -> dict[str, float]:
         tcp_cm = self.runtime.model.tcp(self.runtime.positions) * 100.0
@@ -1140,6 +1140,8 @@ class JetArmToolController:
         grasp_point_y: object,
         *,
         tolerance_px: object = DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
+        tolerance_x_px: object | None = None,
+        tolerance_y_px: object | None = None,
         step_duration_s: object = DEFAULT_PIXEL_ALIGNMENT_STEP_DURATION_S,
         speed_saturation_px: object = DEFAULT_PIXEL_ALIGNMENT_SPEED_SATURATION_PX,
     ) -> dict[str, Any]:
@@ -1147,15 +1149,27 @@ class JetArmToolController:
         block_y = self._validate_pixel_number(block_center_y, "block_center_y")
         grasp_x = self._validate_pixel_number(grasp_point_x, "grasp_point_x")
         grasp_y = self._validate_pixel_number(grasp_point_y, "grasp_point_y")
-        tolerance = self._validate_pixel_number(tolerance_px, "tolerance_px")
+        default_tolerance = self._validate_pixel_number(
+            tolerance_px, "tolerance_px"
+        )
+        tolerance_x = self._validate_pixel_number(
+            default_tolerance if tolerance_x_px is None else tolerance_x_px,
+            "tolerance_x_px",
+        )
+        tolerance_y = self._validate_pixel_number(
+            default_tolerance if tolerance_y_px is None else tolerance_y_px,
+            "tolerance_y_px",
+        )
         duration = self._validate_positive_number(
             step_duration_s, "step_duration_s", self.config.max_distance_cm
         )
         saturation = self._validate_pixel_number(
             speed_saturation_px, "speed_saturation_px"
         )
-        if tolerance < 0:
-            raise ArmControlError("tolerance_px must be greater than or equal to 0")
+        if tolerance_x < 0 or tolerance_y < 0:
+            raise ArmControlError(
+                "tolerance_x_px and tolerance_y_px must be greater than or equal to 0"
+            )
 
         self._refresh_hardware_positions()
         current_tcp_cm = self._current_tcp_cm()
@@ -1164,14 +1178,19 @@ class JetArmToolController:
         pixel_scale_px_per_cm = pixel_alignment_px_per_cm_for_height(height_cm)
         dx = block_x - grasp_x
         dy = block_y - grasp_y
-        if abs(dx) <= tolerance and abs(dy) <= tolerance:
+        tolerance_by_axis = {"x": tolerance_x, "y": tolerance_y}
+        x_aligned = abs(dx) <= tolerance_x
+        y_aligned = abs(dy) <= tolerance_y
+        if x_aligned and y_aligned:
             return {
                 "status": "ok",
                 "mode": self.config.mode,
                 "action": "pixel_align",
                 "aligned": True,
                 "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
-                "tolerance_px": tolerance,
+                "tolerance_px": tolerance_by_axis,
+                "tolerance_x_px": tolerance_x,
+                "tolerance_y_px": tolerance_y,
                 "grasp_point_before_cm": current_tcp_cm,
                 "grasp_point_after_cm": current_tcp_cm,
                 "grasp_point_xyz_before_cm": current_xyz_cm,
@@ -1183,16 +1202,23 @@ class JetArmToolController:
                 "motion_command_count": 0,
             }
 
-        if abs(dx) >= abs(dy):
+        # Preserve the old larger-error-axis priority when both axes exceed
+        # their limits.  If only one axis exceeds its own tolerance, always
+        # correct that axis even when the other absolute error is larger.
+        if not x_aligned and (y_aligned or abs(dx) >= abs(dy)):
             axis_error = dx
             direction = "right" if dx > 0 else "left"
             pixel_axis = "x"
+            selected_tolerance = tolerance_x
         else:
             axis_error = dy
             direction = "backward" if dy > 0 else "forward"
             pixel_axis = "y"
+            selected_tolerance = tolerance_y
 
-        speed = self._pixel_alignment_speed(axis_error, tolerance, saturation)
+        speed = self._pixel_alignment_speed(
+            axis_error, selected_tolerance, saturation
+        )
         fixed_distance = self.config.fixed_pixel_alignment_distance_cm
         if fixed_distance is None:
             distance = min(
@@ -1215,7 +1241,10 @@ class JetArmToolController:
             ),
             "pixel_to_motion_scale_height_cm": height_cm,
             "pixel_to_motion_scale_model": "linear_height_cm",
-            "tolerance_px": tolerance,
+            "tolerance_px": tolerance_by_axis,
+            "tolerance_x_px": tolerance_x,
+            "tolerance_y_px": tolerance_y,
+            "selected_axis_tolerance_px": selected_tolerance,
             "speed_saturation_px": saturation,
             "step_duration_s": duration,
             "command_limit_cm": self.config.max_distance_cm,
@@ -1257,7 +1286,9 @@ class JetArmToolController:
             "line_of_sight_angle_from_vertical_deg"
         ]
         height_cm = tcp_before["up_z"]
-        tolerance = self._pixel_tolerance_for_height(height_cm)
+        tolerances = self._pixel_tolerances_for_height(height_cm)
+        tolerance_x = tolerances["x"]
+        tolerance_y = tolerances["y"]
         pixel_scale_px_per_cm = pixel_alignment_px_per_cm_for_height(height_cm)
         target_px = self._validate_pixel_number(target_x, "target_x")
         target_py = self._validate_pixel_number(target_y, "target_y")
@@ -1265,7 +1296,7 @@ class JetArmToolController:
         grasp_py = self._validate_pixel_number(grasp_point_y, "grasp_point_y")
         dx = target_px - grasp_px
         dy = target_py - grasp_py
-        aligned = abs(dx) <= tolerance and abs(dy) <= tolerance
+        aligned = abs(dx) <= tolerance_x and abs(dy) <= tolerance_y
 
         if not aligned:
             result = await self.move_by_pixel_error(
@@ -1273,7 +1304,8 @@ class JetArmToolController:
                 target_py,
                 grasp_px,
                 grasp_py,
-                tolerance_px=tolerance,
+                tolerance_x_px=tolerance_x,
+                tolerance_y_px=tolerance_y,
                 step_duration_s=step_duration_s,
                 speed_saturation_px=speed_saturation_px,
             )
@@ -1294,7 +1326,9 @@ class JetArmToolController:
                 "grasp_point_xyz_after_cm": result.get("grasp_point_xyz_after_cm"),
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
-                "dynamic_tolerance_px": tolerance,
+                "dynamic_tolerance_px": dict(tolerances),
+                "dynamic_tolerance_x_px": tolerance_x,
+                "dynamic_tolerance_y_px": tolerance_y,
                 "pixel_to_motion_scale_px_per_cm": result.get(
                     "pixel_to_motion_scale_px_per_cm"
                 ),
@@ -1326,7 +1360,9 @@ class JetArmToolController:
                 "v2_returned_camera_line_angle_deg": camera_angle_before_deg,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
-                "dynamic_tolerance_px": tolerance,
+                "dynamic_tolerance_px": dict(tolerances),
+                "dynamic_tolerance_x_px": tolerance_x,
+                "dynamic_tolerance_y_px": tolerance_y,
                 "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
                 "pixel_to_motion_scale_height_cm": height_cm,
                 "pixel_to_motion_scale_model": "linear_height_cm",
@@ -1356,7 +1392,9 @@ class JetArmToolController:
                 "v2_returned_camera_line_angle_deg": camera_angle_before_deg,
                 "height_cm": height_cm,
                 "height_source": "joint_feedback_fk",
-                "dynamic_tolerance_px": tolerance,
+                "dynamic_tolerance_px": dict(tolerances),
+                "dynamic_tolerance_x_px": tolerance_x,
+                "dynamic_tolerance_y_px": tolerance_y,
                 "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
                 "pixel_to_motion_scale_height_cm": height_cm,
                 "pixel_to_motion_scale_model": "linear_height_cm",
@@ -1423,7 +1461,9 @@ class JetArmToolController:
             "height_before_cm": move_tcp_before["up_z"],
             "height_after_cm": tcp_after["up_z"],
             "height_source": "joint_feedback_fk",
-            "dynamic_tolerance_px": tolerance,
+            "dynamic_tolerance_px": dict(tolerances),
+            "dynamic_tolerance_x_px": tolerance_x,
+            "dynamic_tolerance_y_px": tolerance_y,
             "pixel_to_motion_scale_px_per_cm": round(pixel_scale_px_per_cm, 6),
             "pixel_to_motion_scale_height_cm": height_cm,
             "pixel_to_motion_scale_model": "linear_height_cm",
@@ -2016,10 +2056,26 @@ class JetArmToolController:
                 "descent_speed_cm_s": 2.0,
                 "pixel_recalculation_descent_interval_cm": DEFAULT_DESCENT_RECALIBRATION_CM,
                 "height_tolerance_bands_px": [
-                    {"height_cm": ">15", "tolerance_px": 40},
-                    {"height_cm": ">10 and <=15", "tolerance_px": 25},
-                    {"height_cm": ">5 and <=10", "tolerance_px": 13},
-                    {"height_cm": "<=5", "tolerance_px": 8},
+                    {
+                        "height_cm": ">15",
+                        "x_tolerance_px": 25,
+                        "y_tolerance_px": 18,
+                    },
+                    {
+                        "height_cm": ">10 and <=15",
+                        "x_tolerance_px": 20,
+                        "y_tolerance_px": 13,
+                    },
+                    {
+                        "height_cm": ">5 and <=10",
+                        "x_tolerance_px": 15,
+                        "y_tolerance_px": 10,
+                    },
+                    {
+                        "height_cm": "<=5",
+                        "x_tolerance_px": 10,
+                        "y_tolerance_px": 8,
+                    },
                 ],
                 "final_alignment_threshold_cm": FINAL_ALIGNMENT_THRESHOLD_CM,
                 "final_grasp_height_cm": FINAL_GRASP_HEIGHT_CM,

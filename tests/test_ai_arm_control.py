@@ -221,6 +221,32 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pixel_alignment_px_per_cm_for_height(25), 18.0)
         self.assertAlmostEqual(pixel_alignment_px_per_cm_for_height(13.5), 34.0)
 
+    def test_dynamic_pixel_tolerances_are_independent_and_use_lower_band_at_boundaries(self):
+        tolerance_for = self.controller._pixel_tolerances_for_height
+
+        self.assertEqual(tolerance_for(15.001), {"x": 25.0, "y": 18.0})
+        self.assertEqual(tolerance_for(15.0), {"x": 20.0, "y": 13.0})
+        self.assertEqual(tolerance_for(10.001), {"x": 20.0, "y": 13.0})
+        self.assertEqual(tolerance_for(10.0), {"x": 15.0, "y": 10.0})
+        self.assertEqual(tolerance_for(5.001), {"x": 15.0, "y": 10.0})
+        self.assertEqual(tolerance_for(5.0), {"x": 10.0, "y": 8.0})
+
+    async def test_only_axis_outside_its_own_tolerance_is_corrected(self):
+        moved = await self.controller.move_by_pixel_error(
+            124,
+            119,
+            100,
+            100,
+            tolerance_x_px=25,
+            tolerance_y_px=18,
+        )
+
+        self.assertFalse(moved["aligned"])
+        self.assertEqual(moved["pixel_axis"], "y")
+        self.assertEqual(moved["direction"], "backward")
+        self.assertEqual(moved["tolerance_px"], {"x": 25.0, "y": 18.0})
+        self.assertEqual(moved["selected_axis_tolerance_px"], 18.0)
+
     async def test_pixel_difference_maps_to_centimeters_by_current_height(self):
         moved = await self.controller.move_by_pixel_error(
             68,
@@ -302,7 +328,15 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(aligned_hold["height_source"], "joint_feedback_fk")
         self.assertIn("grasp_point_before_cm", aligned_hold)
         self.assertIn("grasp_point_after_cm", aligned_hold)
-        self.assertIn(aligned_hold["dynamic_tolerance_px"], {40.0, 25.0, 13.0, 8.0})
+        self.assertIn(
+            aligned_hold["dynamic_tolerance_px"],
+            (
+                {"x": 25.0, "y": 18.0},
+                {"x": 20.0, "y": 13.0},
+                {"x": 15.0, "y": 10.0},
+                {"x": 10.0, "y": 8.0},
+            ),
+        )
 
         self.assertEqual(moved["controller_decision"], "horizontal_align")
         self.assertFalse(moved["aligned"])
@@ -542,7 +576,14 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(controller.terminal.__name__, "camera_vector_terminal_v2")
             self.assertEqual(type(controller.runtime).__name__, "CameraVectorV2Runtime")
-            self.assertEqual(parameters["height_tolerance_bands_px"][0]["tolerance_px"], 40)
+            self.assertEqual(
+                parameters["height_tolerance_bands_px"][0],
+                {
+                    "height_cm": ">15",
+                    "x_tolerance_px": 25,
+                    "y_tolerance_px": 18,
+                },
+            )
             self.assertEqual(parameters["pixel_alignment_min_speed_cm_s"], 0.7)
             self.assertEqual(parameters["pixel_alignment_max_speed_cm_s"], 1.5)
             self.assertEqual(parameters["pixel_recalculation_descent_interval_cm"], 2.0)
@@ -1108,12 +1149,12 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [
-                band["tolerance_px"]
+                (band["x_tolerance_px"], band["y_tolerance_px"])
                 for band in state["arm_parameters"]["vision_guided_grasp"][
                     "height_tolerance_bands_px"
                 ]
             ],
-            [40, 25, 13, 8],
+            [(25, 18), (20, 13), (15, 10), (10, 8)],
         )
         home_servo_ids = {
             servo_id

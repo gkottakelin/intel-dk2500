@@ -469,6 +469,12 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
     decision = result.get("controller_decision")
     error = result.get("pixel_error", {})
     tolerance = result.get("dynamic_tolerance_px")
+    if isinstance(tolerance, dict):
+        tolerance_text = (
+            f"X={tolerance.get('x')}px/Y={tolerance.get('y')}px"
+        )
+    else:
+        tolerance_text = f"{tolerance}px"
     grasp_xyz_before = result.get("grasp_point_xyz_before_cm")
     grasp_xyz_after = result.get("grasp_point_xyz_after_cm")
     angle = _extract_camera_grasp_vertical_angle(result)
@@ -537,7 +543,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"像素比例步长={result.get('requested_distance_cm')}cm "
             f"速度={result.get('speed_cm_s')}cm/s "
             f"终端持续={result.get('terminal_hold_duration_s')}s "
-            f"误差={error} 容差={tolerance}px "
+            f"误差={error} 容差={tolerance_text} "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
             f"{status_segment}"
         )
@@ -550,7 +556,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             f"速度={result.get('speed_cm_s')}cm/s "
             f"终端持续={result.get('terminal_hold_duration_s')}s "
             f"高度={result.get('height_before_cm')}cm -> {result.get('height_after_cm')}cm "
-            f"误差={error} 容差={tolerance}px "
+            f"误差={error} 容差={tolerance_text} "
             f"抓取点XYZ={grasp_xyz_before} -> {grasp_xyz_after}"
             f"{status_segment}"
         )
@@ -561,7 +567,7 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
         print(
             "控制结果: 已对准，接近目标高度 | "
             f"当前高度={result.get('height_cm')}cm "
-            f"误差={error} 容差={tolerance}px "
+            f"误差={error} 容差={tolerance_text} "
             + (f"距最终抓取高度还剩={remaining}cm" if remaining is not None else "")
             + status_segment
         )
