@@ -129,13 +129,13 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         self.service.close()
 
-    async def test_mcp_service_executes_one_sub_two_cm_command(self):
-        result = await self.service.move("前1.9")
+    async def test_mcp_service_executes_one_long_command(self):
+        result = await self.service.move("前5")
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["mcp"], "move_jetarm")
         self.assertEqual(result["speed_cm_s"], 1.5)
-        self.assertEqual(result["requested_distance_cm"], 1.9)
+        self.assertEqual(result["requested_distance_cm"], 5.0)
         self.assertEqual(result["motion_command_count"], 1)
         self.assertNotIn("segments", result)
 
@@ -629,9 +629,11 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(registry.names(), ("control_jetarm_to_target_pixel",))
 
-    async def test_mcp_service_rejects_long_command_instead_of_splitting(self):
-        with self.assertRaisesRegex(Exception, "单次"):
-            await self.service.move("前5")
+    async def test_mcp_service_rejects_only_at_configured_100cm_guard(self):
+        result = await self.service.move("前5")
+        self.assertEqual(result["status"], "ok")
+        with self.assertRaisesRegex(Exception, "小于100"):
+            await self.service.move("前100")
 
     async def test_markdown_workflow_is_loaded(self):
         instructions = self.service.initial_instructions()
@@ -705,40 +707,14 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                             call_id="mcp-1",
                             name="move_jetarm",
                             arguments=json.dumps(
-                                {"command": "前1.9", "speed_cm_s": 1.5},
+                                {"command": "前5", "speed_cm_s": 1.5},
                                 ensure_ascii=False,
                             ),
                         ),
                     ),
                 ),
                 ToolModelResponse(
-                    content="",
-                    tool_calls=(
-                        FunctionToolCall(
-                            call_id="mcp-2",
-                            name="move_jetarm",
-                            arguments=json.dumps(
-                                {"command": "前1.9", "speed_cm_s": 1.5},
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    ),
-                ),
-                ToolModelResponse(
-                    content="",
-                    tool_calls=(
-                        FunctionToolCall(
-                            call_id="mcp-3",
-                            name="move_jetarm",
-                            arguments=json.dumps(
-                                {"command": "前1.2", "speed_cm_s": 1.5},
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    ),
-                ),
-                ToolModelResponse(
-                    content="已通过三条MCP命令完成向前5厘米。",
+                    content="已通过一条MCP命令完成向前5厘米。",
                     tool_calls=(),
                 ),
             ]
@@ -753,22 +729,18 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             preselected_tool_arguments={},
         )
 
-        self.assertEqual(result.text, "已通过三条MCP命令完成向前5厘米。")
+        self.assertEqual(result.text, "已通过一条MCP命令完成向前5厘米。")
         self.assertEqual(
             [
                 call.arguments["command"]
                 for call in result.tool_calls
                 if call.name == "move_jetarm"
             ],
-            ["前1.9", "前1.9", "前1.2"],
+            ["前5"],
         )
         self.assertEqual(
             [call.name for call in result.tool_calls],
             [
-                "get_rgb_camera_frame",
-                "move_jetarm",
-                "get_rgb_camera_frame",
-                "move_jetarm",
                 "get_rgb_camera_frame",
                 "move_jetarm",
                 "get_rgb_camera_frame",

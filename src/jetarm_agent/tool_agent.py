@@ -298,7 +298,7 @@ class ToolCallingSession:
                         "error": (
                             "视觉闭环禁止在没有最新RGB图像时移动。"
                             "必须先调用get_rgb_camera_frame并把图像传给Agent，"
-                            "再根据该图像单独下发一条小于2cm的移动命令。"
+                            "再根据该图像单独下发一条移动命令。"
                         ),
                     }
                     images = ()

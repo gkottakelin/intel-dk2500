@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-max-distance-cm",
         type=float,
         default=None,
-        help="Agent单条TCP移动命令的排他上限，默认2cm且不能超过2cm",
+        help="Agent单条TCP移动命令的排他上限，默认100cm",
     )
     parser.add_argument(
         "--manual-image-width",
@@ -903,8 +903,8 @@ async def run(args: argparse.Namespace) -> int:
     )
     if configured_max_distance_cm > MAX_AGENT_MOVE_COMMAND_CM:
         print(
-            f"提示: 旧的机械臂距离上限{configured_max_distance_cm:g}cm已自动限制为"
-            f"{MAX_AGENT_MOVE_COMMAND_CM:g}cm；实际每条命令必须严格小于该值。"
+            f"提示: 机械臂距离上限{configured_max_distance_cm:g}cm已自动限制为"
+            f"{MAX_AGENT_MOVE_COMMAND_CM:g}cm。"
         )
 
     if arm_mode == "hardware" and arm_port is None:

@@ -967,7 +967,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     @mcp.tool(
         description=(
             "执行一条JetArm末端移动命令。command格式为前1.9、后1、左0.5、右1.5、上1或下0.8；"
-            "数字单位为厘米，每条命令的距离必须严格小于2cm。未指定速度时使用1.5cm/s；"
+            "数字单位为厘米，每条命令默认必须严格小于100cm。未指定速度时使用1.5cm/s；"
             "允许1到5cm/s。V2上使实际抓取点Z增加、下使Z减小；前使实际抓取点Y减小，后使Y增加，"
             "左使X减小，右使X增加；"
             "水平运动只换算到XYZ的X/Y目标，Z不参与并保持当前高度，同时保持摄像头-抓取点姿态。"
@@ -1159,7 +1159,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--arm-max-distance-cm",
         type=float,
         default=MAX_AGENT_MOVE_COMMAND_CM,
-        help="单条Agent移动命令的排他上限，不能超过2cm",
+        help="单条Agent普通移动命令的排他上限，默认100cm",
     )
     return parser
 

@@ -28,7 +28,7 @@ ARM_JOINTS = ("J1", "J2", "J3", "J4")
 DEFAULT_TCP_SPEED_CM_S = 1.5
 MIN_TCP_SPEED_CM_S = 1.0
 MAX_TCP_SPEED_CM_S = 5.0
-MAX_AGENT_MOVE_COMMAND_CM = 2.0
+MAX_AGENT_MOVE_COMMAND_CM = 100.0
 CAMERA_VECTOR_VERSIONS = ("v1", "v2")
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
@@ -207,7 +207,7 @@ class ArmControlConfig:
         ):
             raise ArmControlError(
                 f"max_distance_cm不能超过{MAX_AGENT_MOVE_COMMAND_CM:g}；"
-                f"Agent每条移动命令必须严格小于{MAX_AGENT_MOVE_COMMAND_CM:g}cm"
+                "如确需更大的调试范围必须显式启用allow_extended_distance"
             )
         if self.fixed_pixel_alignment_distance_cm is not None:
             fixed_distance = float(self.fixed_pixel_alignment_distance_cm)
@@ -1087,7 +1087,7 @@ class JetArmToolController:
         if distance >= self.config.max_distance_cm:
             raise ArmControlError(
                 f"distance_cm单次必须小于{self.config.max_distance_cm:g}；"
-                "长距离必须由Agent按最新RGB图像逐步执行，每次重新取图后只决定下一条命令"
+                "如需更大的调试范围，请提高显式配置的单条距离上限"
             )
         speed = self._validate_speed(speed_cm_s)
         result = await self._move_tcp_segment(direction, distance, speed)
@@ -2139,10 +2139,10 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                     "runtime. In V2, up increases grasp-point XYZ Z and down decreases Z; "
                     "V1 retains its camera-line up/down directions. "
                     "forward decreases grasp-point XYZ Y, backward increases XYZ Y, "
-                    "left decreases XYZ X, and right increases XYZ X. distance_cm must be strictly less than 2 cm. For a longer user "
-                    "request, the Agent must use a fresh RGB frame to decide only the current "
-                    "movement, wait for status=ok, then capture a new frame before deciding "
-                    "the next call. The controller never splits a long command."
+                    "left decreases XYZ X, and right increases XYZ X. "
+                    f"distance_cm must be strictly less than {controller.config.max_distance_cm:g} cm. "
+                    "The controller executes the requested distance as one V2 target and "
+                    "does not split it; joint limits use the nearest-reachable fallback."
                 ),
                 parameters={
                     "type": "object",
@@ -2552,7 +2552,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 9. 每次机械臂运动结束后旧图像和旧分块路径立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标，并重新完成4层数据分块定位后再运动。
 10. Home后的机械抓取结果为awaiting_visual_verification。Agent必须检查自动返回的最新图像并调用confirm_jetarm_grasp_result：只有确认目标物品已被抓起时传success=true；失败时传success=false，再用当前新图重新识别中心并继续，直到确认工具返回grasp_completed=true。
 11. 每步结果中的grasp_step_record严格记录目标点像素、原抓取点实际坐标、运动规划、预计抓取点坐标、实际抓取点坐标和摄像头-抓取点夹角；Agent总结时不得改写或虚构这些值。
-12. 普通手动move_jetarm移动仍必须先取图，每条距离严格小于2cm，推荐最多1.9cm；不得一次生成后续动作序列。
+12. 普通手动move_jetarm移动仍必须先取图；单条距离使用用户请求值，默认必须严格小于100cm。控制器不拆分长距离，目标不可达时使用v2最近可达点回退；同一模型回合仍只允许一条运动命令。
 13. 取图失败或任一移动命令失败后立即停止后续移动，不得沿用旧图像，也不得声称动作完成；存在运动风险时调用stop_jetarm。
 14. 发生错误、方向不明确或用户要求停止时调用stop_jetarm。
 14. 当前只使用单路RGB相机，不得请求或声称使用深度流。
