@@ -15,6 +15,31 @@
 
 当前方案只读取 RGB 彩色图。
 
+## JetArm总控终端
+
+Ubuntu 22.04桌面环境下，可以从项目根目录启动轻量总控界面：
+
+```bash
+chmod +x run_control_center.sh
+bash run_control_center.sh
+```
+
+总控提供Git Pull、机械臂控制、相机显示、人工测试模块V2和Agent按钮。
+按下按钮后会打开一个独立桌面终端并执行对应的现有入口；总控不会重构、
+复制或接管任何机械臂运动、相机采集及抓取工作流。
+
+“配置中心”包含：
+
+- “接口与抓取点”：编辑本机机械臂串口、相机UID和抓取点像素，保存到
+  `config/devices.json`。
+- “Agent接口”：编辑OpenAI-compatible接口地址、模型、API Key环境变量名和超时。
+  API Key本身仍只保存在环境变量或`.env`中。
+- “机械臂参数（只读）”：逐项显示操作终端`terminal.json`的Home、关节限位、
+  速度、几何和摄像头控制参数，只能刷新、复制或导出副本，不能修改原参数。
+
+机械臂控制、人工测试模块V2和Agent可能争用机械臂串口；相机显示和Agent可能
+争用Gemini相机。请在打开另一个占用同一硬件的模块前退出当前模块。
+
 ## AI对话与机械臂工具终端（第一至三阶段）
 
 当前已接入OpenAI-compatible多模态API、多轮命令行对话和本地stdio MCP工具调用。
