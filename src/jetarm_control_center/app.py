@@ -23,6 +23,7 @@ from .config_store import (
     validate_agent_values,
     validate_device_values,
 )
+from .emergency_stop import active_targets, request_emergency_stop
 from .terminal_launcher import (
     LaunchSpec,
     default_launch_specs,
@@ -71,7 +72,7 @@ class ControlCenterApp:
         )
         ttk.Label(
             outer,
-            text="只负责启动现有模块和查看配置，不接管机械臂、相机或抓取工作流。",
+            text="负责启动现有模块、查看配置和软件急停，不改动机械臂、相机或抓取工作流。",
             style="Subtitle.TLabel",
             foreground="#526172",
         ).grid(row=1, column=0, sticky="w", pady=(3, 18))
@@ -100,6 +101,19 @@ class ControlCenterApp:
             command=self._open_project_folder,
             style="Launch.TButton",
         ).grid(row=0, column=1, sticky="ew", padx=(7, 0))
+        tk.Button(
+            utility,
+            text="紧急停止机械臂",
+            command=self._emergency_stop,
+            bg="#c62828",
+            fg="#ffffff",
+            activebackground="#8e0000",
+            activeforeground="#ffffff",
+            relief="flat",
+            font=("Noto Sans CJK SC", 13, "bold"),
+            padx=12,
+            pady=12,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
         ttk.Label(
             outer,
@@ -164,6 +178,49 @@ class ControlCenterApp:
             self.status.set(f"打开项目目录失败：{exc}")
             return
         self.status.set(f"已打开项目目录：{PROJECT_ROOT}")
+
+    def _emergency_stop(self) -> None:
+        result = request_emergency_stop(PROJECT_ROOT)
+        if not result.active:
+            if result.failures:
+                messagebox.showerror(
+                    "软件急停失败",
+                    "\n".join(result.failures),
+                    parent=self.root,
+                )
+                self.status.set("软件急停失败：" + "；".join(result.failures))
+            else:
+                self.status.set("未发现由总控启动的机械臂程序，未发送急停。")
+            return
+
+        names = "、".join(target.key for target in result.signaled)
+        if result.failures:
+            messagebox.showwarning(
+                "软件急停部分失败",
+                "\n".join(result.failures),
+                parent=self.root,
+            )
+        if result.signaled:
+            self.status.set(f"已向 {names} 发送急停，正在等待程序退出确认…")
+            expected = tuple(target.key for target in result.signaled)
+            self.root.after(1500, lambda: self._confirm_emergency_stop(expected))
+        else:
+            self.status.set("软件急停未能向任何机械臂程序发送信号。")
+
+    def _confirm_emergency_stop(self, expected: tuple[str, ...]) -> None:
+        remaining = {
+            target.key for target in active_targets(PROJECT_ROOT)
+        }.intersection(expected)
+        if remaining:
+            names = "、".join(sorted(remaining))
+            self.status.set(f"急停未确认：{names} 仍在运行，请立即使用物理断电急停。")
+            messagebox.showerror(
+                "急停未确认",
+                f"{names} 在1.5秒内未退出。\n请立即使用物理断电急停。",
+                parent=self.root,
+            )
+            return
+        self.status.set("软件急停已确认：机械臂程序已停止并退出。")
 
     def open_config_center(self) -> None:
         window = tk.Toplevel(self.root)

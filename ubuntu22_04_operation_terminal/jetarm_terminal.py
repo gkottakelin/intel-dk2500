@@ -28,6 +28,7 @@ APP_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "terminal.json"
 HEADER = b"\x55\x55"
 SERVO_MOVE_TIME_WRITE = 1
+SERVO_MOVE_STOP = 12
 SERVO_POS_READ = 28
 SERVO_OR_MOTOR_MODE_WRITE = 29
 LINUX_SERIAL_PATTERNS = (
@@ -154,6 +155,11 @@ class BusServoController:
         params = struct.pack("<HH", target_position, run_time_ms)
         self.write_command(servo_id, SERVO_MOVE_TIME_WRITE, params)
 
+    def stop_servo(self, servo_id: int) -> None:
+        """Immediately cancel an in-progress position-mode move."""
+
+        self.write_command(servo_id, SERVO_MOVE_STOP)
+
     def set_motor_speed(self, servo_id: int, speed: int) -> None:
         if not -1000 <= speed <= 1000:
             raise ValueError("motor speed must be in -1000..1000")
@@ -214,6 +220,7 @@ class DryRunServoController:
         self.move_calls: list[tuple[int, int, int]] = []
         self.motor_calls: list[tuple[int, int]] = []
         self.servo_mode_calls: list[int] = []
+        self.stop_calls: list[int] = []
 
     def read_position(self, servo_id: int) -> int:
         return int(self.positions.get(servo_id, 500))
@@ -226,6 +233,10 @@ class DryRunServoController:
     def set_motor_speed(self, servo_id: int, speed: int) -> None:
         self.motor_calls.append((servo_id, speed))
         self.logger(f"DRY set_motor_speed id={servo_id} speed={speed}")
+
+    def stop_servo(self, servo_id: int) -> None:
+        self.stop_calls.append(servo_id)
+        self.logger(f"DRY stop_servo id={servo_id}")
 
     def set_servo_mode(self, servo_id: int) -> None:
         self.servo_mode_calls.append(servo_id)
@@ -332,6 +343,7 @@ class ManualServoRuntime:
         self.joystick_y = 0.0
         self.j6_grip_locked = False
         self.last_step_at: Optional[float] = None
+        self.closed = False
 
     def initialize(self, *, use_home_positions: bool = False) -> None:
         for joint_name in ARM_JOINTS:
@@ -407,9 +419,23 @@ class ManualServoRuntime:
     def stop_all(self) -> None:
         self.vertical_direction = 0
         self.center_joystick()
-        self.controller.set_motor_speed(self.settings.servo_id("J5"), 0)
-        self.controller.set_motor_speed(self.settings.servo_id("J6"), 0)
         self.j6_grip_locked = False
+        errors: list[str] = []
+        stop_servo = getattr(self.controller, "stop_servo", None)
+        if callable(stop_servo):
+            for joint_name in ARM_JOINTS:
+                try:
+                    stop_servo(self.settings.servo_id(joint_name))
+                except Exception as exc:
+                    errors.append(f"{joint_name}: {exc}")
+        for joint_name in ("J5", "J6"):
+            try:
+                self.controller.set_motor_speed(self.settings.servo_id(joint_name), 0)
+            except Exception as exc:
+                errors.append(f"{joint_name}: {exc}")
+        self.logger("全部停止：J1-J4位置运动已取消，J5/J6速度已置零")
+        if errors:
+            raise RuntimeError("部分关节停止失败: " + "；".join(errors))
 
     def go_home(self) -> None:
         self.vertical_direction = 0
@@ -425,12 +451,17 @@ class ManualServoRuntime:
                 self.positions[joint_name] = target
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         try:
             self.stop_all()
         finally:
             self.controller.close()
 
     def tick(self) -> None:
+        if self.closed:
+            return
         now = self.monotonic()
         if self.last_step_at is None:
             self.last_step_at = now
@@ -1024,6 +1055,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print("若dmesg显示brltty抢占，且不使用盲文设备，请检查brltty服务。")
         return 0
 
+    runtime: ManualServoRuntime | None = None
     try:
         settings = TerminalSettings.from_file(args.config)
         if tk is None:
@@ -1070,6 +1102,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if runtime is not None:
+            runtime.close()
 
 
 if __name__ == "__main__":

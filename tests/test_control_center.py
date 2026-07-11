@@ -13,6 +13,11 @@ from src.jetarm_control_center.config_store import (
     validate_agent_values,
     validate_device_values,
 )
+from src.jetarm_control_center.emergency_stop import (
+    active_targets,
+    registry_path,
+    request_emergency_stop,
+)
 from src.jetarm_control_center.terminal_launcher import (
     build_shell_command,
     default_launch_specs,
@@ -73,9 +78,14 @@ class ControlCenterConfigTests(unittest.TestCase):
 
 class ControlCenterLauncherTests(unittest.TestCase):
     def test_every_required_workflow_has_a_launch_spec(self) -> None:
-        keys = {spec.key for spec in default_launch_specs()}
+        specs = default_launch_specs()
+        keys = {spec.key for spec in specs}
         self.assertEqual(
             keys, {"git_pull", "arm_terminal", "camera", "manual_v2", "agent"}
+        )
+        self.assertEqual(
+            {spec.key for spec in specs if spec.emergency_stop},
+            {"arm_terminal", "manual_v2", "agent"},
         )
 
     def test_shell_command_changes_to_project_and_keeps_terminal_open(self) -> None:
@@ -98,6 +108,62 @@ class ControlCenterLauncherTests(unittest.TestCase):
             shell_command="echo ok",
         )
         self.assertEqual(argv[-3:], ["bash", "-lc", "echo ok"])
+
+    def test_arm_launch_registers_process_group_for_emergency_stop(self) -> None:
+        command = build_shell_command(
+            PurePosixPath("/tmp/jetarm"),
+            "example",
+            emergency_stop_key="agent",
+            emergency_stop_token="fixed-token",
+        )
+        self.assertIn("agent.estop.json", command)
+        self.assertIn("JETARM_ESTOP_TOKEN=fixed-token", command)
+        self.assertIn("JETARM_ESTOP_PGID", command)
+        self.assertIn("trap", command)
+
+
+class ControlCenterEmergencyStopTests(unittest.TestCase):
+    def test_request_signals_verified_registered_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = registry_path(root, "agent")
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {"key": "agent", "pid": 123, "pgid": 456, "token": "abc"}
+                ),
+                encoding="utf-8",
+            )
+            calls = []
+
+            result = request_emergency_stop(
+                root,
+                signal_group=lambda pgid, sig: calls.append((pgid, sig)),
+                current_process_group=lambda: 999,
+                process_matches=lambda pid, token: (pid, token) == (123, "abc"),
+            )
+
+            self.assertEqual([target.key for target in result.signaled], ["agent"])
+            self.assertEqual(calls[0][0], 456)
+            self.assertFalse(result.failures)
+
+    def test_stale_registry_is_removed_without_signaling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = registry_path(root, "manual_v2")
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {"key": "manual_v2", "pid": 123, "pgid": 456, "token": "old"}
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                active_targets(root, process_matches=lambda _pid, _token: False),
+                (),
+            )
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

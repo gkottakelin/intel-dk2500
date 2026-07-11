@@ -15,6 +15,7 @@ from jetarm_terminal import (  # noqa: E402
     DryRunServoController,
     ManualServoRuntime,
     TerminalSettings,
+    SERVO_MOVE_STOP,
     build_packet,
     discover_linux_serial_ports,
     discover_usb_serial_adapters,
@@ -118,6 +119,35 @@ class UbuntuTerminalTest(unittest.TestCase):
             fake.writes,
             [build_packet(10, 29, b"\x00\x00\x00\x00")],
         )
+
+    def test_bus_controller_can_cancel_position_motion(self):
+        class FakePort:
+            def __init__(self):
+                self.writes = []
+
+            def write(self, data):
+                self.writes.append(data)
+
+            def flush(self):
+                return None
+
+        fake = FakePort()
+        controller = BusServoController("/dev/null", 115200, 0.2)
+        controller._port = fake
+
+        controller.stop_servo(3)
+
+        self.assertEqual(fake.writes, [build_packet(3, SERVO_MOVE_STOP)])
+
+    def test_stop_all_cancels_j1_j4_and_stops_j5_j6(self):
+        runtime, controller = self.make_runtime()
+        runtime.toggle_grip_lock()
+
+        runtime.stop_all()
+
+        self.assertEqual(controller.stop_calls, [1, 2, 3, 4])
+        self.assertEqual(controller.motor_calls[-2:], [(5, 0), (10, 0)])
+        self.assertFalse(runtime.j6_grip_locked)
 
     def test_cartesian_step_sends_j1_to_j4_commands(self):
         runtime, controller = self.make_runtime()

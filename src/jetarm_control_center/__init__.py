@@ -1,7 +1,8 @@
 """JetArm desktop control center.
 
-The control center is intentionally only a launcher and configuration viewer.
-It does not own the arm serial port, camera, or any motion workflow.
+The control center launches existing workflows, shows configuration, and can
+interrupt arm workflows that it launched. It never opens the arm serial port
+or camera itself.
 """
 
 from .app import main

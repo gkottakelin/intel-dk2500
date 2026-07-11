@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -17,6 +18,7 @@ class LaunchSpec:
     description: str
     command: str
     resource_note: str = ""
+    emergency_stop: bool = False
 
 
 def default_launch_specs() -> tuple[LaunchSpec, ...]:
@@ -46,6 +48,7 @@ def default_launch_specs() -> tuple[LaunchSpec, ...]:
             description="运行机械臂操作终端原 run.sh",
             command="bash ubuntu22_04_operation_terminal/run.sh",
             resource_note="占用机械臂串口",
+            emergency_stop=True,
         ),
         LaunchSpec(
             key="camera",
@@ -60,6 +63,7 @@ def default_launch_specs() -> tuple[LaunchSpec, ...]:
             description="启动现有人工像素闭环V2，不改动其工作流",
             command=ai_command(" --manual-pixel-test-v2"),
             resource_note="硬件模式会占用机械臂串口",
+            emergency_stop=True,
         ),
         LaunchSpec(
             key="agent",
@@ -67,16 +71,47 @@ def default_launch_specs() -> tuple[LaunchSpec, ...]:
             description="启动现有自然语言与抓取 Agent",
             command=ai_command(),
             resource_note="按配置占用机械臂串口和 Gemini 相机",
+            emergency_stop=True,
         ),
     )
 
 
-def build_shell_command(project_root: Path, command: str) -> str:
+def build_shell_command(
+    project_root: Path,
+    command: str,
+    *,
+    emergency_stop_key: str | None = None,
+    emergency_stop_token: str | None = None,
+) -> str:
     quoted_root = shlex.quote(str(project_root))
+    prefix = ""
+    cleanup = ""
+    if emergency_stop_key is not None:
+        if not emergency_stop_key.replace("_", "").isalnum():
+            raise ValueError("急停注册键只能包含字母、数字和下划线")
+        token = emergency_stop_token or uuid.uuid4().hex
+        runtime_dir = project_root / ".jetarm_runtime"
+        registry = runtime_dir / f"{emergency_stop_key}.estop.json"
+        prefix = (
+            f"mkdir -p -- {shlex.quote(str(runtime_dir))}; "
+            f"JETARM_ESTOP_KEY={shlex.quote(emergency_stop_key)}; "
+            f"JETARM_ESTOP_TOKEN={shlex.quote(token)}; "
+            "export JETARM_ESTOP_TOKEN; "
+            'JETARM_ESTOP_PGID="$(ps -o pgid= -p "$$" | tr -d \' \')"; '
+            f"JETARM_ESTOP_FILE={shlex.quote(str(registry))}; "
+            "printf "
+            "'{\"key\":\"%s\",\"pid\":%s,\"pgid\":%s,\"token\":\"%s\"}\\n' "
+            '"$JETARM_ESTOP_KEY" "$$" "$JETARM_ESTOP_PGID" "$JETARM_ESTOP_TOKEN" '
+            '> "$JETARM_ESTOP_FILE"; '
+            'trap \'rm -f -- "$JETARM_ESTOP_FILE"\' EXIT; '
+        )
+        cleanup = 'rm -f -- "$JETARM_ESTOP_FILE"; trap - EXIT; '
     return (
         f"cd -- {quoted_root}; "
+        f"{prefix}"
         f"{command}; "
         "JETARM_EXIT_CODE=$?; "
+        f"{cleanup}"
         'printf "\\n[JetArm总控] 程序已结束，退出码: %s\\n" "$JETARM_EXIT_CODE"; '
         'printf "按 Enter 关闭此终端..."; read -r; '
         "exit \"$JETARM_EXIT_CODE\""
@@ -138,7 +173,11 @@ def launch_in_terminal(
         raise RuntimeError(
             "未找到可用桌面终端，请安装 gnome-terminal 或 x-terminal-emulator"
         )
-    command = build_shell_command(project_root, spec.command)
+    command = build_shell_command(
+        project_root,
+        spec.command,
+        emergency_stop_key=spec.key if spec.emergency_stop else None,
+    )
     argv: Sequence[str] = terminal_argv(
         executable, title=spec.title, shell_command=command
     )

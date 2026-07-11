@@ -15,6 +15,7 @@ env/
 # Runtime outputs
 data/rgbd_samples/*
 !data/rgbd_samples/.gitkeep
+.jetarm_runtime/
 *.log
 
 # Local machine settings
