@@ -50,6 +50,32 @@ python3 -m src.jetarm_agent.device_config
 13. 会话自动获取 Home 后画面。Agent必须检查目标物品是否确实被抓起，再调用 `confirm_jetarm_grasp_result(success=...)`。
 14. 只有确认工具返回 `grasp_completed=true` 才能结束并报告成功。若确认失败，Agent用当前新图重新识别同一物品并重新分块定位，直到确认成功或出现硬错误。
 
+## 目标定位方式
+
+Agent 支持两种目标定位方式，根据场景和用户指令选择其一：
+
+### 方式一：数据层分块定位（默认）
+
+使用 `zoom_rgb_target_tile` 进行 3×3 递归分块，共 4 层，由程序计算最终原图中心像素坐标。
+适用于任意颜色的目标物品，但需要较多次工具调用（4 次分块选择）。
+
+### 方式二：红色物块自动检测
+
+使用 `detect_red_block_target` 自动检测画面中的红色物块，直接获得中心像素坐标。
+适用于红色目标物品，一次调用即可完成定位，无需手动选择分块。
+
+**使用方式二的闭环步骤（替代原步骤 3-5）：**
+
+3. Agent 调用 `detect_red_block_target`，工具自动采集新画面、运行 HSV 红色检测，
+   返回标注图像和检测到的红色物块中心坐标 `(target_x, target_y)`。
+4. 若未检测到红色物块（`status=error`），Agent 应检查画面并重试，或切换回方式一。
+5. Agent 调用 `control_jetarm_to_target_pixel`，会话自动使用 `detect_red_block_target` 返回的坐标；
+   即使模型填写了其他 `target_x/target_y`，程序也会强制替换为检测坐标。
+
+其余闭环步骤（初始化、取图、对准、下降、夹取、Home、确认）不变。
+每次运动后旧检测结果自动失效，Agent 必须重新调用 `detect_red_block_target` 获取最新坐标。
+方式二与方式一可在同一会话中混用：每次闭环回合独立选择定位方式。
+
 ## 每一步记录
 
 每次 `control_jetarm_to_target_pixel` 的 `grasp_step_record` 和终端输出严格使用以下顺序：

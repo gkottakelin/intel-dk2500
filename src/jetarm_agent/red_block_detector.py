@@ -1,95 +1,229 @@
-import cv2
+"""Pure-vision red block detection for the JetArm Agent.
+
+Provides stateless functions that accept BGR numpy arrays and return
+``RedBlockResult | None``.  No camera or SDK dependency — callers are
+responsible for capturing and decoding frames.
+
+The HSV parameters mirror the Ubuntu ``RedBlockDetector`` class in
+``ubuntu22_04_gemini_camera/red_block_detector.py``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
 import numpy as np
 
-def detect_red_blocks():
-    # 打开默认摄像头 (索引为 0)
-    # 如果你有外接摄像头，可能需要更改为 1 或 2
-    cap = cv2.VideoCapture(0)
 
-    if not cap.isOpened():
-        print("错误：无法打开摄像头。")
-        return
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
 
-    print("摄像头已打开。按 'q' 键退出程序。")
 
-    while True:
-        # 读取一帧图像
-        ret, frame = cap.read()
-        
-        if not ret:
-            print("错误：无法读取画面帧。")
-            break
+@dataclass(frozen=True)
+class RedBlockResult:
+    """Result of a successful red-block detection.
 
-        # 为了避免镜像操作带来的不适，将图像水平翻转
-        frame = cv2.flip(frame, 1)
+    Attributes:
+        center: Pixel ``(x, y)`` of the centroid (top-left origin, x→right, y↓).
+        bbox: Axis-aligned bounding box ``(x, y, width, height)``.
+        area: Contour area in square pixels.
+    """
 
-        # 将图像从 BGR (蓝绿红) 颜色空间转换到 HSV (色相、饱和度、明度) 颜色空间
-        # HSV 空间更适合进行颜色提取
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    center: tuple[int, int]
+    bbox: tuple[int, int, int, int]
+    area: float
 
-        # 定义更严格的红色 HSV 阈值范围
-        # 提高饱和度(S)和明度(V)的下限，收窄色相(H)范围，过滤不纯正的红
-        
-        # 红色范围 1 (0-8)
-        lower_red_1 = np.array([0, 150, 100])
-        upper_red_1 = np.array([8, 255, 255])
-        mask1 = cv2.inRange(hsv, lower_red_1, upper_red_1)
 
-        # 红色范围 2 (172-180)
-        lower_red_2 = np.array([172, 150, 100])
-        upper_red_2 = np.array([180, 255, 255])
-        mask2 = cv2.inRange(hsv, lower_red_2, upper_red_2)
+# ---------------------------------------------------------------------------
+# Core detection from a BGR array
+# ---------------------------------------------------------------------------
 
-        # 将两个掩膜(mask)相加，得到完整的红色区域掩膜
-        mask = mask1 + mask2
 
-        # 形态学操作：开运算 (先腐蚀后膨胀)
-        # 使用更大的 7x7 卷积核，更彻底地去除画面中的细小噪点
-        kernel = np.ones((7, 7), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        
-        # 形态学操作：膨胀
-        # 让识别到的红色区域更加饱满连贯
-        mask = cv2.dilate(mask, kernel, iterations=1)
+def detect_red_block_from_bgr(
+    bgr_frame: np.ndarray,
+    *,
+    hue_low1: int = 0,
+    hue_high1: int = 8,
+    hue_low2: int = 172,
+    hue_high2: int = 180,
+    sat_min: int = 150,
+    val_min: int = 100,
+    min_area: float = 150.0,
+    kernel_size: int = 3,
+) -> RedBlockResult | None:
+    """Detect the largest red region in *bgr_frame*.
 
-        # 寻找轮廓
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    Returns ``None`` when no qualifying red block is found.
 
-        # 遍历所有找到的轮廓
-        for cnt in contours:
-            # 计算轮廓的面积
-            area = cv2.contourArea(cnt)
-            
-            # 提高面积阈值到 1000，过滤掉更小的红色干扰
-            if area > 150:
-                # 获取轮廓的边界框坐标
-                x, y, w, h = cv2.boundingRect(cnt)
-                
-                # 在原图上绘制绿色边界框，线宽为 2
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                
-                # 计算中心点坐标并画一个小圆点
-                center_x = x + w // 2
-                center_y = y + h // 2
-                cv2.circle(frame, (center_x, center_y), 3, (255, 0, 0), -1)
-                
-                # 在边界框上方添加文字标签和中心点坐标
-                text = f"Red Block (X:{center_x}, Y:{center_y})"
-                cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                
-                # 打印中心点坐标到终端
-                print(f"检测到红色物块，中心坐标: X={center_x}, Y={center_y}")
+    Parameters
+    ----------
+    bgr_frame:
+        BGR image as a numpy array (H×W×3, uint8).
+    min_area:
+        Minimum contour area in px².  Smaller regions are treated as noise.
+    """
+    import cv2
 
-        # 显示处理后的画面
-        cv2.imshow("Red Block Detection", frame)
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
-        # 检测按键，如果按下 'q' 键则跳出循环
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    lower1 = np.array([hue_low1, sat_min, val_min], dtype=np.uint8)
+    upper1 = np.array([hue_high1, 255, 255], dtype=np.uint8)
+    lower2 = np.array([hue_low2, sat_min, val_min], dtype=np.uint8)
+    upper2 = np.array([hue_high2, 255, 255], dtype=np.uint8)
 
-    # 释放摄像头资源并关闭所有窗口
-    cap.release()
-    cv2.destroyAllWindows()
+    mask1 = cv2.inRange(hsv, lower1, upper1)
+    mask2 = cv2.inRange(hsv, lower2, upper2)
+    mask = cv2.bitwise_or(mask1, mask2)
 
-if __name__ == "__main__":
-    detect_red_blocks()
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("kernel_size 必须是正奇数")
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    best: RedBlockResult | None = None
+    best_area = 0.0
+
+    for cnt in contours:
+        area = float(cv2.contourArea(cnt))
+        if area <= min_area:
+            continue
+        if area <= best_area:
+            continue
+
+        moments = cv2.moments(cnt)
+        if moments["m00"] == 0:
+            continue
+        cx = int(moments["m10"] / moments["m00"])
+        cy = int(moments["m01"] / moments["m00"])
+        bx, by, bw, bh = (int(v) for v in cv2.boundingRect(cnt))
+
+        best_area = area
+        best = RedBlockResult(
+            center=(cx, cy),
+            bbox=(bx, by, bw, bh),
+            area=area,
+        )
+
+    return best
+
+
+def detect_red_block_mask(
+    bgr_frame: np.ndarray,
+    **kwargs: Any,
+) -> tuple[RedBlockResult | None, np.ndarray]:
+    """Like :func:`detect_red_block_from_bgr` but also returns the binary mask.
+
+    Returns
+    -------
+    tuple
+        ``(result, mask)`` where *mask* is the uint8 binary image after
+        morphological operations (same H×W as *bgr_frame*).
+    """
+    import cv2
+
+    hue_low1 = int(kwargs.pop("hue_low1", 0))
+    hue_high1 = int(kwargs.pop("hue_high1", 8))
+    hue_low2 = int(kwargs.pop("hue_low2", 172))
+    hue_high2 = int(kwargs.pop("hue_high2", 180))
+    sat_min = int(kwargs.pop("sat_min", 150))
+    val_min = int(kwargs.pop("val_min", 100))
+    kernel_size = int(kwargs.pop("kernel_size", 3))
+
+    min_area = float(kwargs.pop("min_area", 150.0))
+
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+
+    lower1 = np.array([hue_low1, sat_min, val_min], dtype=np.uint8)
+    upper1 = np.array([hue_high1, 255, 255], dtype=np.uint8)
+    lower2 = np.array([hue_low2, sat_min, val_min], dtype=np.uint8)
+    upper2 = np.array([hue_high2, 255, 255], dtype=np.uint8)
+
+    mask1 = cv2.inRange(hsv, lower1, upper1)
+    mask2 = cv2.inRange(hsv, lower2, upper2)
+    mask = cv2.bitwise_or(mask1, mask2)
+
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("kernel_size 必须是正奇数")
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    best: RedBlockResult | None = None
+    best_area = 0.0
+
+    for cnt in contours:
+        area = float(cv2.contourArea(cnt))
+        if area <= min_area:
+            continue
+        if area <= best_area:
+            continue
+
+        moments = cv2.moments(cnt)
+        if moments["m00"] == 0:
+            continue
+        cx = int(moments["m10"] / moments["m00"])
+        cy = int(moments["m01"] / moments["m00"])
+        bx, by, bw, bh = (int(v) for v in cv2.boundingRect(cnt))
+
+        best_area = area
+        best = RedBlockResult(
+            center=(cx, cy),
+            bbox=(bx, by, bw, bh),
+            area=area,
+        )
+
+    return best, mask
+
+
+# ---------------------------------------------------------------------------
+# Camera integration wrapper
+# ---------------------------------------------------------------------------
+
+
+def detect_red_block_from_camera(
+    selection_key: str,
+    *,
+    capture_rgb: Callable[..., Any] | None = None,
+    **detector_kwargs: Any,
+) -> RedBlockResult | None:
+    """Capture a JPEG frame from *selection_key*, decode to BGR, and detect.
+
+    Parameters
+    ----------
+    selection_key:
+        Camera identifier passed to *capture_rgb*.
+    capture_rgb:
+        Callable ``(selection_key) -> RGBJpegFrame``.  When ``None``, the
+        default ``capture_rgb_jpeg`` from ``.rgb_camera`` is used.
+    **detector_kwargs:
+        Forwarded to :func:`detect_red_block_from_bgr`.
+    """
+    import cv2
+
+    if capture_rgb is None:
+        from .rgb_camera import capture_rgb_jpeg as _default_capture
+
+        capture_rgb = _default_capture
+
+    frame = capture_rgb(selection_key)
+    jpeg_bytes = getattr(frame, "data", None)
+    if jpeg_bytes is None:
+        raise RuntimeError("capture_rgb 未返回有效的JPEG数据")
+
+    nparr = np.frombuffer(jpeg_bytes, np.uint8)
+    bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise RuntimeError("无法将JPEG解码为BGR图像")
+
+    return detect_red_block_from_bgr(bgr, **detector_kwargs)

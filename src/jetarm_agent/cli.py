@@ -119,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Agent抓取调用前由用户输入的抓取点像素y",
     )
+    parser.add_argument(
+        "--red-block-grasp",
+        action="store_true",
+        help="提示Agent优先使用detect_red_block_target自动检测红色物块，而非zoom_rgb_target_tile分块定位",
+    )
     return parser
 
 
@@ -312,13 +317,21 @@ def _workflow_text() -> str:
         raise ConfigurationError(f"MCP工作流文件不存在: {DEFAULT_WORKFLOW_PATH}") from exc
 
 
-def _print_workflow_summary() -> None:
-    print("MCP执行工作流:")
-    print("  1. 从接口与抓取点配置读取固定抓取点像素")
-    print("  2. Agent识别目标，使用数据层3x3四级分块得到原图中心像素")
-    print("  3. 控制端强制采用分块坐标，以人工测试V2执行一次动作")
-    print("  4. 每次动作结束后重新取图并清空旧分块路径，再次定位")
-    print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
+def _print_workflow_summary(*, red_block_mode: bool = False) -> None:
+    if red_block_mode:
+        print("MCP执行工作流（红色物块检测模式）:")
+        print("  1. 从接口与抓取点配置读取固定抓取点像素")
+        print("  2. Agent调用detect_red_block_target自动检测红色物块中心")
+        print("  3. 控制端以检测到的坐标执行V2动作")
+        print("  4. 每次动作结束后重新取图并重新检测")
+        print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
+    else:
+        print("MCP执行工作流:")
+        print("  1. 从接口与抓取点配置读取固定抓取点像素")
+        print("  2. Agent识别目标，使用数据层3x3四级分块得到原图中心像素")
+        print("  3. 控制端强制采用分块坐标，以人工测试V2执行一次动作")
+        print("  4. 每次动作结束后重新取图并清空旧分块路径，再次定位")
+        print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
 
 
 def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
@@ -939,6 +952,7 @@ async def run(args: argparse.Namespace) -> int:
 
     arm_session: ToolCallingSession | None = None
     bridge: MCPRobotBridge | None = None
+    red_block_mode = bool(getattr(args, "red_block_grasp", False))
     try:
         async with AsyncExitStack() as stack:
             if arm_mode != "off" or bool(effective_devices.rgb_camera):
@@ -965,6 +979,14 @@ async def run(args: argparse.Namespace) -> int:
                     )
                 registry = await bridge.registry()
                 workflow = _workflow_text()
+                if red_block_mode:
+                    workflow += (
+                        "\n\n**当前模式提示：优先使用 detect_red_block_target "
+                        "自动检测红色物块中心作为目标点像素，"
+                        "而不是 zoom_rgb_target_tile 分块定位。"
+                        "每次视觉闭环回合都必须重新调用 detect_red_block_target "
+                        "获取最新检测坐标。**"
+                    )
                 arm_session = ToolCallingSession(
                     settings,
                     client,
@@ -985,7 +1007,7 @@ async def run(args: argparse.Namespace) -> int:
                         else "未设置；抓取前请先输入 /grasp-point x y"
                     )
                 )
-                _print_workflow_summary()
+                _print_workflow_summary(red_block_mode=red_block_mode)
 
             if args.once:
                 if looks_like_arm_command(args.once) and arm_mode == "off":
@@ -1054,7 +1076,9 @@ async def run(args: argparse.Namespace) -> int:
                         "agent_grasp_workflow": "manual_pixel_test_v2",
                         "agent_grasp_progress_check_enabled": False,
                         "agent_target_pixel_localization": (
-                            "hierarchical_data_layer_tiles_3x3_depth4"
+                            "red_block_detector"
+                            if red_block_mode
+                            else "hierarchical_data_layer_tiles_3x3_depth4"
                         ),
                     }
                     print(json.dumps(summary, ensure_ascii=False, indent=2))

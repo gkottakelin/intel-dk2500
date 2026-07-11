@@ -36,6 +36,9 @@ from .device_config import (
     RuntimeDeviceConfig,
     validate_device_interfaces,
 )
+import numpy as np
+
+from .red_block_detector import detect_red_block_from_bgr
 from .rgb_camera import RGBJpegFrame, capture_rgb_jpeg
 
 
@@ -668,6 +671,154 @@ class JetArmMCPService:
             normalized_target_x, normalized_target_y, result
         )
 
+    async def detect_red_block_target(self) -> tuple[dict[str, Any], RGBJpegFrame | None]:
+        """Capture a fresh RGB frame and auto-detect the largest red block.
+
+        Returns a result dict and optionally an annotated JPEG of the frame.
+        When no red block is found the result has ``status: "error"`` and the
+        raw (unannotated) frame is still returned for visual inspection.
+        """
+        import cv2
+
+        try:
+            frame = await self.capture_rgb()
+        except Exception as exc:
+            return {
+                "status": "error",
+                "mcp": "detect_red_block_target",
+                "error": f"RGB画面采集失败: {exc}",
+                "red_block_detected": False,
+            }, None
+
+        nparr = np.frombuffer(frame.data, np.uint8)
+        bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return {
+                "status": "error",
+                "mcp": "detect_red_block_target",
+                "error": "无法将JPEG解码为BGR图像用于红色检测",
+                "red_block_detected": False,
+            }, None
+
+        # Store frame size so pixel coordinate validation works.
+        self._last_rgb_frame_size = (int(frame.width), int(frame.height))
+
+        # Update grasp-point pixel for the current frame size.
+        try:
+            grasp_point_pixel = self.grasp_point_pixel_for_frame(
+                frame.width, frame.height
+            )
+        except RuntimeError as exc:
+            return {
+                "status": "error",
+                "mcp": "detect_red_block_target",
+                "error": str(exc),
+                "red_block_detected": False,
+            }, None
+        self._last_grasp_point_pixel = (
+            dict(grasp_point_pixel) if grasp_point_pixel is not None else None
+        )
+
+        # Run HSV red detection with parameters tuned for real camera images.
+        result = detect_red_block_from_bgr(
+            bgr,
+            sat_min=150,
+            val_min=100,
+            min_area=150.0,
+            kernel_size=7,
+        )
+
+        camera_info: dict[str, Any] = {
+            "status": "ok",
+            "device": self.devices.rgb_camera,
+            "name": self.devices.rgb_camera_name or None,
+            "width": frame.width,
+            "height": frame.height,
+            "mime_type": frame.mime_type,
+            "grasp_point_pixel": grasp_point_pixel,
+            "pixel_coordinate_system": {
+                "coordinate_space": "original_rgb_image_pixels",
+                "origin": "top_left",
+                "origin_pixel": {"x": 0, "y": 0},
+                "x_axis": "right",
+                "y_axis": "down",
+                "x_range_inclusive": [0, frame.width - 1],
+                "y_range_inclusive": [0, frame.height - 1],
+                "top_right": {"x": frame.width - 1, "y": 0},
+                "bottom_left": {"x": 0, "y": frame.height - 1},
+                "bottom_right": {"x": frame.width - 1, "y": frame.height - 1},
+                "resize_or_flip_forbidden": True,
+            },
+        }
+
+        arm_pose = await self.observation_arm_pose()
+
+        if result is None:
+            return {
+                "status": "error",
+                "mcp": "detect_red_block_target",
+                "error": (
+                    "当前画面中未检测到红色物块。"
+                    "请确认：1) 红色目标在RGB画面中可见 "
+                    "2) 光照充足 3) 红色饱和度足够。"
+                    "可调整摄像头位置后重试。"
+                ),
+                "red_block_detected": False,
+                "camera": camera_info,
+                "arm_pose": arm_pose,
+                "detector_params": {
+                    "hue_ranges": [[0, 8], [172, 180]],
+                    "sat_min": 150,
+                    "val_min": 100,
+                    "min_area": 150.0,
+                    "kernel_size": 7,
+                },
+            }, frame
+
+        cx, cy = result.center
+        bx, by, bw, bh = result.bbox
+
+        # Draw annotation on the BGR frame for visual verification.
+        cv2.rectangle(bgr, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+        cv2.circle(bgr, (cx, cy), 4, (255, 0, 0), -1)
+        cv2.putText(
+            bgr,
+            f"Red Block (X:{cx}, Y:{cy})",
+            (bx, max(by - 10, 16)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2,
+        )
+
+        encode_ok, encoded = cv2.imencode(
+            ".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+        )
+        annotated_frame: RGBJpegFrame | None = None
+        if encode_ok:
+            annotated_frame = RGBJpegFrame(
+                data=encoded.tobytes(),
+                width=int(frame.width),
+                height=int(frame.height),
+            )
+
+        return {
+            "status": "ok",
+            "mcp": "detect_red_block_target",
+            "red_block_detected": True,
+            "target_pixel": {"x": cx, "y": cy},
+            "bounding_box": {"x": bx, "y": by, "width": bw, "height": bh},
+            "area_px2": result.area,
+            "image_size": {"width": frame.width, "height": frame.height},
+            "camera": camera_info,
+            "arm_pose": arm_pose,
+            "usage": (
+                "将target_pixel的x和y直接作为"
+                "control_jetarm_to_target_pixel的target_x和target_y参数。"
+                "每次运动后旧检测结果自动失效，必须重新调用本工具。"
+            ),
+        }, annotated_frame
+
     def close(self) -> None:
         if self._controller is not None:
             self._controller.close()
@@ -962,6 +1113,26 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
                 target_vertical_relation=target_vertical_relation,
             )
         )
+
+    @mcp.tool(
+        description=(
+            "自动检测RGB画面中的红色物块并返回其中心像素坐标。"
+            "工具内部会重新采集一帧RGB画面，使用HSV颜色空间检测红色区域，"
+            "返回最大红色物块的中心坐标(target_x, target_y)和标注图像。"
+            "调用此工具前建议先调用get_rgb_camera_frame确认目标在画面中可见。"
+            "若未检测到红色物块则返回status=error，"
+            "请检查光照条件并确认红色目标在画面中后重试。"
+            "检测成功后直接将target_pixel的x/y作为"
+            "control_jetarm_to_target_pixel的target_x/target_y参数。"
+            "这是抓取工作流的选项二：自动红色物块检测模式，"
+            "可替代zoom_rgb_target_tile的四层分块定位。"
+            "每次运动后旧检测结果自动失效，Agent必须重新调用本工具获取最新坐标。"
+        ),
+        structured_output=False,
+    )
+    async def detect_red_block_target() -> Any:
+        result, annotated_frame = await service.detect_red_block_target()
+        return content_result(result, annotated_frame)
 
     @mcp.tool(
         description=(
