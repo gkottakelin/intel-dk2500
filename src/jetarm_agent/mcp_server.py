@@ -660,7 +660,15 @@ class JetArmMCPService:
         )
         if result.get("status") != "ok":
             return self._attach_grasp_step_records(result, [record])
-        if result.get("controller_decision") != "aligned_hold":
+        decision = result.get("controller_decision")
+        if decision == "forward_low_z_grasp_trigger":
+            # J3 adjustment done; skip remaining alignment and go straight to
+            # final descent + grip + home.
+            self._grasp_final_phase = True
+            return await self._complete_final_grasp(
+                normalized_target_x, normalized_target_y, result
+            )
+        if decision != "aligned_hold":
             return self._attach_grasp_step_records(result, [record])
         if not self._grasp_final_phase:
             self._grasp_final_phase = True

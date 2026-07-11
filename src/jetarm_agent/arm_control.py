@@ -386,6 +386,11 @@ class JetArmToolController:
         except Exception:
             self.controller.close()
             raise
+        self._forward_low_z_count = 0
+
+    def reset_forward_low_z_count(self) -> None:
+        """Reset the forward+low-Z occurrence counter (e.g. on agent init)."""
+        self._forward_low_z_count = 0
 
     def _validate_positive_number(
         self, value: object, name: str, maximum: float
@@ -1204,6 +1209,55 @@ class JetArmToolController:
         tolerance_by_axis = {"x": tolerance_x, "y": tolerance_y}
         x_aligned = abs(dx) <= tolerance_x
         y_aligned = abs(dy) <= tolerance_y
+
+        # --- forward + low-Z recovery counter ---
+        # Triggered when grasp-point Z < -1cm and the next motion
+        # would be "forward" (target_y < grasp_y in top-left image coords).
+        forward_candidate = dy < -tolerance_y
+        z_below_threshold = height_cm < -1.0
+        if forward_candidate and z_below_threshold:
+            self._forward_low_z_count += 1
+        else:
+            self._forward_low_z_count = 0
+
+        if self._forward_low_z_count > 2:
+            # On the third+ occurrence, bypass normal forward recovery:
+            # reduce J3 by 30, run for 100 ms, then signal direct grasp.
+            j3_id = self.settings.servo_id("J3")
+            try:
+                j3_current = int(self.controller.read_position(j3_id))
+            except Exception:
+                j3_current = self.runtime.positions.get("J3", 0)
+            j3_low, _j3_high = self.settings.position_limits("J3")
+            j3_target = max(j3_low, j3_current - 30)
+            set_mode = getattr(self.controller, "set_servo_mode", None)
+            if callable(set_mode):
+                set_mode(j3_id)
+            self.controller.move_servo(j3_id, j3_target, 100)
+            if self.config.mode == "hardware":
+                await self.sleep(0.1)
+            self._refresh_hardware_positions()
+            updated_tcp_cm = self._current_tcp_cm()
+            return {
+                "status": "ok",
+                "mode": self.config.mode,
+                "action": "forward_low_z_grasp_trigger",
+                "forward_low_z_count": self._forward_low_z_count,
+                "j3_adjustment": {
+                    "from": j3_current,
+                    "to": j3_target,
+                    "run_time_ms": 100,
+                },
+                "height_cm": height_cm,
+                "height_after_cm": updated_tcp_cm["up_z"],
+                "grasp_point_before_cm": current_tcp_cm,
+                "grasp_point_after_cm": updated_tcp_cm,
+                "grasp_point_xyz_before_cm": current_xyz_cm,
+                "grasp_point_xyz_after_cm": self._grasp_point_xyz_cm(updated_tcp_cm),
+                "pixel_error": {"dx": round(dx, 3), "dy": round(dy, 3)},
+                "grasp_trigger": True,
+            }
+
         if x_aligned and y_aligned:
             return {
                 "status": "ok",
@@ -1332,6 +1386,19 @@ class JetArmToolController:
                 step_duration_s=step_duration_s,
                 speed_saturation_px=speed_saturation_px,
             )
+            if result.get("grasp_trigger"):
+                # J3 adjustment completed; signal upper layer to skip to grasp.
+                return {
+                    **result,
+                    "action": "controller_pixel_align",
+                    "agent_role": "target_pixel_only",
+                    "controller_decision": "forward_low_z_grasp_trigger",
+                    "target_pixel": {"x": target_px, "y": target_py},
+                    "grasp_point_pixel": {"x": grasp_px, "y": grasp_py},
+                    "height_cm": height_cm,
+                    "height_source": "joint_feedback_fk",
+                    "requires_new_target_pixel": False,
+                }
             return {
                 **result,
                 "action": "controller_pixel_align",
@@ -1868,6 +1935,7 @@ class JetArmToolController:
     async def initialize_for_agent(self) -> dict[str, Any]:
         """Return J1-J5 Home first, then open J6 to the Agent start position."""
 
+        self._forward_low_z_count = 0
         home = await self.go_home()
         if home.get("status") != "ok":
             return {
