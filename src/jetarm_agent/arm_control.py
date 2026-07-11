@@ -891,6 +891,12 @@ class JetArmToolController:
         if callable(get_pose_relaxation):
             pose_constraint_status = dict(get_pose_relaxation())
             pose_constraint_status["motion_progress_ok"] = motion_status == "ok"
+            if v2_terminal_result is not None:
+                limit_fallback = v2_terminal_result.get("limit_fallback")
+                if isinstance(limit_fallback, Mapping):
+                    pose_constraint_status["limit_fallback"] = dict(
+                        limit_fallback
+                    )
         grasp_before_cm = {
             "forward_x": round(float(start_tcp[0] * 100.0), 3),
             "left_y": round(float(start_tcp[1] * 100.0), 3),
@@ -963,6 +969,21 @@ class JetArmToolController:
             ),
             "v2_feedback_corrections": (
                 v2_terminal_result.get("feedback_corrections")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "v2_limit_fallback": (
+                v2_terminal_result.get("limit_fallback")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "requested_target_reached": (
+                v2_terminal_result.get("requested_target_reached")
+                if v2_terminal_result is not None
+                else None
+            ),
+            "reachable_target_grasp_point_m": (
+                v2_terminal_result.get("execution_target_grasp_point_m")
                 if v2_terminal_result is not None
                 else None
             ),
@@ -1801,8 +1822,16 @@ class JetArmToolController:
 
     def _camera_pose(self) -> dict[str, Any]:
         tilt_rad = self._camera_signed_tilt_rad()
-        up = self._direction_unit_base("up")
-        down = self._direction_unit_base("down")
+        physical_line_frame = getattr(
+            self.runtime, "camera_grasp_line_frame", None
+        )
+        if callable(physical_line_frame):
+            line_frame = physical_line_frame()
+            up = tuple(float(value) for value in line_frame.up)
+            down = tuple(float(value) for value in line_frame.down)
+        else:
+            up = self._direction_unit_base("up")
+            down = self._direction_unit_base("down")
         forward = self._direction_unit_base("forward")
         left = self._direction_unit_base("left")
         vertical_dot = max(-1.0, min(1.0, up[2]))
@@ -1870,6 +1899,8 @@ class JetArmToolController:
                 "backward": "grasp_point_xyz_y_increases",
                 "left": "grasp_point_xyz_x_decreases",
                 "right": "grasp_point_xyz_x_increases",
+                "up": "grasp_point_xyz_z_increases",
+                "down": "grasp_point_xyz_z_decreases",
             }
         else:
             direction_descriptions = {
@@ -1907,7 +1938,11 @@ class JetArmToolController:
             },
             "agent_direction_frames": {
                 "forward_backward_left_right": horizontal_frame,
-                "up_down": "camera_grasp_line",
+                "up_down": (
+                    "grasp_point_xyz_z"
+                    if uses_v2_camera_frame
+                    else "camera_grasp_line"
+                ),
                 "implementation": runtime_implementation,
                 **direction_descriptions,
             },
@@ -1928,10 +1963,22 @@ class JetArmToolController:
                 "control_frame": (
                     "camera_vector_v2" if uses_v2_camera_frame else "camera_vector"
                 ),
-                "up": "grasp_point_to_camera",
-                "down": "camera_to_grasp_point",
+                "up": (
+                    "grasp_point_xyz_z_increases"
+                    if uses_v2_camera_frame
+                    else "grasp_point_to_camera"
+                ),
+                "down": (
+                    "grasp_point_xyz_z_decreases"
+                    if uses_v2_camera_frame
+                    else "camera_to_grasp_point"
+                ),
                 "forward_backward_left_right": horizontal_frame,
-                "motion_constraint": "keep_camera_grasp_line_pose_and_lock_horizontal_z",
+                "motion_constraint": (
+                    "keep_camera_grasp_line_pose; horizontal locks Z; vertical changes only target Z"
+                    if uses_v2_camera_frame
+                    else "keep_camera_grasp_line_pose_and_lock_horizontal_z"
+                ),
             },
             "vision_guided_grasp": {
                 "pixel_alignment_tolerance_px": DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX,
@@ -2089,7 +2136,8 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                 name="move_jetarm_tcp",
                 description=(
                     "Execute exactly one JetArm TCP movement through the camera-vector "
-                    "runtime. up is grasp-point -> camera, down is camera -> grasp-point, "
+                    "runtime. In V2, up increases grasp-point XYZ Z and down decreases Z; "
+                    "V1 retains its camera-line up/down directions. "
                     "forward decreases grasp-point XYZ Y, backward increases XYZ Y, "
                     "left decreases XYZ X, and right increases XYZ X. distance_cm must be strictly less than 2 cm. For a longer user "
                     "request, the Agent must use a fresh RGB frame to decide only the current "
@@ -2498,7 +2546,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 3. 用户没有给出距离时先询问，不得猜测。未指定速度时使用1.5cm/s，速度只能在1到5cm/s。
 4. 视觉抓取时，Agent先在最新RGB原图中识别用户指定物品，再使用zoom_rgb_target_tile进行数据层3x3分块定位：每次只选择目标物品中心所在的一块、查看返回的新裁剪图后再选下一层，共4层。分块图不绘制坐标标签；程序根据每层原图边界得到最终target_x/target_y。像素坐标固定为：左上角(0,0)，X向右、Y向下，右下角(width-1,height-1)。
 5. 抓取点像素必须来自接口与抓取点配置文件，或由用户在调用前通过/grasp-point临时覆盖；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未配置时不得猜测或使用图像中心。
-6. V2水平运动以实际抓取点XYZ为准：forward必须使实际Y减小，backward必须使实际Y增加，left使X减小，right使X增加；上下仍沿摄像头—抓取点连线。
+6. V2六方向都以实际抓取点XYZ为准：forward使Y减小，backward使Y增加，left使X减小，right使X增加，up使Z增加，down使Z减小；所有方向仍保持摄像头—抓取点姿态。请求点因关节限位不可达时，前往本次目标方向上距离请求点最近的可达位置，并在结果中标明限位回退。
 7. 每张最新图像只允许调用一次control_jetarm_to_target_pixel；调用前必须完成4层zoom_rgb_target_tile，且每个模型回合只能选择一层。控制程序会用最终分块的原图中心坐标覆盖模型自行填写的target_x/target_y，Agent不决定机械臂方向。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
 8. control_jetarm_to_target_pixel会按FK高度选择40/25/13/8px动态容差和高度线性像素比例，自行执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。
 9. 每次机械臂运动结束后旧图像和旧分块路径立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标，并重新完成4层数据分块定位后再运动。

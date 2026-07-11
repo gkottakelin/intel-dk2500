@@ -575,6 +575,18 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 state["arm_parameters"]["agent_direction_frames"]["forward"],
                 "grasp_point_xyz_y_decreases",
             )
+            self.assertEqual(
+                state["arm_parameters"]["agent_direction_frames"]["up_down"],
+                "grasp_point_xyz_z",
+            )
+            self.assertEqual(
+                state["arm_parameters"]["agent_direction_frames"]["up"],
+                "grasp_point_xyz_z_increases",
+            )
+            self.assertEqual(
+                state["arm_parameters"]["agent_direction_frames"]["down"],
+                "grasp_point_xyz_z_decreases",
+            )
         finally:
             controller.close()
 
@@ -603,6 +615,37 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(comparison(before_y, actual_y))
                 finally:
                     controller.close()
+
+    async def test_v2_up_uses_positive_z_and_reports_nearest_limit_fallback(self):
+        controller = JetArmToolController(
+            ArmControlConfig(
+                mode="dry-run",
+                max_distance_cm=200.0,
+                allow_extended_distance=True,
+                camera_vector_version="v2",
+                manual_progress_check_enabled=False,
+            )
+        )
+        try:
+            result = await controller.move_tcp("up", 100.0, 1.0)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(
+                result["direction_unit_base"],
+                {"forward_x": 0.0, "left_y": 0.0, "up_z": 1.0},
+            )
+            self.assertGreater(
+                result["grasp_point_xyz_after_cm"]["z"],
+                result["grasp_point_xyz_before_cm"]["z"],
+            )
+            self.assertTrue(result["v2_limit_fallback"]["used"])
+            self.assertFalse(result["requested_target_reached"])
+            self.assertEqual(
+                result["camera_pose_constraint"]["limit_fallback"]["method"],
+                "nearest_reachable_on_command_segment",
+            )
+        finally:
+            controller.close()
 
     def test_manual_v2_relaxed_horizontal_progress_rule(self):
         accepted = manual_v2_horizontal_progress_validation(

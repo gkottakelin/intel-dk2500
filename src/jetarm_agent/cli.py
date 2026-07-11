@@ -477,6 +477,19 @@ def _print_manual_pixel_result(result: dict[str, object]) -> None:
             " | 姿态约束=已放宽"
             f"（仅下降；原因={reason}；步数={relaxed_steps}）"
         )
+    limit_fallback = result.get("v2_limit_fallback")
+    if not isinstance(limit_fallback, dict) and isinstance(
+        pose_constraint, dict
+    ):
+        candidate_fallback = pose_constraint.get("limit_fallback")
+        if isinstance(candidate_fallback, dict):
+            limit_fallback = candidate_fallback
+    if isinstance(limit_fallback, dict) and limit_fallback.get("used"):
+        pose_segment += (
+            " | 限位状态=目标不可达，已前往最近可达位置"
+            f"（可达比例={float(limit_fallback.get('reachable_fraction', 0.0)) * 100.0:.1f}%，"
+            f"剩余距离={float(limit_fallback.get('remaining_distance_m', 0.0)) * 100.0:.2f}cm）"
+        )
     progress_validation = result.get("horizontal_progress_validation")
     vertical_progress_validation = result.get("vertical_progress_validation")
     if not isinstance(progress_validation, dict):

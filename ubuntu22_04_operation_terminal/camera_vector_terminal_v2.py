@@ -1,10 +1,9 @@
-"""Camera-line-relative JetArm terminal with pose-constrained analytic IK.
+"""XYZ-calibrated JetArm terminal with pose-constrained analytic IK.
 
-V2 defines vertical motion from the current camera/grasp-point line and
-horizontal motion from the displayed grasp-point XYZ coordinates:
+V2 defines all six directions from the displayed grasp-point XYZ coordinates:
 
-- up: grasp point -> camera
-- down: camera -> grasp point
+- up: displayed grasp-point Z increases
+- down: displayed grasp-point Z decreases
 - forward: displayed grasp-point Y decreases (base forward_x increases)
 - backward: displayed grasp-point Y increases (base forward_x decreases)
 - left: displayed grasp-point X decreases
@@ -38,7 +37,6 @@ from camera_vector_terminal import (
     CameraRelativeManualServoRuntime,
     CameraVectorTerminalApp,
     build_camera_relative_frame,
-    settings_kinematics,
 )
 from jetarm_terminal import (
     ARM_JOINTS,
@@ -64,6 +62,9 @@ MOTION_SETTLE_S = 0.05
 MAX_FEEDBACK_CORRECTIONS = 2
 MIN_FEEDBACK_CORRECTION_S = 0.20
 MAX_FEEDBACK_CORRECTION_S = 0.60
+LIMIT_FALLBACK_COARSE_STEPS = 24
+LIMIT_FALLBACK_REFINEMENT_STEPS = 12
+LIMIT_FALLBACK_PROGRESS_EPSILON_M = 1e-6
 INITIAL_J6_POSITION = 400
 TERMINAL_MOTION_DIRECTIONS = (
     "forward",
@@ -96,39 +97,14 @@ def build_camera_vector_v2_frame(
     *,
     pitch_rad: float | None = None,
 ) -> CameraRelativeFrame:
-    """Build V2 directions from the camera/grasp line in base coordinates."""
+    """Build V2 directions from displayed grasp-point XYZ axes."""
 
-    if pitch_rad is None:
-        source = build_camera_relative_frame(settings, positions, camera_config)
-        up = source.up
-    else:
-        kinematics = settings_kinematics(settings)
-        yaw = kinematics.position_to_model_angle("J1", positions["J1"])
-        yaw_cos = math.cos(yaw)
-        yaw_sin = math.sin(yaw)
-        tool_axis = np.array(
-            (
-                math.sin(pitch_rad) * yaw_cos,
-                math.sin(pitch_rad) * yaw_sin,
-                math.cos(pitch_rad),
-            ),
-            dtype=float,
-        )
-        normal_axis = np.array(
-            (
-                math.cos(pitch_rad) * yaw_cos,
-                math.cos(pitch_rad) * yaw_sin,
-                -math.sin(pitch_rad),
-            ),
-            dtype=float,
-        )
-        lateral_axis = np.array((-yaw_sin, yaw_cos, 0.0), dtype=float)
-        up = _unit(
-            camera_config.grasp_to_camera_along_tool_m * tool_axis
-            + camera_config.grasp_to_camera_normal_m * normal_axis
-            + camera_config.grasp_to_camera_lateral_m * lateral_axis
-        )
-    down = -up
+    # Retain the public arguments because the V2 runtime and GUI share this
+    # frame builder with earlier releases.  The camera geometry still defines
+    # the pose constraint, but no longer defines a translation direction.
+    del settings, positions, camera_config, pitch_rad
+    up = WORLD_UP.copy()
+    down = -WORLD_UP.copy()
     # Displayed manual grasp XYZ is mapped as:
     #   X = base.left_y, Y = -base.forward_x, Z = base.up_z.
     # Therefore forward must increase base.forward_x so displayed Y decreases;
@@ -152,7 +128,7 @@ def _wrap_angle(angle_rad: float) -> float:
 
 
 class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
-    """Camera-relative runtime using fixed-inclination analytic pose IK."""
+    """XYZ-direction runtime using fixed-inclination analytic pose IK."""
 
     position_target_tolerance_m = IK_POSITION_TOLERANCE_M
 
@@ -230,6 +206,15 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
 
     def camera_relative_frame(self) -> CameraRelativeFrame:
         return build_camera_vector_v2_frame(
+            self.settings,
+            self.positions,
+            self.camera_config,
+        )
+
+    def camera_grasp_line_frame(self) -> CameraRelativeFrame:
+        """Return the physical camera/grasp line, separate from XYZ controls."""
+
+        return build_camera_relative_frame(
             self.settings,
             self.positions,
             self.camera_config,
@@ -394,50 +379,29 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
         current_tcp = self.model.tcp(self.positions)
         target_delta = target - current_tcp
         candidates = self._analytic_pose_candidates(target, target_pitch)
+        valid_candidates = self._valid_strict_pose_candidates(
+            candidates,
+            target,
+            target_inclination,
+        )
         reason_code: str | None = None
         message: str | None = None
         strict = True
+        execution_target = target.copy()
+        limit_fallback_used = False
+        reachable_fraction = 1.0
 
-        if candidates:
-            valid_candidates = [
-                item
-                for item in candidates
-                if float(np.linalg.norm(self.model.tcp(item) - target))
-                <= IK_POSITION_TOLERANCE_M
-                and abs(
-                    self._camera_line_vertical_angle_rad(item)
-                    - target_inclination
-                )
-                <= IK_INCLINATION_TOLERANCE_RAD
-            ]
-            if valid_candidates:
-                # Once accuracy is inside the hard tolerance, continuity and
-                # joint-limit margin first select the local IK branch.  Pose
-                # accuracy then selects the best discrete-servo neighbor
-                # inside that branch.
-                ranked_candidates = [
-                    (self._joint_continuity_rank(item), item)
-                    for item in valid_candidates
-                ]
-                minimum_max_motion = min(
-                    rank[0] for rank, _item in ranked_candidates
-                )
-                local_branch = [
-                    item
-                    for rank, item in ranked_candidates
-                    if rank[0] <= minimum_max_motion + 0.01
-                ]
-                best = min(
-                    local_branch,
-                    key=lambda item: self._pose_candidate_score(
-                        item,
-                        target,
-                        target_pitch,
-                        target_inclination,
-                    ),
-                )
-            else:
-                best = min(
+        if valid_candidates:
+            best = self._select_best_strict_pose_candidate(
+                valid_candidates,
+                target,
+                target_pitch,
+                target_inclination,
+            )
+        else:
+            if candidates:
+                reason_code = "strict_pose_error_exceeded"
+                closest = min(
                     candidates,
                     key=lambda item: self._pose_candidate_score(
                         item,
@@ -446,41 +410,75 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
                         target_inclination,
                     ),
                 )
-            position_error = float(np.linalg.norm(self.model.tcp(best) - target))
-            inclination_error = abs(
-                self._camera_line_vertical_angle_rad(best) - target_inclination
-            )
-            if (
-                position_error > IK_POSITION_TOLERANCE_M
-                or inclination_error > IK_INCLINATION_TOLERANCE_RAD
-            ):
-                reason_code = "strict_pose_error_exceeded"
-                message = (
-                    "V2 strict absolute pose error exceeded: "
-                    f"position={position_error * 1000.0:.1f}mm, "
-                    f"inclination={math.degrees(inclination_error):.2f}deg"
+                closest_position_error = float(
+                    np.linalg.norm(self.model.tcp(closest) - target)
                 )
+                closest_inclination_error = abs(
+                    self._camera_line_vertical_angle_rad(closest)
+                    - target_inclination
+                )
+                strict_message = (
+                    "V2 strict absolute pose error exceeded: "
+                    f"position={closest_position_error * 1000.0:.1f}mm, "
+                    "inclination="
+                    f"{math.degrees(closest_inclination_error):.2f}deg"
+                )
+            else:
+                reason_code = "strict_pose_unreachable_or_joint_limit"
+                strict_message = (
+                    "V2 strict absolute pose target is unreachable or at a joint limit"
+                )
+            fallback = self._nearest_reachable_pose_on_command_segment(
+                current_tcp,
+                target,
+                target_pitch,
+                target_inclination,
+            )
+            if fallback is not None:
+                best, reachable_fraction = fallback
+                execution_target = self.model.tcp(best).copy()
+                limit_fallback_used = True
+                reason_code = "joint_limit_nearest_reachable"
+                remaining_mm = float(
+                    np.linalg.norm(target - execution_target) * 1000.0
+                )
+                message = (
+                    f"{strict_message}；已选择沿本次目标方向距离请求点最近的可达位置，"
+                    f"可达比例={reachable_fraction * 100.0:.1f}%，"
+                    f"剩余距离={remaining_mm:.1f}mm"
+                )
+                self.logger(message)
+            else:
+                message = strict_message
                 best = self._relax_downward_pose_or_reject(
-                    target_delta, reason_code, message
+                    target_delta,
+                    str(reason_code),
+                    strict_message,
                 )
                 strict = False
-        else:
-            reason_code = "strict_pose_unreachable_or_joint_limit"
-            message = "V2 strict absolute pose target is unreachable or at a joint limit"
-            best = self._relax_downward_pose_or_reject(
-                target_delta, reason_code, message
-            )
-            strict = False
 
         solved_tcp = self.model.tcp(best)
-        solved_position_error = float(np.linalg.norm(solved_tcp - target))
+        solved_position_error = float(
+            np.linalg.norm(solved_tcp - execution_target)
+        )
+        requested_position_error = float(np.linalg.norm(solved_tcp - target))
         solved_inclination = self._camera_line_vertical_angle_rad(best)
         solved_inclination_error = abs(solved_inclination - target_inclination)
         relaxed = bool(self._pose_relaxation_used and not strict)
-        accepted = best != self.positions or (
-            solved_position_error <= IK_POSITION_TOLERANCE_M
-            and (relaxed or solved_inclination_error <= IK_INCLINATION_TOLERANCE_RAD)
-        )
+        if limit_fallback_used:
+            accepted = (
+                float(np.linalg.norm(solved_tcp - current_tcp))
+                > LIMIT_FALLBACK_PROGRESS_EPSILON_M
+                and solved_inclination_error <= IK_INCLINATION_TOLERANCE_RAD
+            )
+        else:
+            accepted = best != self.positions or (
+                solved_position_error <= IK_POSITION_TOLERANCE_M
+                and (
+                    relaxed
+                    or solved_inclination_error <= IK_INCLINATION_TOLERANCE_RAD
+                )
+            )
         plan: dict[str, object] = {
             "status": "planned" if accepted else "rejected",
             "accepted": accepted,
@@ -490,14 +488,33 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
             "message": message,
             "start_grasp_point_m": [float(value) for value in current_tcp],
             "target_grasp_point_m": [float(value) for value in target],
+            "execution_target_grasp_point_m": [
+                float(value) for value in execution_target
+            ],
             "solved_grasp_point_m": [float(value) for value in solved_tcp],
             "target_joint_positions": dict(best),
             "target_tool_pitch_deg": math.degrees(target_pitch),
             "target_camera_line_angle_deg": math.degrees(target_inclination),
             "solved_camera_line_angle_deg": math.degrees(solved_inclination),
             "position_error_m": solved_position_error,
+            "requested_target_position_error_m": requested_position_error,
             "inclination_error_deg": math.degrees(solved_inclination_error),
             "candidate_count": len(candidates),
+            "valid_candidate_count": len(valid_candidates),
+            "limit_fallback": {
+                "used": limit_fallback_used,
+                "method": (
+                    "nearest_reachable_on_command_segment"
+                    if limit_fallback_used
+                    else None
+                ),
+                "reachable_fraction": reachable_fraction,
+                "requested_target_reached": (
+                    requested_position_error <= IK_POSITION_TOLERANCE_M
+                ),
+                "remaining_distance_m": requested_position_error,
+                "pose_constraint_relaxed": relaxed,
+            },
         }
         self._last_motion_plan = plan
         return plan
@@ -592,7 +609,10 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
             return True
         self.command_joint_pose(target_positions, run_time_s=execution_time_s)
         if bool(plan["strict_pose"]):
-            self._motion_target_tcp = next_target
+            self._motion_target_tcp = np.asarray(
+                plan.get("execution_target_grasp_point_m", next_target),
+                dtype=float,
+            ).reshape(3).copy()
         else:
             self._motion_target_tcp = self.model.tcp(self.positions).copy()
         self._last_interactive_target_tcp = self._motion_target_tcp.copy()
@@ -843,6 +863,151 @@ class CameraVectorV2Runtime(CameraRelativeManualServoRuntime):
                 candidates.append(candidate)
         return candidates
 
+    def _valid_strict_pose_candidates(
+        self,
+        candidates: list[dict[str, int]],
+        target_tcp: np.ndarray,
+        target_inclination_rad: float,
+    ) -> list[dict[str, int]]:
+        return [
+            item
+            for item in candidates
+            if float(np.linalg.norm(self.model.tcp(item) - target_tcp))
+            <= IK_POSITION_TOLERANCE_M
+            and abs(
+                self._camera_line_vertical_angle_rad(item)
+                - target_inclination_rad
+            )
+            <= IK_INCLINATION_TOLERANCE_RAD
+        ]
+
+    def _select_best_strict_pose_candidate(
+        self,
+        candidates: list[dict[str, int]],
+        target_tcp: np.ndarray,
+        target_pitch_rad: float,
+        target_inclination_rad: float,
+    ) -> dict[str, int]:
+        """Select a nearby IK branch, then the most accurate servo neighbor."""
+
+        ranked_candidates = [
+            (self._joint_continuity_rank(item), item) for item in candidates
+        ]
+        minimum_max_motion = min(rank[0] for rank, _item in ranked_candidates)
+        local_branch = [
+            item
+            for rank, item in ranked_candidates
+            if rank[0] <= minimum_max_motion + 0.01
+        ]
+        return min(
+            local_branch,
+            key=lambda item: self._pose_candidate_score(
+                item,
+                target_tcp,
+                target_pitch_rad,
+                target_inclination_rad,
+            ),
+        )
+
+    def _nearest_reachable_pose_on_command_segment(
+        self,
+        start_tcp: np.ndarray,
+        requested_target_tcp: np.ndarray,
+        target_pitch_rad: float,
+        target_inclination_rad: float,
+    ) -> tuple[dict[str, int], float] | None:
+        """Find the strict-pose reachable point nearest the requested target.
+
+        The search is restricted to the current command segment, so a limit
+        fallback can never introduce sideways or opposite-direction motion.
+        A coarse whole-segment scan handles non-monotonic joint-limit regions;
+        a bounded binary refinement then approaches the final reachable edge.
+        """
+
+        start = np.asarray(start_tcp, dtype=float).reshape(3)
+        target = np.asarray(requested_target_tcp, dtype=float).reshape(3)
+        delta = target - start
+        distance = float(np.linalg.norm(delta))
+        if distance <= LIMIT_FALLBACK_PROGRESS_EPSILON_M:
+            return None
+
+        cache: dict[float, dict[str, int] | None] = {}
+
+        def candidate_at(fraction: float) -> dict[str, int] | None:
+            key = round(float(fraction), 12)
+            if key in cache:
+                return cache[key]
+            point = start + delta * key
+            raw = self._analytic_pose_candidates(point, target_pitch_rad)
+            valid = self._valid_strict_pose_candidates(
+                raw,
+                point,
+                target_inclination_rad,
+            )
+            selected = (
+                self._select_best_strict_pose_candidate(
+                    valid,
+                    point,
+                    target_pitch_rad,
+                    target_inclination_rad,
+                )
+                if valid
+                else None
+            )
+            cache[key] = selected
+            return selected
+
+        best: dict[str, int] | None = None
+        best_fraction = 0.0
+        best_distance = math.inf
+        coarse_step = 1.0 / LIMIT_FALLBACK_COARSE_STEPS
+        for index in range(1, LIMIT_FALLBACK_COARSE_STEPS + 1):
+            fraction = index * coarse_step
+            candidate = candidate_at(fraction)
+            if candidate is None:
+                continue
+            solved = self.model.tcp(candidate)
+            progress = float(np.dot(solved - start, delta / distance))
+            if progress <= LIMIT_FALLBACK_PROGRESS_EPSILON_M:
+                continue
+            target_distance = float(np.linalg.norm(solved - target))
+            if (
+                target_distance < best_distance - 1e-12
+                or (
+                    abs(target_distance - best_distance) <= 1e-12
+                    and fraction > best_fraction
+                )
+            ):
+                best = candidate
+                best_fraction = fraction
+                best_distance = target_distance
+
+        if best is None:
+            return None
+
+        lower = best_fraction
+        upper = min(1.0, best_fraction + coarse_step)
+        if upper > lower and candidate_at(upper) is None:
+            for _index in range(LIMIT_FALLBACK_REFINEMENT_STEPS):
+                middle = (lower + upper) / 2.0
+                candidate = candidate_at(middle)
+                if candidate is None:
+                    upper = middle
+                    continue
+                solved = self.model.tcp(candidate)
+                progress = float(np.dot(solved - start, delta / distance))
+                if progress <= LIMIT_FALLBACK_PROGRESS_EPSILON_M:
+                    upper = middle
+                    continue
+                lower = middle
+                target_distance = float(np.linalg.norm(solved - target))
+                if target_distance <= best_distance + 1e-12:
+                    best = candidate
+                    best_fraction = middle
+                    best_distance = target_distance
+
+        return dict(best), float(best_fraction)
+
     def _pose_candidate_score(
         self,
         positions: dict[str, int],
@@ -1016,6 +1181,10 @@ async def execute_terminal_motion(
         runtime.discard_interactive_motion_target()
         raise
     final_plan = plan
+    execution_target_tcp = np.asarray(
+        plan.get("execution_target_grasp_point_m", target_tcp),
+        dtype=float,
+    ).reshape(3)
     status = "ok" if bool(plan["accepted"]) else "error"
     if status == "error":
         error = str(plan.get("message") or "V2 absolute grasp target was rejected")
@@ -1052,7 +1221,9 @@ async def execute_terminal_motion(
                 previous_tcp = start_tcp.copy()
                 while steps < max_relaxed_steps:
                     actual_tcp = runtime.model.tcp(runtime.positions).copy()
-                    position_error = float(np.linalg.norm(actual_tcp - target_tcp))
+                    position_error = float(
+                        np.linalg.norm(actual_tcp - execution_target_tcp)
+                    )
                     if position_error <= IK_POSITION_TOLERANCE_M:
                         break
                     step_progress = float(
@@ -1071,7 +1242,7 @@ async def execute_terminal_motion(
                         error = "V2 relaxed downward motion did not reduce grasp height"
                         break
                     previous_tcp = actual_tcp
-                    next_plan = runtime.plan_grasp_target(target_tcp)
+                    next_plan = runtime.plan_grasp_target(execution_target_tcp)
                     final_plan = next_plan
                     if not bool(next_plan["accepted"]):
                         status = "error"
@@ -1128,13 +1299,15 @@ async def execute_terminal_motion(
                         float(plan["target_camera_line_angle_deg"])
                     )
                     if (
-                        float(np.linalg.norm(actual_tcp - target_tcp))
+                        float(np.linalg.norm(actual_tcp - execution_target_tcp))
                         <= IK_POSITION_TOLERANCE_M
                         and abs(actual_angle - target_angle)
                         <= IK_INCLINATION_TOLERANCE_RAD
                     ):
                         break
-                    correction_plan = runtime.plan_grasp_target(target_tcp)
+                    correction_plan = runtime.plan_grasp_target(
+                        execution_target_tcp
+                    )
                     final_plan = correction_plan
                     if (
                         not bool(correction_plan["accepted"])
@@ -1159,7 +1332,9 @@ async def execute_terminal_motion(
             actual_tcp = runtime.model.tcp(runtime.positions).copy()
             actual_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
             target_angle = math.radians(float(plan["target_camera_line_angle_deg"]))
-            position_error = float(np.linalg.norm(actual_tcp - target_tcp))
+            position_error = float(
+                np.linalg.norm(actual_tcp - execution_target_tcp)
+            )
             inclination_error = abs(actual_angle - target_angle)
             if status == "ok" and not bool(plan["strict_pose"]):
                 direction_progress = float(
@@ -1191,7 +1366,9 @@ async def execute_terminal_motion(
         else:
             actual_tcp = runtime.model.tcp(runtime.positions).copy()
             actual_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
-            position_error = float(np.linalg.norm(actual_tcp - target_tcp))
+            position_error = float(
+                np.linalg.norm(actual_tcp - execution_target_tcp)
+            )
             inclination_error = abs(
                 actual_angle
                 - math.radians(float(plan["target_camera_line_angle_deg"]))
@@ -1229,6 +1406,9 @@ async def execute_terminal_motion(
         "requested_distance_cm": float(speed_cm_s) * duration,
         "start_grasp_point_m": [float(value) for value in start_tcp],
         "target_grasp_point_m": [float(value) for value in target_tcp],
+        "execution_target_grasp_point_m": [
+            float(value) for value in execution_target_tcp
+        ],
         "actual_grasp_point_m": [float(value) for value in actual_tcp],
         "motion_plan": plan,
         "final_motion_plan": final_plan,
@@ -1240,6 +1420,14 @@ async def execute_terminal_motion(
         "actual_camera_line_angle_deg": math.degrees(actual_angle),
         "camera_line_angle_error_deg": math.degrees(inclination_error),
         "position_error_m": position_error,
+        "requested_target_position_error_m": float(
+            np.linalg.norm(actual_tcp - target_tcp)
+        ),
+        "requested_target_reached": bool(
+            float(np.linalg.norm(actual_tcp - target_tcp))
+            <= IK_POSITION_TOLERANCE_M
+        ),
+        "limit_fallback": dict(plan.get("limit_fallback", {})),
         "direction_progress_m": direction_progress,
         "feedback_corrections": feedback_corrections,
         "relaxed_iterations": relaxed_iterations,
@@ -1324,7 +1512,10 @@ class CameraVectorV2App(CameraVectorTerminalApp):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="JetArm camera-line-relative terminal V2 for Ubuntu 22.04"
+        description=(
+            "JetArm grasp-point XYZ terminal V2 with camera-line pose hold "
+            "for Ubuntu 22.04"
+        )
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="terminal JSON config")
     parser.add_argument("--port", default=None, help="serial device, for example /dev/ttyUSB0")

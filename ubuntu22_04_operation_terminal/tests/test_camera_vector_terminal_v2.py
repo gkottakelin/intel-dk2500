@@ -45,6 +45,8 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
 
+        np.testing.assert_allclose(frame.up, np.array((0.0, 0.0, 1.0)))
+        np.testing.assert_allclose(frame.down, np.array((0.0, 0.0, -1.0)))
         np.testing.assert_allclose(frame.forward, np.array((1.0, 0.0, 0.0)))
         np.testing.assert_allclose(frame.backward, np.array((-1.0, 0.0, 0.0)))
         np.testing.assert_allclose(frame.left, np.array((0.0, -1.0, 0.0)))
@@ -439,7 +441,7 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         self.assertLess(abs(float(displacement[2])), 0.0015)
         self.assertLess(abs(after_angle - before_angle), math.radians(1.0))
 
-    def test_up_follows_grasp_to_camera_and_holds_inclination(self):
+    def test_up_increases_grasp_z_and_holds_inclination(self):
         runtime, _controller = self.make_runtime()
         frame = runtime.camera_relative_frame()
         before_tcp = runtime.model.tcp(runtime.positions)
@@ -451,8 +453,44 @@ class CameraVectorTerminalV2Test(unittest.TestCase):
         after_tcp = runtime.model.tcp(runtime.positions)
         after_angle = runtime._camera_line_vertical_angle_rad(runtime.positions)
         displacement = after_tcp - before_tcp
+        self.assertGreater(float(displacement[2]), 0.0)
         self.assertGreater(float(np.dot(displacement, frame.up)), 0.0)
         self.assertLess(abs(after_angle - before_angle), math.radians(1.0))
+
+    def test_unreachable_up_target_executes_nearest_reachable_limit_pose(self):
+        runtime, _controller = self.make_runtime()
+        before = runtime.model.tcp(runtime.positions).copy()
+
+        result = asyncio.run(
+            execute_terminal_motion(
+                runtime,
+                direction="up",
+                speed_cm_s=1.0,
+                duration_s=100.0,
+                real_time=False,
+            )
+        )
+
+        actual = np.asarray(result["actual_grasp_point_m"], dtype=float)
+        requested = np.asarray(result["target_grasp_point_m"], dtype=float)
+        reachable = np.asarray(
+            result["execution_target_grasp_point_m"], dtype=float
+        )
+        fallback = result["limit_fallback"]
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(fallback["used"])
+        self.assertEqual(
+            fallback["method"], "nearest_reachable_on_command_segment"
+        )
+        self.assertFalse(result["requested_target_reached"])
+        self.assertGreater(actual[2], before[2])
+        self.assertLess(
+            float(np.linalg.norm(actual - requested)),
+            float(np.linalg.norm(before - requested)),
+        )
+        np.testing.assert_allclose(actual, reachable, atol=1e-12)
+        self.assertLess(result["position_error_m"], 1e-12)
+        self.assertLess(result["camera_line_angle_error_deg"], 1.0)
 
     def test_all_six_controls_move_in_declared_direction(self):
         controls = (
