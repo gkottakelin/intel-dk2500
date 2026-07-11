@@ -13,4 +13,4 @@ fi
 
 export LD_LIBRARY_PATH="${SDK_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 cd "${APP_DIR}"
-exec "${PYTHON_BIN}" gemini_camera.py "$@"
+exec "${PYTHON_BIN}" gemini_camera.py --color-only "$@"

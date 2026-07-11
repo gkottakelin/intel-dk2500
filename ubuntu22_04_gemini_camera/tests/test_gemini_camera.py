@@ -12,6 +12,7 @@ sys.path.insert(0, str(APP_ROOT))
 
 from gemini_camera import (  # noqa: E402
     CameraSettings,
+    build_parser,
     map_display_to_depth,
     median_depth_at,
     pixel_to_camera_point_mm,
@@ -37,6 +38,14 @@ class GeminiCameraTest(unittest.TestCase):
         self.assertEqual(settings.click_window, 7)
         self.assertEqual(settings.sdk_library.name, "libOrbbecSDK.so.1.5.7")
         self.assertEqual(settings.sdk_library.parent.name, "x64")
+
+    def test_color_only_cli_flag(self):
+        self.assertFalse(build_parser().parse_args([]).color_only)
+        self.assertTrue(build_parser().parse_args(["--color-only"]).color_only)
+
+    def test_run_script_enables_color_only_mode(self):
+        script = (APP_ROOT / "run.sh").read_text(encoding="utf-8")
+        self.assertIn('gemini_camera.py --color-only "$@"', script)
 
     def test_rejects_even_click_window(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,4 +1,4 @@
-# Gemini 深度相机 Ubuntu 22.04 独立程序
+# Gemini 相机 Ubuntu 22.04 独立程序
 
 本目录是不依赖 ROS2 的 Gemini RGB-D 查看程序，可整体复制到 Intel/AMD x86_64 的 Ubuntu 22.04 板卡。代码移植自 `src/gemini_windows/`，设备选择和部署结构与 `ubuntu22_04_operation_terminal/` 一致。
 
@@ -34,7 +34,8 @@ bash run.sh --diagnose
 
 ## 3. 运行
 
-直接运行会打开与机械臂 COM 口设置窗口同样结构的 USB 相机选择窗口：
+直接运行会打开与机械臂 COM 口设置窗口同样结构的 USB 相机选择窗口。
+`run.sh`默认只读取和显示RGB彩色图，不读取、转换或显示深度图：
 
 ```bash
 bash run.sh
@@ -54,7 +55,12 @@ bash run.sh --first-device
 bash run.sh --serial 你的相机序列号 --read-intrinsics
 ```
 
-查看器左侧为彩色图，右侧为深度伪彩色图。左键点击彩色图可显示该位置附近的中值深度和相机坐标；按 `s` 保存彩色图、深度预览和毫米深度数组；按 `q` 或 `Esc` 退出。
+查看器只显示RGB彩色图；按 `s` 只保存RGB图像；按 `q` 或 `Esc` 退出。
+如果确实需要单独调试原RGB-D查看器，可不经`run.sh`直接运行：
+
+```bash
+.venv/bin/python gemini_camera.py
+```
 
 ## 4. 配置文件
 

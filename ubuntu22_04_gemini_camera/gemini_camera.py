@@ -77,6 +77,7 @@ except ImportError:  # pragma: no cover - depends on Ubuntu system packages
 
 DEFAULT_CONFIG_PATH = APP_ROOT / "config" / "camera.json"
 WINDOW_NAME = "Gemini Ubuntu RGB-D"
+RGB_WINDOW_NAME = "Gemini Ubuntu RGB"
 ESC_KEY = 27
 
 
@@ -354,6 +355,57 @@ def save_snapshot(color: np.ndarray, depth_vis: np.ndarray, depth_mm: np.ndarray
     print(f"已保存样本到: {output_dir}")
 
 
+def save_color_snapshot(color: np.ndarray, output_dir: Path) -> None:
+    import cv2
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = strftime("%Y%m%d_%H%M%S")
+    output_path = output_dir / f"{stamp}_color.png"
+    cv2.imwrite(str(output_path), color)
+    print(f"已保存RGB图像: {output_path}")
+
+
+def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None:
+    """Display and save only RGB frames without requesting depth frames."""
+
+    import cv2
+
+    with OrbbecSession(
+        device.selection_key,
+        library_path=settings.sdk_library,
+        config_path=settings.sdk_config,
+    ) as session:
+        print(f"已连接: {device.label}")
+        cv2.namedWindow(RGB_WINDOW_NAME, cv2.WINDOW_NORMAL)
+        print("运行中：仅显示RGB彩色图；按 s 保存RGB图像；按 q 或 ESC 退出。")
+
+        unsupported_format_reported: set[int] = set()
+        last_color: Optional[np.ndarray] = None
+        try:
+            while True:
+                frame = session.wait_for_color_frame(settings.frame_timeout_ms)
+                if frame is None:
+                    continue
+                color = color_frame_to_bgr(frame)
+                if color is None:
+                    if frame.frame_format not in unsupported_format_reported:
+                        print(f"不支持的彩色格式: {frame.frame_format}", file=sys.stderr)
+                        unsupported_format_reported.add(frame.frame_format)
+                    continue
+                if settings.mirror_color:
+                    color = cv2.flip(color, 1)
+
+                cv2.imshow(RGB_WINDOW_NAME, color)
+                last_color = color
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), ord("Q"), ESC_KEY):
+                    break
+                if key in (ord("s"), ord("S")) and last_color is not None:
+                    save_color_snapshot(last_color, settings.save_dir)
+        finally:
+            cv2.destroyAllWindows()
+
+
 def run_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None:
     import cv2
 
@@ -484,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gemini Pro Plus RGB-D viewer for Ubuntu 22.04")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="camera JSON config")
     parser.add_argument("--serial", default=None, help="camera serial number or UID")
+    parser.add_argument("--color-only", action="store_true", help="display and save RGB frames only")
     parser.add_argument("--first-device", action="store_true", help="use the only/first device without opening the chooser")
     parser.add_argument("--list-devices", action="store_true", help="list Orbbec devices and exit")
     parser.add_argument("--read-intrinsics", action="store_true", help="print camera intrinsics and exit")
@@ -533,7 +586,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             ) as session:
                 print(json.dumps({name: asdict(value) for name, value in session.intrinsics().items()}, ensure_ascii=False, indent=2))
             return 0
-        run_viewer(device, settings)
+        if args.color_only:
+            run_color_viewer(device, settings)
+        else:
+            run_viewer(device, settings)
         return 0
     except KeyboardInterrupt:
         return 130
