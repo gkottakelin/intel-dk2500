@@ -1,28 +1,47 @@
-"""Standalone red block detector for Ubuntu 22.04.
+"""Standalone red block detector for Ubuntu 22.04 — Orbbec Gemini camera.
 
-Works with any UVC camera (including the Gemini colour stream) and provides
-both a reusable API and a real-time preview.  Independent of the Orbbec SDK —
-only ``opencv-python`` and ``numpy`` are required.
+Connects to the Gemini colour stream through the bundled OrbbecSDK (same
+pipeline as ``gemini_camera.py`` and ``run.sh``), converts frames to BGR,
+then applies HSV-based red-block detection.
 
-Usage as a script::
+Requirements
+------------
+* ``opencv-python`` and ``numpy`` (already in this package's requirements.txt)
+* The Orbbec SDK ``.so`` must be on ``LD_LIBRARY_PATH`` — use ``run.sh`` or::
 
-    python red_block_detector.py
-    python red_block_detector.py --camera 1 --no-preview
+      export LD_LIBRARY_PATH=sdk/x64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
-Usage as a library::
+Usage as a script
+-----------------
+.. code:: bash
 
-    from red_block_detector import RedBlockDetector
+    # Auto-detect camera, real-time preview
+    bash run.sh red_block_detector.py
 
+    # Specify serial number, headless mode
+    bash run.sh red_block_detector.py --serial CP2C2420001X --no-preview
+
+    # Adjust thresholds for darker / less saturated reds
+    bash run.sh red_block_detector.py --sat-min 100 --val-min 60
+
+Usage as a library
+------------------
+.. code:: python
+
+    from red_block_detector import RedBlockDetector, open_gemini_camera
+
+    session = open_gemini_camera()
     detector = RedBlockDetector()
-    detector.open_camera(0)
-    frame = detector.read_frame()
-    result = detector.detect(frame)
+    frame = session.wait_for_color_frame(1000)
+    bgr = color_frame_to_bgr(frame)
+    result = detector.detect(bgr)
     if result:
         print(f"Red block at {result.center}")
+    session.close()
 """
 
 from __future__ import annotations
-import cv2
+
 import argparse
 import sys
 import time
@@ -30,6 +49,31 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
+
+try:
+    from .orbbec_native import (
+        APP_ROOT,
+        DEFAULT_SDK_CONFIG,
+        DEFAULT_SDK_LIBRARY,
+        CameraDeviceInfo,
+        NativeFrame,
+        OrbbecSession,
+        enumerate_devices,
+        validate_linux_x64,
+    )
+    from .gemini_camera import color_frame_to_bgr
+except ImportError:
+    from orbbec_native import (  # type: ignore[no-redef]
+        APP_ROOT,
+        DEFAULT_SDK_CONFIG,
+        DEFAULT_SDK_LIBRARY,
+        CameraDeviceInfo,
+        NativeFrame,
+        OrbbecSession,
+        enumerate_devices,
+        validate_linux_x64,
+    )
+    from gemini_camera import color_frame_to_bgr  # type: ignore[no-redef]
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +106,11 @@ class RedBlockDetector:
 
     Parameters
     ----------
-    hue_low1:
-        Lower bound of the first red hue range (0-180).
-    hue_high1:
-        Upper bound of the first red hue range.
-    hue_low2:
-        Lower bound of the second red hue range.
-    hue_high2:
-        Upper bound of the second red hue range.
+    hue_low1 / hue_high1:
+        First red hue range (0-180).  Red wraps around the HSV hue circle
+        so two ranges are needed.
+    hue_low2 / hue_high2:
+        Second red hue range.
     sat_min:
         Minimum saturation (0-255).  Higher = purer red required.
     val_min:
@@ -77,7 +118,7 @@ class RedBlockDetector:
     min_area:
         Minimum contour area in px².  Smaller regions are treated as noise.
     kernel_size:
-        Side length of the square morphological kernel.
+        Side length of the square morphological kernel (must be odd).
     """
 
     def __init__(
@@ -101,40 +142,6 @@ class RedBlockDetector:
         if ks < 1 or ks % 2 == 0:
             raise ValueError("kernel_size 必须是正奇数")
         self._kernel = np.ones((ks, ks), np.uint8)
-        self._cap: cv2.VideoCapture | None = None
-
-    # -- Camera helpers -------------------------------------------------------
-
-    def open_camera(self, index: int = 0) -> None:
-        """Open a UVC camera by index via OpenCV VideoCapture."""
-        cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            raise RuntimeError(f"无法打开摄像头 index={index}")
-        self._cap = cap
-
-    def close_camera(self) -> None:
-        """Release the camera resource."""
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
-
-    @property
-    def cap(self) -> cv2.VideoCapture:
-        if self._cap is None:
-            raise RuntimeError("摄像头未打开，请先调用 open_camera()")
-        return self._cap
-
-    def read_frame(self, *, flip: bool = True) -> np.ndarray | None:
-        """Read one BGR frame from the camera.
-
-        Returns ``None`` when no frame could be read.
-        """
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
-            return None
-        if flip:
-            frame = cv2.flip(frame, 1)
-        return frame
 
     # -- Detection ------------------------------------------------------------
 
@@ -143,13 +150,14 @@ class RedBlockDetector:
 
         Returns ``None`` when no qualifying red block is found.
         """
+        import cv2
+
         hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
         mask1 = cv2.inRange(hsv, self._lower1, self._upper1)
         mask2 = cv2.inRange(hsv, self._lower2, self._upper2)
         mask = cv2.bitwise_or(mask1, mask2)
 
-        # Morphological noise removal
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self._kernel)
         mask = cv2.dilate(mask, self._kernel, iterations=1)
 
@@ -185,6 +193,8 @@ class RedBlockDetector:
 
     def detect_all(self, bgr_frame: np.ndarray) -> list[RedBlockResult]:
         """Return all red blocks above *min_area*, sorted largest-first."""
+        import cv2
+
         hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
         mask1 = cv2.inRange(hsv, self._lower1, self._upper1)
         mask2 = cv2.inRange(hsv, self._lower2, self._upper2)
@@ -227,6 +237,8 @@ class RedBlockDetector:
         label: bool = True,
     ) -> np.ndarray:
         """Draw bounding box and centre dot for *result* onto *bgr_frame* (in-place)."""
+        import cv2
+
         if result is None:
             return bgr_frame
 
@@ -244,27 +256,94 @@ class RedBlockDetector:
 
 
 # ---------------------------------------------------------------------------
+# Gemini camera helpers (Orbbec SDK)
+# ---------------------------------------------------------------------------
+
+
+def discover_camera(
+    serial: str | None = None,
+    *,
+    library_path: str = str(DEFAULT_SDK_LIBRARY),
+    config_path: str = str(DEFAULT_SDK_CONFIG),
+) -> CameraDeviceInfo:
+    """Enumerate Orbbec devices and pick the matching camera.
+
+    If *serial* is ``None`` and exactly one device is connected it is
+    returned automatically.  Raises ``RuntimeError`` with a clear
+    message when zero or multiple devices are found.
+    """
+    validate_linux_x64()
+    devices = enumerate_devices(library_path=library_path, config_path=config_path)
+    if not devices:
+        raise RuntimeError("未发现 Orbbec 相机。请检查 USB 连接和 udev 权限。")
+    if serial:
+        match = next(
+            (d for d in devices if serial in {d.serial_number, d.uid}), None
+        )
+        if match is None:
+            available = "\n  ".join(d.label for d in devices)
+            raise RuntimeError(
+                f"找不到相机 serial={serial}。当前设备:\n  {available}"
+            )
+        return match
+    if len(devices) > 1:
+        available = "\n  ".join(d.label for d in devices)
+        raise RuntimeError(
+            f"发现多个相机，请用 --serial 指定:\n  {available}"
+        )
+    return devices[0]
+
+
+def open_gemini_camera(
+    serial: str | None = None,
+    *,
+    library_path: str = str(DEFAULT_SDK_LIBRARY),
+    config_path: str = str(DEFAULT_SDK_CONFIG),
+) -> OrbbecSession:
+    """Discover and open an Orbbec Gemini camera session.
+
+    Returns an active ``OrbbecSession`` that must be closed by the caller.
+    """
+    device = discover_camera(
+        serial, library_path=library_path, config_path=config_path
+    )
+    session = OrbbecSession(
+        device.selection_key, library_path=library_path, config_path=config_path
+    )
+    session.__enter__()
+    return session
+
+
+# ---------------------------------------------------------------------------
 # Real-time preview
 # ---------------------------------------------------------------------------
 
 
 def run_preview(
-    camera_index: int = 0,
+    serial: str | None = None,
     *,
     detector: RedBlockDetector | None = None,
+    frame_timeout_ms: int = 1000,
+    mirror: bool = False,
     fps_print_interval: float = 2.0,
 ) -> None:
-    """Open a camera and run the real-time red-block preview loop.
+    """Open the Gemini camera and run the real-time red-block preview loop.
 
     Press ``q`` or ``Esc`` to quit.
     """
     if detector is None:
         detector = RedBlockDetector()
 
-    detector.open_camera(camera_index)
-    print(f"摄像头 index={camera_index} 已打开。按 'q' 或 Esc 退出。")
+    import cv2
 
-    window = "Red Block Detection"
+    session = open_gemini_camera(serial)
+    device = session.device_info
+    print(
+        f"Gemini 相机已连接: {device.name if device else serial or 'auto'}  |  "
+        "按 'q' 或 Esc 退出。"
+    )
+
+    window = "Red Block Detection - Gemini"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
 
     last_fps_time = time.monotonic()
@@ -272,17 +351,20 @@ def run_preview(
 
     try:
         while True:
-            frame = detector.read_frame()
-            if frame is None:
-                print("无法读取画面帧。")
-                break
+            native_frame = session.wait_for_color_frame(frame_timeout_ms)
+            if native_frame is None:
+                continue
 
-            result = detector.detect(frame)
-            detector.draw(frame, result)
+            bgr = color_frame_to_bgr(native_frame)
+            if bgr is None:
+                continue
+            if mirror:
+                bgr = cv2.flip(bgr, 1)
 
-            cv2.imshow(window, frame)
+            result = detector.detect(bgr)
+            detector.draw(bgr, result)
+            cv2.imshow(window, bgr)
 
-            # FPS counter
             frame_count += 1
             now = time.monotonic()
             elapsed = now - last_fps_time
@@ -290,18 +372,67 @@ def run_preview(
                 fps = frame_count / elapsed
                 print(f"FPS: {fps:.1f}  |  ", end="")
                 if result is not None:
-                    print(f"红色物块 中心({result.center[0]}, {result.center[1]})  面积={result.area:.0f}px²")
+                    print(
+                        f"红色物块 中心({result.center[0]}, {result.center[1]})  "
+                        f"面积={result.area:.0f}px²"
+                    )
                 else:
                     print("未检测到红色物块")
                 frame_count = 0
                 last_fps_time = now
 
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), ord("Q"), 27):  # 27 = Esc
+            if key in (ord("q"), ord("Q"), 27):
                 break
     finally:
-        detector.close_camera()
+        session.close()
         cv2.destroyAllWindows()
+
+
+def headless_detect(
+    serial: str | None = None,
+    *,
+    detector: RedBlockDetector | None = None,
+    frame_timeout_ms: int = 1000,
+    mirror: bool = False,
+) -> None:
+    """Print detection results without a GUI window (suitable for SSH)."""
+    if detector is None:
+        detector = RedBlockDetector()
+
+    import cv2
+
+    session = open_gemini_camera(serial)
+    device = session.device_info
+    print(
+        f"无预览模式  |  Gemini: {device.name if device else serial or 'auto'}  |  "
+        "按 Ctrl+C 退出。"
+    )
+    try:
+        while True:
+            native_frame = session.wait_for_color_frame(frame_timeout_ms)
+            if native_frame is None:
+                time.sleep(0.01)
+                continue
+
+            bgr = color_frame_to_bgr(native_frame)
+            if bgr is None:
+                time.sleep(0.01)
+                continue
+            if mirror:
+                bgr = cv2.flip(bgr, 1)
+
+            result = detector.detect(bgr)
+            if result is not None:
+                print(
+                    f"红色物块: 中心({result.center[0]}, {result.center[1]})  "
+                    f"边界框{result.bbox}  面积={result.area:.0f}px²"
+                )
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        print("\n已退出。")
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +442,12 @@ def run_preview(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="基于OpenCV的红色物块实时检测 (Ubuntu 22.04)"
+        description="Gemini 相机红色物块实时检测 (Ubuntu 22.04 + Orbbec SDK)"
     )
     parser.add_argument(
-        "--camera", type=int, default=0,
-        help="OpenCV摄像头索引 (默认: 0)",
+        "--serial",
+        default=None,
+        help="Gemini 相机序列号或 UID（单设备可省略）",
     )
     parser.add_argument(
         "--hue-low1", type=int, default=0,
@@ -346,34 +478,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="形态学卷积核边长 (奇数)",
     )
     parser.add_argument(
+        "--frame-timeout", type=int, default=1000,
+        help="等待帧的超时毫秒数",
+    )
+    parser.add_argument(
         "--no-preview", action="store_true",
         help="不显示预览窗口，只打印检测坐标",
     )
     parser.add_argument(
-        "--no-flip", action="store_true",
-        help="不水平翻转画面",
+        "--mirror", action="store_true",
+        help="水平翻转画面",
     )
     return parser
-
-
-def headless_detect(detector: RedBlockDetector, flip: bool = True) -> None:
-    """Print detection results to stdout without opening a GUI window."""
-    print("无预览模式运行中，按 Ctrl+C 退出。")
-    try:
-        while True:
-            frame = detector.read_frame(flip=flip)
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            result = detector.detect(frame)
-            if result is not None:
-                print(
-                    f"红色物块: 中心({result.center[0]}, {result.center[1]})  "
-                    f"边界框{result.bbox}  面积={result.area:.0f}px²"
-                )
-            time.sleep(0.05)
-    except KeyboardInterrupt:
-        print("\n已退出。")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -391,18 +507,23 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        detector.open_camera(args.camera)
+        if args.no_preview:
+            headless_detect(
+                args.serial,
+                detector=detector,
+                frame_timeout_ms=args.frame_timeout,
+                mirror=args.mirror,
+            )
+        else:
+            run_preview(
+                args.serial,
+                detector=detector,
+                frame_timeout_ms=args.frame_timeout,
+                mirror=args.mirror,
+            )
     except RuntimeError as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 1
-
-    try:
-        if args.no_preview:
-            headless_detect(detector, flip=not args.no_flip)
-        else:
-            run_preview(args.camera, detector=detector)
-    finally:
-        detector.close_camera()
 
     return 0
 
