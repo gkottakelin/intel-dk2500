@@ -7,6 +7,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -32,7 +33,12 @@ from .mcp_server import DEFAULT_WORKFLOW_PATH
 from .openai_compatible import APIClientError, OpenAICompatibleClient
 from .roundtrip_test import run_counter_roundtrip_test
 from .session import ChatSession
-from .tool_agent import MAX_VISUAL_CLOSED_LOOP_ROUNDS, ToolCallingSession
+from .tool_agent import (
+    KIMI_WEB_SEARCH_TOOL,
+    MAX_VISUAL_CLOSED_LOOP_ROUNDS,
+    ToolCallingSession,
+)
+from .tooling import ToolRegistry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,6 +167,7 @@ def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> N
         print("  /grasp-point x y  临时覆盖配置文件中的抓取点像素")
     if camera_enabled:
         print("  /camera     采集当前RGB画面并让AI描述")
+    print("  普通聊天    明显与JetArm无关时，可由Kimi按需联网搜索")
     print("  /exit     退出")
 
 
@@ -203,6 +210,7 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     is_grasp_workflow = looks_like_grasp_workflow_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
     movement_request = required_tool == "move_jetarm"
+    allow_web_search = should_allow_web_search(text)
     streamed_call_ids: set[str] = set()
 
     def print_completed_grasp_step(call: object) -> None:
@@ -232,8 +240,20 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         first_tool_choice="none" if camera_request else "auto",
         allow_additional_tools=not camera_request,
         on_tool_call=print_completed_grasp_step,
+        allow_web_search=allow_web_search,
+        local_tools_enabled=not allow_web_search,
     )
     for call in result.tool_calls:
+        if call.name == KIMI_WEB_SEARCH_TOOL:
+            usage = (
+                call.arguments.get("usage")
+                if isinstance(call.arguments, dict)
+                else None
+            )
+            token_count = usage.get("total_tokens") if isinstance(usage, dict) else None
+            suffix = f"，搜索内容约{token_count} tokens" if token_count else ""
+            print(f"[联网搜索] Kimi内置搜索已完成{suffix}")
+            continue
         if is_grasp_workflow:
             if call.call_id not in streamed_call_ids and isinstance(call.result, dict):
                 _print_agent_grasp_step_records(call.result)
@@ -252,6 +272,58 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         print("[工作流 5/5] Agent读取MCP结果并生成总结报告")
     print(f"AI: {result.text}")
     return result.text
+
+
+_JETARM_RELATED_CHINESE_TERMS = (
+    "机械臂",
+    "舵机",
+    "关节",
+    "夹爪",
+    "抓取",
+    "夹取",
+    "相机",
+    "摄像头",
+    "抓取点",
+    "像素闭环",
+    "串口",
+    "限位",
+    "回home",
+    "初始化",
+    "人工测试",
+    "工作流",
+    "本项目",
+    "项目配置",
+    "运动规划",
+)
+_JETARM_RELATED_ENGLISH_PATTERN = re.compile(
+    r"\b(?:jetarm|robot(?:ic)?\s+arm|servo|joint|gripper|grasp|mcp|"
+    r"inverse\s+kinematics|forward\s+kinematics|camera_vector|ttyusb|j[1-6])\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_jetarm_related_topic(text: str) -> bool:
+    """Conservatively identify turns that must stay inside the local workflow."""
+
+    normalized = text.strip().lower().replace(" ", "")
+    if (
+        looks_like_arm_command(text)
+        or looks_like_camera_command(text)
+        or looks_like_grasp_workflow_command(text)
+        or required_mcp_tool_for_command(text) is not None
+    ):
+        return True
+    if any(term in normalized for term in _JETARM_RELATED_CHINESE_TERMS):
+        return True
+    return _JETARM_RELATED_ENGLISH_PATTERN.search(text) is not None
+
+
+def should_allow_web_search(text: str) -> bool:
+    """Allow Kimi web search only for clearly non-JetArm conversation."""
+
+    if not text.strip():
+        return False
+    return not looks_like_jetarm_related_topic(text)
 
 
 def _has_agent_grasp_step_records(result: dict[str, object]) -> bool:
@@ -952,13 +1024,21 @@ async def run(args: argparse.Namespace) -> int:
         model=args.model,
     )
     client = OpenAICompatibleClient(settings)
-    chat_session = ChatSession(settings, client)
+    general_session = ToolCallingSession(
+        settings,
+        client,
+        ToolRegistry(),
+        system_prompt=settings.system_prompt,
+        max_rounds=8,
+    )
+    last_session: ToolCallingSession = general_session
 
     print("JetArm AI 对话终端（MCP）")
     print(f"API: {settings.base_url}")
     print(f"模型: {settings.model}")
     print(f"设备配置: {device_path}")
     print(f"RGB相机: {effective_devices.rgb_camera or '未配置'}")
+    print("联网聊天: 已启用（仅明显非JetArm话题，Kimi内置$web_search按需调用）")
 
     if args.tool_test:
         try:
@@ -1033,12 +1113,14 @@ async def run(args: argparse.Namespace) -> int:
                     raise ConfigurationError("检测到机械臂指令，但设备配置中的arm_mode为off")
                 if looks_like_camera_command(args.once) and not effective_devices.rgb_camera:
                     raise ConfigurationError("检测到视觉指令，但未配置RGB相机")
-                if arm_session is not None:
-                    await _send_with_tools(arm_session, args.once)
-                elif looks_like_arm_command(args.once):
+                if arm_session is None and looks_like_arm_command(args.once):
                     raise ConfigurationError("检测到机械臂指令，但设备配置中的arm_mode为off")
-                else:
-                    await _send(chat_session, args.once)
+                selected_session = (
+                    general_session
+                    if should_allow_web_search(args.once) or arm_session is None
+                    else arm_session
+                )
+                await _send_with_tools(selected_session, args.once)
                 return 0
 
             _print_help(
@@ -1063,13 +1145,13 @@ async def run(args: argparse.Namespace) -> int:
                     )
                     continue
                 if command == "/clear":
-                    chat_session.clear()
+                    general_session.clear()
                     if arm_session is not None:
                         arm_session.clear()
                     print("对话上下文已清空。")
                     continue
                 if command == "/history":
-                    _print_history(arm_session or chat_session)
+                    _print_history(last_session)
                     continue
                 if command == "/config":
                     summary = settings.public_summary()
@@ -1099,6 +1181,13 @@ async def run(args: argparse.Namespace) -> int:
                             if red_block_mode
                             else "hierarchical_data_layer_tiles_3x3_depth4"
                         ),
+                    }
+                    summary["web_chat"] = {
+                        "enabled": True,
+                        "tool": "builtin_function.$web_search",
+                        "routing": "only_clearly_non_jetarm_topics",
+                        "extra_url_required": False,
+                        "exposed_with_local_hardware_tools": False,
                     }
                     print(json.dumps(summary, ensure_ascii=False, indent=2))
                     continue
@@ -1174,10 +1263,13 @@ async def run(args: argparse.Namespace) -> int:
                     print("错误: 未配置RGB相机，请先运行设备配置程序。", file=sys.stderr)
                     continue
                 try:
-                    if arm_session is not None:
-                        await _send_with_tools(arm_session, text)
-                    else:
-                        await _send(chat_session, text)
+                    selected_session = (
+                        general_session
+                        if should_allow_web_search(text) or arm_session is None
+                        else arm_session
+                    )
+                    last_session = selected_session
+                    await _send_with_tools(selected_session, text)
                 except (APIClientError, MCPClientError, RuntimeError, ValueError) as exc:
                     print(f"\n错误: {exc}", file=sys.stderr)
     finally:

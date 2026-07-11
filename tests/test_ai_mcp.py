@@ -13,6 +13,7 @@ try:
         _print_agent_grasp_step_records,
         _send_with_tools,
         build_parser,
+        should_allow_web_search,
     )
     from project.src.jetarm_agent.config import AgentSettings
     from project.src.jetarm_agent.device_config import (
@@ -30,16 +31,19 @@ try:
         ToolModelResponse,
     )
     from project.src.jetarm_agent.tool_agent import (
+        KIMI_WEB_SEARCH_SCHEMA,
+        KIMI_WEB_SEARCH_TOOL,
         MAX_VISUAL_CLOSED_LOOP_ROUNDS,
         ToolCallingSession,
     )
-    from project.src.jetarm_agent.tooling import ToolImage, ToolRegistry
+    from project.src.jetarm_agent.tooling import TestCounter, ToolImage, ToolRegistry
 except ModuleNotFoundError:
     from src.jetarm_agent.cli import (
         _agent_grasp_point_from_args,
         _print_agent_grasp_step_records,
         _send_with_tools,
         build_parser,
+        should_allow_web_search,
     )
     from src.jetarm_agent.config import AgentSettings
     from src.jetarm_agent.device_config import (
@@ -51,10 +55,12 @@ except ModuleNotFoundError:
     from src.jetarm_agent.mcp_server import DEFAULT_WORKFLOW_PATH, JetArmMCPService
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
     from src.jetarm_agent.tool_agent import (
+        KIMI_WEB_SEARCH_SCHEMA,
+        KIMI_WEB_SEARCH_TOOL,
         MAX_VISUAL_CLOSED_LOOP_ROUNDS,
         ToolCallingSession,
     )
-    from src.jetarm_agent.tooling import ToolImage, ToolRegistry
+    from src.jetarm_agent.tooling import TestCounter, ToolImage, ToolRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -113,6 +119,64 @@ class DeviceConfigTest(unittest.TestCase):
 
 
 class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
+    def test_web_search_routing_only_allows_non_jetarm_topics(self):
+        self.assertTrue(should_allow_web_search("北京今天的天气怎么样？"))
+        self.assertTrue(should_allow_web_search("搜索最新NBA比分"))
+        self.assertTrue(should_allow_web_search("聊聊量子力学"))
+        self.assertFalse(should_allow_web_search("J3的限位是多少？"))
+        self.assertFalse(should_allow_web_search("机械臂向前2厘米"))
+        self.assertFalse(should_allow_web_search("查看摄像头画面"))
+        self.assertFalse(should_allow_web_search("本项目配置在哪？"))
+
+    async def test_kimi_builtin_web_search_roundtrip_hides_local_tools(self):
+        settings = AgentSettings.from_sources(
+            PROJECT_ROOT / "config" / "ai_agent.json", environ={}
+        )
+        search_payload = {
+            "queries": ["北京今天天气"],
+            "usage": {"total_tokens": 123},
+        }
+        model = FakeModelClient(
+            [
+                ToolModelResponse(
+                    content="",
+                    tool_calls=(
+                        FunctionToolCall(
+                            call_id="web-1",
+                            name=KIMI_WEB_SEARCH_TOOL,
+                            arguments=json.dumps(search_payload, ensure_ascii=False),
+                            call_type="builtin_function",
+                        ),
+                    ),
+                ),
+                ToolModelResponse(content="北京今天晴。", tool_calls=()),
+            ]
+        )
+        counter = TestCounter()
+        session = ToolCallingSession(
+            settings,
+            model,
+            ToolRegistry([counter.definition()]),
+        )
+
+        result = await session.ask(
+            "北京今天的天气怎么样？",
+            allow_web_search=True,
+            local_tools_enabled=False,
+        )
+
+        self.assertEqual(result.text, "北京今天晴。")
+        self.assertEqual(result.tool_calls[0].name, KIMI_WEB_SEARCH_TOOL)
+        self.assertEqual(result.tool_calls[0].result, search_payload)
+        self.assertEqual(counter.value, 0)
+        self.assertEqual(model.requests[0]["tools"], [KIMI_WEB_SEARCH_SCHEMA])
+        self.assertEqual(model.requests[1]["tools"], [KIMI_WEB_SEARCH_SCHEMA])
+        self.assertEqual(
+            model.requests[1]["messages"][-1]["content"],
+            json.dumps(search_payload, ensure_ascii=False),
+        )
+        self.assertIn("普通聊天", model.requests[0]["messages"][0]["content"])
+
     async def asyncSetUp(self):
         self.service = JetArmMCPService(
             RuntimeDeviceConfig(

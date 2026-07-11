@@ -29,6 +29,17 @@ SEQUENTIAL_MOTION_TOOLS = frozenset(
     }
 )
 RGB_CAMERA_TOOL = "get_rgb_camera_frame"
+KIMI_WEB_SEARCH_TOOL = "$web_search"
+KIMI_WEB_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "builtin_function",
+    "function": {"name": KIMI_WEB_SEARCH_TOOL},
+}
+WEB_CHAT_SYSTEM_PROMPT = """
+本轮话题已由本地程序判定为明显与JetArm机械臂、相机、抓取和项目配置无关的普通聊天。
+你可以正常回答通用问题；涉及新闻、天气、价格、时效性事实，或用户明确要求搜索、查询、
+查证时，应调用Kimi内置$web_search后再回答。未实际调用$web_search时不得声称已经联网。
+本轮不提供任何本地机械臂工具，禁止把普通聊天转换为机械臂、相机或夹爪动作。
+""".strip()
 MAX_VISUAL_CLOSED_LOOP_ROUNDS = 200
 
 
@@ -90,6 +101,8 @@ class ToolCallingSession:
         preselected_tool_name: str | None = None,
         preselected_tool_arguments: dict[str, Any] | None = None,
         on_tool_call: Callable[[ExecutedToolCall], None] | None = None,
+        allow_web_search: bool = False,
+        local_tools_enabled: bool = True,
     ) -> ToolAgentResult:
         user_text = text.strip()
         if not user_text:
@@ -154,14 +167,21 @@ class ToolCallingSession:
                 self._remember_rgb_frame(result, images)
 
         for _ in range(self.max_rounds):
+            effective_system_prompt = self.system_prompt
+            request_tools = self.registry.schemas() if local_tools_enabled else []
+            if allow_web_search:
+                effective_system_prompt = (
+                    f"{effective_system_prompt}\n\n{WEB_CHAT_SYSTEM_PROMPT}"
+                )
+                request_tools.append(dict(KIMI_WEB_SEARCH_SCHEMA))
             messages = [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": effective_system_prompt},
                 *self.history,
                 *turn,
             ]
             response = await self.client.complete_with_tools(
                 messages,
-                self.registry.schemas(),
+                request_tools,
                 tool_choice=tool_choice,
             )
             turn.append(response.assistant_message())
@@ -202,7 +222,39 @@ class ToolCallingSession:
             successful_motion = False
             rgb_was_visible_to_model = fresh_rgb_observation
             for tool_call in response.tool_calls:
-                if tool_call.name == VISUAL_TILE_TOOL and not rgb_was_visible_to_model:
+                if tool_call.name == KIMI_WEB_SEARCH_TOOL:
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    if allow_web_search:
+                        # Kimi's built-in search is executed server-side.  The
+                        # official protocol requires echoing its arguments back
+                        # unchanged as the role=tool content.
+                        result = arguments
+                    else:
+                        result = {
+                            "status": "error",
+                            "error": "当前JetArm相关对话不允许使用联网搜索工具",
+                        }
+                    images = ()
+                elif not local_tools_enabled:
+                    try:
+                        parsed_arguments = json.loads(tool_call.arguments or "{}")
+                    except json.JSONDecodeError:
+                        parsed_arguments = {}
+                    arguments = (
+                        parsed_arguments if isinstance(parsed_arguments, dict) else {}
+                    )
+                    result = {
+                        "status": "error",
+                        "error": "普通联网聊天模式禁止调用本地机械臂工具",
+                    }
+                    images = ()
+                elif tool_call.name == VISUAL_TILE_TOOL and not rgb_was_visible_to_model:
                     try:
                         parsed_arguments = json.loads(tool_call.arguments or "{}")
                     except json.JSONDecodeError:

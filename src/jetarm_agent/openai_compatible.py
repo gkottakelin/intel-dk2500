@@ -22,11 +22,12 @@ class FunctionToolCall:
     call_id: str
     name: str
     arguments: str
+    call_type: str = "function"
 
     def as_message_item(self) -> dict[str, Any]:
         return {
             "id": self.call_id,
-            "type": "function",
+            "type": self.call_type,
             "function": {"name": self.name, "arguments": self.arguments},
         }
 
@@ -130,11 +131,12 @@ class OpenAICompatibleClient:
             "model": self.settings.model,
             "messages": list(messages),
             "max_tokens": self.settings.max_tokens,
-            "tools": list(tools),
-            "tool_choice": tool_choice,
             "stream": False,
             **self._generation_options(),
         }
+        if tools:
+            request["tools"] = list(tools)
+            request["tool_choice"] = tool_choice
         try:
             response = await self._client.chat.completions.create(**request)
             choices = getattr(response, "choices", None)
@@ -155,6 +157,7 @@ class OpenAICompatibleClient:
                         call_id=str(getattr(call, "id", "") or ""),
                         name=str(name),
                         arguments=str(getattr(function, "arguments", "{}") or "{}"),
+                        call_type=str(getattr(call, "type", "function") or "function"),
                     )
                 )
             if any(not call.call_id for call in calls):

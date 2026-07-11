@@ -241,6 +241,19 @@ class ToolCallingRoundTripTest(unittest.IsolatedAsyncioTestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         self.settings = AgentSettings.from_sources(path, environ={})
 
+    async def test_empty_tool_list_omits_tools_and_tool_choice(self):
+        fake = FakeOpenAIClient([text_response("普通回复")])
+        client = OpenAICompatibleClient(self.settings, client=fake)
+
+        response = await client.complete_with_tools(
+            [{"role": "user", "content": "你好"}],
+            [],
+        )
+
+        self.assertEqual(response.content, "普通回复")
+        self.assertNotIn("tools", fake.completions.requests[0])
+        self.assertNotIn("tool_choice", fake.completions.requests[0])
+
     async def test_program_ai_tool_ai_roundtrip(self):
         fake = FakeOpenAIClient(
             [

@@ -77,6 +77,12 @@ python3 -m src.jetarm_agent
 RGB图像理解与机械臂工具链。程序已按Kimi官方兼容要求禁用思考模式、不发送自定义
 `temperature`，工具调用只使用`tool_choice=auto/none`。
 
+Agent同时支持普通聊天。当本地路由确认本轮明显与JetArm机械臂、相机、
+抓取和项目配置无关时，只向Kimi开放内置`$web_search`，由模型在新闻、天气、
+价格或用户明确要求查证时按需调用。该模式不会同时暴露本地机械臂工具；
+JetArm相关话题则只使用现有本地工具。联网聊天复用现有Kimi URL、模型和API Key，
+不需要新增URL或配置项。
+
 ### Git与Agent代理隔离
 
 Agent的HTTP客户端固定使用`trust_env=False`，不会读取终端中的`HTTP_PROXY`、
