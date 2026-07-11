@@ -1,0 +1,159 @@
+JetArm 总启动使用教程
+======================
+
+一、功能说明
+------------
+
+总启动界面只负责打开现有程序，不会重构、替换或接管原来的机械臂、相机、
+人工测试模块V2和Agent工作流。点击功能按钮后，对应程序会在新的独立终端中运行。
+
+
+二、首次使用前准备
+------------------
+
+1. 进入项目根目录：
+
+    cd ~/Desktop/workspace/intel-dk2500
+
+如果项目实际放在其他目录，请换成实际路径。
+
+2. 确认已经安装Python和Tk界面组件：
+
+    sudo apt update
+    sudo apt install -y python3 python3-tk python3-venv
+
+3. 确认AI虚拟环境已经建立。若没有“.venv-ai”，在项目根目录执行：
+
+    python3 -m venv .venv-ai
+    source .venv-ai/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements-ai.txt
+
+4. 给总启动脚本增加执行权限，只需执行一次：
+
+    chmod +x run_control_center.sh
+
+
+三、启动总控终端
+----------------
+
+在项目根目录执行：
+
+    bash run_control_center.sh
+
+也可以直接执行：
+
+    ./run_control_center.sh
+
+总启动脚本会优先使用：
+
+    .venv-ai/bin/python
+
+如果该虚拟环境不存在，则尝试使用系统python3。需要指定其他Python时，可在启动前设置：
+
+    export JETARM_CONTROL_CENTER_PYTHON=/你的/Python路径
+    bash run_control_center.sh
+
+
+四、主界面功能
+--------------
+
+1. Git Pull
+
+   打开独立终端，先显示当前工作区状态，再执行：
+
+       git pull --ff-only
+
+   如果本地修改与远程更新冲突，Git不会强制覆盖本地文件，需要先人工处理冲突。
+
+2. 机械臂控制
+
+   打开独立终端并运行原机械臂操作终端：
+
+       bash ubuntu22_04_operation_terminal/run.sh
+
+   该程序会占用机械臂串口。
+
+3. 相机显示
+
+   打开独立终端并运行原Gemini相机显示程序：
+
+       bash ubuntu22_04_gemini_camera/run.sh
+
+   该程序会占用Gemini相机。
+
+4. 人工测试模块V2
+
+   使用AI虚拟环境中的Python打开原人工像素闭环V2入口：
+
+       .venv-ai/bin/python -m src.jetarm_agent --manual-pixel-test-v2
+
+   是否连接真实机械臂由当前设备配置决定。硬件模式会占用机械臂串口。
+
+5. Agent
+
+   使用AI虚拟环境中的Python启动原自然语言、视觉与抓取Agent：
+
+       .venv-ai/bin/python -m src.jetarm_agent
+
+   Agent会按照当前配置使用机械臂串口和Gemini相机。明显与JetArm无关的普通对话
+   可以由Kimi按需联网搜索；机械臂相关对话仍使用原本地工作流。
+
+6. 配置中心
+
+   “接口与抓取点”页面可配置：
+
+   - 机械臂模式：hardware、dry-run或off
+   - 机械臂串口
+   - Gemini相机序列号或UID
+   - 相机名称
+   - 抓取点像素X、Y
+   - 机械臂参数文件路径
+
+   “Agent接口”页面用于查看和保存Agent接口配置。
+
+   “机械臂参数（只读）”页面只显示机械臂参数，不提供修改或保存功能。
+
+   设备和抓取点配置保存到：
+
+       config/devices.json
+
+   Agent配置使用：
+
+       config/ai_agent.json
+
+7. 打开项目目录
+
+   使用系统文件管理器打开当前项目根目录，不启动任何机械臂或相机程序。
+
+
+五、使用注意事项
+----------------
+
+1. 机械臂控制、人工测试模块V2和Agent可能同时争用机械臂串口，同一时间建议只运行
+   一个需要机械臂串口的程序。
+
+2. 相机显示和Agent可能同时争用Gemini相机，同一时间建议只运行一个需要相机的程序。
+
+3. 总控终端本身不会打开机械臂串口或相机；只有点击按钮后新打开的程序才会占用设备。
+
+4. 每个功能程序结束后，新终端会显示程序退出码，并等待按Enter关闭，方便查看错误信息。
+
+5. 运行真实机械臂前必须清空工作空间、确认串口和关节配置正确，并准备随时断电。
+
+6. 如果点击按钮后提示“未找到AI虚拟环境”，请先建立“.venv-ai”，或者设置：
+
+       export JETARM_AI_PYTHON=/你的/Python路径
+
+   然后重新启动总控终端。
+
+7. 如果无法打开独立终端，请安装桌面终端程序，例如：
+
+       sudo apt install -y gnome-terminal
+
+
+六、退出
+--------
+
+关闭“JetArm 总控终端”窗口只会关闭启动界面，不会自动终止已经打开的独立终端。
+需要停止机械臂、相机、人工测试模块或Agent时，应进入各自的终端按原程序方式退出。
