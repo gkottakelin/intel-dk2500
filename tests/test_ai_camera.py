@@ -152,6 +152,7 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         target_tool = next(
             tool for tool in tools if tool.name == "control_jetarm_to_target_pixel"
         )
+        self.assertTrue(any(tool.name == "initialize_jetarm" for tool in tools))
         self.assertIsNone(camera_tool.outputSchema)
         self.assertIn(
             "target_vertical_relation",

@@ -32,6 +32,11 @@ MAX_AGENT_MOVE_COMMAND_CM = 2.0
 CAMERA_VECTOR_VERSIONS = ("v1", "v2")
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
+AGENT_INITIALIZE_J6_OPEN_POSITION = 350
+J6_STABLE_TOLERANCE_UNITS = 2
+J6_STABLE_DURATION_S = 2.0
+J6_STABLE_POLL_INTERVAL_S = 0.5
+J6_STABLE_TIMEOUT_S = 10.0
 MIN_PIXEL_ALIGNMENT_SPEED_CM_S = 0.7
 MAX_PIXEL_ALIGNMENT_SPEED_CM_S = 1.5
 DEFAULT_PIXEL_ALIGNMENT_TOLERANCE_PX = 10.0
@@ -1632,7 +1637,23 @@ class JetArmToolController:
         if action == "grip_lock":
             if not self.runtime.j6_grip_locked:
                 self.runtime.toggle_grip_lock()
-            return {"status": "ok", "action": action, "grip_locked": True}
+            stability = await self.wait_for_j6_stable()
+            if stability.get("status") != "ok":
+                if self.runtime.j6_grip_locked:
+                    self.runtime.toggle_grip_lock()
+                return {
+                    "status": "error",
+                    "action": action,
+                    "grip_locked": False,
+                    "error": stability.get("error", "J6未能稳定"),
+                    "j6_stability": stability,
+                }
+            return {
+                "status": "ok",
+                "action": action,
+                "grip_locked": True,
+                "j6_stability": stability,
+            }
         if action == "release_lock":
             if self.runtime.j6_grip_locked:
                 self.runtime.toggle_grip_lock()
@@ -1670,6 +1691,77 @@ class JetArmToolController:
             "stopped": True,
         }
 
+    async def wait_for_j6_stable(
+        self,
+        *,
+        tolerance_units: int = J6_STABLE_TOLERANCE_UNITS,
+        stable_duration_s: float = J6_STABLE_DURATION_S,
+        poll_interval_s: float = J6_STABLE_POLL_INTERVAL_S,
+        timeout_s: float = J6_STABLE_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Wait for real J6 feedback to remain within tolerance before Home."""
+
+        j6_id = self.settings.servo_id("J6")
+        if self.config.mode == "dry-run":
+            position = int(self.controller.read_position(j6_id))
+            return {
+                "status": "ok",
+                "joint": "J6",
+                "stable": True,
+                "final_position": position,
+                "mode": "dry-run",
+                "stable_duration_s": 0.0,
+            }
+
+        started_at = time.monotonic()
+        stable_since: float | None = None
+        stable_anchor: int | None = None
+        samples = 0
+        last_position: int | None = None
+        while True:
+            now = time.monotonic()
+            try:
+                position = int(self.controller.read_position(j6_id))
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "joint": "J6",
+                    "stable": False,
+                    "error": f"读取J6位置失败: {exc}",
+                    "samples": samples,
+                }
+            samples += 1
+            last_position = position
+            if stable_anchor is None:
+                stable_anchor = position
+                stable_since = now
+            elif abs(position - stable_anchor) <= tolerance_units:
+                if now - stable_since >= stable_duration_s:
+                    return {
+                        "status": "ok",
+                        "joint": "J6",
+                        "stable": True,
+                        "final_position": position,
+                        "tolerance_units": tolerance_units,
+                        "stable_duration_s": round(now - stable_since, 3),
+                        "elapsed_s": round(now - started_at, 3),
+                        "samples": samples,
+                    }
+            else:
+                stable_anchor = position
+                stable_since = now
+            if now - started_at >= timeout_s:
+                return {
+                    "status": "error",
+                    "joint": "J6",
+                    "stable": False,
+                    "final_position": last_position,
+                    "elapsed_s": round(now - started_at, 3),
+                    "samples": samples,
+                    "error": f"J6在{timeout_s:g}秒内未稳定，禁止回Home",
+                }
+            await self.sleep(poll_interval_s)
+
     async def go_home(self) -> dict[str, Any]:
         self.runtime.go_home()
         if self.config.mode == "hardware":
@@ -1680,6 +1772,27 @@ class JetArmToolController:
             "mode": self.config.mode,
             "action": "home",
             "joint_positions": dict(self.runtime.positions),
+        }
+
+    async def initialize_for_agent(self) -> dict[str, Any]:
+        """Return J1-J5 Home first, then open J6 to the Agent start position."""
+
+        home = await self.go_home()
+        if home.get("status") != "ok":
+            return {
+                "status": "error",
+                "action": "agent_initialize",
+                "stage": "home_failed",
+                "home": home,
+            }
+        gripper = await self.set_gripper_position(AGENT_INITIALIZE_J6_OPEN_POSITION)
+        return {
+            "status": gripper.get("status", "error"),
+            "action": "agent_initialize",
+            "sequence": ["home", "open_j6_to_350"],
+            "home": home,
+            "gripper": gripper,
+            "j6_target_position": AGENT_INITIALIZE_J6_OPEN_POSITION,
         }
 
     async def stop_all(self) -> dict[str, Any]:
@@ -1961,6 +2074,9 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
     async def home(_arguments: Mapping[str, Any]) -> object:
         return await controller.go_home()
 
+    async def initialize(_arguments: Mapping[str, Any]) -> object:
+        return await controller.initialize_for_agent()
+
     async def stop(_arguments: Mapping[str, Any]) -> object:
         return await controller.stop_all()
 
@@ -2189,6 +2305,15 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                 handler=home,
             ),
             ToolDefinition(
+                name="initialize_jetarm",
+                description=(
+                    "Initialize the Agent arm: move J1-J5 Home first, then open "
+                    f"J6 to raw position {AGENT_INITIALIZE_J6_OPEN_POSITION}."
+                ),
+                parameters={"type": "object", "properties": {}},
+                handler=initialize,
+            ),
+            ToolDefinition(
                 name="stop_jetarm",
                 description="Immediately stop Cartesian motion plus J5 and J6 motor motion.",
                 parameters={"type": "object", "properties": {}},
@@ -2242,6 +2367,10 @@ def looks_like_arm_command(text: str) -> bool:
         "回到home",
         "回home",
         "回零",
+        "初始化机械臂",
+        "机械臂初始化",
+        "初始化jetarm",
+        "初始化",
         "机械臂停止",
         "停止机械臂",
         "机械臂状态",
@@ -2277,6 +2406,11 @@ def required_mcp_tool_for_command(text: str) -> str | None:
     except ArmControlError:
         pass
     normalized = text.strip().lower().replace(" ", "")
+    if normalized in {"初始化", "initialize"} or any(
+        phrase in normalized
+        for phrase in ("初始化机械臂", "机械臂初始化", "初始化jetarm", "initializejetarm")
+    ):
+        return "initialize_jetarm"
     if any(
         phrase in normalized
         for phrase in (
@@ -2376,4 +2510,5 @@ ARM_TOOL_SYSTEM_PROMPT = """
 14. 当前只使用单路RGB相机，不得请求或声称使用深度流。
 15. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
 16. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
+17. 用户要求初始化机械臂时调用initialize_jetarm：必须先回Home，再将J6张开到350，并重置抓取闭环。抓取完成阶段必须等待J6反馈稳定后才能回Home；J6未稳定时禁止回Home。
 """.strip()

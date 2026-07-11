@@ -316,6 +316,7 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("320", instruction)
 
     async def test_final_alignment_automatically_descends_grips_and_homes(self):
+        sequence = []
         fake = SimpleNamespace(
             set_gripper_position=AsyncMock(return_value={"status": "ok"}),
             control_to_target_pixel=AsyncMock(
@@ -354,8 +355,22 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                     ],
                 }
             ),
-            control_gripper=AsyncMock(return_value={"status": "ok", "action": "grip_lock"}),
-            go_home=AsyncMock(return_value={"status": "ok"}),
+            control_gripper=AsyncMock(
+                side_effect=lambda _action: (
+                    sequence.append("j6_stable"),
+                    {
+                        "status": "ok",
+                        "action": "grip_lock",
+                        "j6_stability": {"status": "ok", "stable": True},
+                    },
+                )[1]
+            ),
+            go_home=AsyncMock(
+                side_effect=lambda: (
+                    sequence.append("home"),
+                    {"status": "ok"},
+                )[1]
+            ),
             close=lambda: None,
         )
         self.service._controller = fake
@@ -378,12 +393,71 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         fake.descend_to_height.assert_awaited_once_with(1.0)
         fake.control_gripper.assert_awaited_once_with("grip_lock")
         fake.go_home.assert_awaited_once()
+        self.assertEqual(sequence, ["j6_stable", "home"])
         record = final["new_grasp_step_records"][-1]
         self.assertEqual(record["target_pixel"], {"x": 328.0, "y": 150.0})
         self.assertEqual(
             record["motion_plan"], {"direction": "down", "distance_cm": 2.0}
         )
         self.assertEqual(record["camera_grasp_vertical_angle_deg"], 12.5)
+
+    async def test_agent_initialize_resets_workflow_after_home_and_j6_open(self):
+        fake = SimpleNamespace(
+            initialize_for_agent=AsyncMock(
+                return_value={
+                    "status": "ok",
+                    "action": "agent_initialize",
+                    "sequence": ["home", "open_j6_to_350"],
+                    "j6_target_position": 350,
+                }
+            ),
+            close=lambda: None,
+        )
+        self.service._controller = fake
+        self.service._grasp_final_phase = True
+        self.service._gripper_prepared_for_grasp = True
+
+        result = await self.service.initialize_agent()
+
+        self.assertEqual(result["mcp"], "initialize_jetarm")
+        self.assertEqual(result["j6_target_position"], 350)
+        self.assertTrue(result["grasp_workflow_reset"])
+        self.assertFalse(self.service._grasp_final_phase)
+        self.assertFalse(self.service._gripper_prepared_for_grasp)
+
+    async def test_unstable_j6_blocks_home_after_grasp(self):
+        fake = SimpleNamespace(
+            descend_to_height=AsyncMock(
+                return_value={
+                    "status": "ok",
+                    "height_after_cm": 1.0,
+                    "target_tolerance_cm": 0.4,
+                    "motion_steps": [],
+                }
+            ),
+            control_gripper=AsyncMock(
+                return_value={
+                    "status": "error",
+                    "action": "grip_lock",
+                    "error": "J6在10秒内未稳定，禁止回Home",
+                    "j6_stability": {"status": "error", "stable": False},
+                }
+            ),
+            go_home=AsyncMock(return_value={"status": "ok"}),
+            close=lambda: None,
+        )
+        self.service._controller = fake
+
+        result = await self.service._complete_final_grasp(
+            320,
+            147,
+            {"status": "ok"},
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["controller_decision"], "gripper_failed")
+        self.assertIn("禁止回Home", result["error"])
+        fake.go_home.assert_not_awaited()
 
     async def test_failed_visual_confirmation_reopens_grasp_loop(self):
         self.service._awaiting_grasp_visual_confirmation = True

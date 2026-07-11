@@ -150,6 +150,7 @@ def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> N
     if arm_enabled:
         print("  /arm-status 读取机械臂关节和TCP状态")
         print("  /arm-home   直接回到home位姿")
+        print("  /arm-init   回Home后将J6张开到350，重置抓取闭环")
         print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
         print("  /workflow   显示JetArm MCP工作流规范")
         print("  /grasp-point x y  临时覆盖配置文件中的抓取点像素")
@@ -313,11 +314,11 @@ def _workflow_text() -> str:
 
 def _print_workflow_summary() -> None:
     print("MCP执行工作流:")
-    print("  1. 调用前由用户输入并固定抓取点像素")
+    print("  1. 从接口与抓取点配置读取固定抓取点像素")
     print("  2. Agent根据自然语言判断是否抓取，并识别目标物品中心像素")
     print("  3. 控制端以人工测试V2流程执行一次对准或下降（进展检测关闭）")
     print("  4. 每次动作结束后自动重新取图，Agent重新发送目标中心像素")
-    print("  5. 最终自动下降、夹取、Home；Agent用新图确认，失败则继续")
+    print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
 
 
 def _parse_manual_target_pixel(text: str) -> tuple[float, float] | None:
@@ -1087,13 +1088,14 @@ async def run(args: argparse.Namespace) -> int:
                         continue
                     text = "请读取当前RGB相机画面，并只根据实际画面简要描述你看到的内容。"
                     command = text.lower()
-                if command in {"/arm-status", "/arm-home", "/arm-stop"}:
+                if command in {"/arm-status", "/arm-home", "/arm-init", "/arm-stop"}:
                     if bridge is None or arm_mode == "off":
                         print("错误: 机械臂MCP未启用。", file=sys.stderr)
                         continue
                     tool_name = {
                         "/arm-status": "get_jetarm_state",
                         "/arm-home": "move_jetarm_home",
+                        "/arm-init": "initialize_jetarm",
                         "/arm-stop": "stop_jetarm",
                     }[command]
                     result = await bridge.call_tool(tool_name, {})

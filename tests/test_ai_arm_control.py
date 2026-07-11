@@ -155,6 +155,24 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[2:4], [(10, -100), (10, 0)])
         self.assertEqual(calls[4:6], [(10, 300), (10, 0)])
 
+    async def test_grip_lock_reports_stable_j6_before_returning(self):
+        result = await self.controller.control_gripper("grip_lock")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["grip_locked"])
+        self.assertTrue(result["j6_stability"]["stable"])
+
+    async def test_agent_initialize_homes_before_opening_j6_to_350(self):
+        result = await self.controller.initialize_for_agent()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["sequence"], ["home", "open_j6_to_350"])
+        self.assertEqual(result["j6_target_position"], 350)
+        self.assertEqual(
+            self.controller.controller.move_calls[-1],
+            (self.controller.settings.servo_id("J6"), 350, 500),
+        )
+
     async def test_gripper_release_position_and_pixel_alignment_tool(self):
         release = await self.controller.set_gripper_position(370)
         aligned = await self.controller.move_by_pixel_error(104, 96, 100, 100)
@@ -1072,6 +1090,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 "move_jetarm_by_pixel_error",
                 "control_jetarm_to_target_pixel",
                 "move_jetarm_home",
+                "initialize_jetarm",
                 "stop_jetarm",
                 "get_jetarm_state",
             },
@@ -1114,6 +1133,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
         self.assertEqual(required_mcp_tool_for_command("向前移动5厘米"), "move_jetarm")
         self.assertEqual(required_mcp_tool_for_command("前5"), "move_jetarm")
+        self.assertEqual(
+            required_mcp_tool_for_command("初始化机械臂"),
+            "initialize_jetarm",
+        )
         self.assertEqual(
             required_mcp_tool_for_command("读取机械臂参数和关节限位"),
             "get_jetarm_state",

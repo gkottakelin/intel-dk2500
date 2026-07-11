@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
 from .arm_control import (
+    AGENT_INITIALIZE_J6_OPEN_POSITION,
     DEFAULT_DESCENT_RECALIBRATION_CM,
     DEFAULT_GRIPPER_POSITION_RUN_TIME_MS,
     DEFAULT_GRIPPER_RELEASE_POSITION,
@@ -168,6 +169,17 @@ class JetArmMCPService:
     async def home(self) -> dict[str, Any]:
         result = await self.controller().go_home()
         result["mcp"] = "move_jetarm_home"
+        return result
+
+    async def initialize_agent(self) -> dict[str, Any]:
+        result = await self.controller().initialize_for_agent()
+        result["mcp"] = "initialize_jetarm"
+        if result.get("status") == "ok":
+            self._grasp_final_phase = False
+            self._gripper_prepared_for_grasp = False
+            self._awaiting_grasp_visual_confirmation = False
+            self._grasp_step_records.clear()
+            result["grasp_workflow_reset"] = True
         return result
 
     async def stop(self) -> dict[str, Any]:
@@ -466,13 +478,18 @@ class JetArmMCPService:
             return self._attach_grasp_step_records(result, new_records)
 
         grip = await self.controller().control_gripper("grip_lock")
-        if grip.get("status") != "ok":
+        grip_stability = grip.get("j6_stability")
+        if (
+            grip.get("status") != "ok"
+            or not isinstance(grip_stability, dict)
+            or not grip_stability.get("stable")
+        ):
             result = {
                 **alignment,
                 "status": "error",
                 "mcp": "control_jetarm_to_target_pixel",
                 "controller_decision": "gripper_failed",
-                "error": grip.get("error", "夹取动作失败"),
+                "error": grip.get("error", "夹取后J6未稳定，禁止回Home"),
                 "final_descent": final_descent,
                 "gripper": grip,
                 "grasp_completed": False,
@@ -795,6 +812,16 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     )
     async def move_jetarm_home() -> Any:
         return await with_rgb_image(await service.home())
+
+    @mcp.tool(
+        description=(
+            "初始化JetArm供Agent使用：先让J1-J5返回Home，随后将J6张开到"
+            f"{AGENT_INITIALIZE_J6_OPEN_POSITION}位置，并重置抓取闭环。"
+        ),
+        structured_output=False,
+    )
+    async def initialize_jetarm() -> Any:
+        return await with_rgb_image(await service.initialize_agent())
 
     @mcp.tool(description="立即停止JetArm笛卡尔运动、J5和J6。")
     async def stop_jetarm() -> dict[str, Any]:
