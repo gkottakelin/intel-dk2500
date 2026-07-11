@@ -594,6 +594,25 @@ class JetArmMCPService:
             float(resolved_grasp_y),
             target_vertical_relation,
         )
+        try:
+            normalized_target_x = float(target_x)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("目标点像素target_x必须是数字") from exc
+        if not math.isfinite(normalized_target_x) or not math.isfinite(
+            normalized_target_y
+        ):
+            raise RuntimeError("目标点像素必须是有限数字")
+        if self._last_rgb_frame_size is not None:
+            frame_width, frame_height = self._last_rgb_frame_size
+            if not (
+                0.0 <= normalized_target_x < float(frame_width)
+                and 0.0 <= normalized_target_y < float(frame_height)
+            ):
+                raise RuntimeError(
+                    "目标点像素超出最新RGB原图范围："
+                    f"point=({normalized_target_x:g}, {normalized_target_y:g}), "
+                    f"image={frame_width}x{frame_height}, origin=(0,0) top-left"
+                )
         if not self._gripper_prepared_for_grasp:
             await self.controller().set_gripper_position(
                 DEFAULT_GRIPPER_RELEASE_POSITION,
@@ -613,7 +632,7 @@ class JetArmMCPService:
         if final_grasp_height_cm is not None:
             kwargs["final_grasp_height_cm"] = float(final_grasp_height_cm)
         result = await self.controller().control_to_target_pixel(
-            target_x,
+            normalized_target_x,
             normalized_target_y,
             resolved_grasp_x,
             resolved_grasp_y,
@@ -629,11 +648,13 @@ class JetArmMCPService:
         result["camera_vector_version"] = "v2"
         result["progress_check_enabled"] = False
         result["agent_target_pixel_received"] = {
-            "x": round(float(target_x), 3),
+            "x": round(normalized_target_x, 3),
             "y": round(float(target_y), 3),
         }
         result["target_coordinate_validation"] = coordinate_validation
-        record = self._record_grasp_step(target_x, normalized_target_y, result)
+        record = self._record_grasp_step(
+            normalized_target_x, normalized_target_y, result
+        )
         if result.get("status") != "ok":
             return self._attach_grasp_step_records(result, [record])
         if result.get("controller_decision") != "aligned_hold":
@@ -644,7 +665,7 @@ class JetArmMCPService:
             result["requires_new_target_pixel"] = True
             return self._attach_grasp_step_records(result, [record])
         return await self._complete_final_grasp(
-            target_x, normalized_target_y, result
+            normalized_target_x, normalized_target_y, result
         )
 
     def close(self) -> None:
@@ -733,6 +754,22 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "grasp_point_pixel_required_before_grasp": (
                 grasp_point_pixel is None
             ),
+            "pixel_coordinate_system": {
+                "coordinate_space": "original_rgb_image_pixels",
+                "origin": "top_left",
+                "origin_pixel": {"x": 0, "y": 0},
+                "x_axis": "right",
+                "y_axis": "down",
+                "x_range_inclusive": [0, frame.width - 1],
+                "y_range_inclusive": [0, frame.height - 1],
+                "top_right": {"x": frame.width - 1, "y": 0},
+                "bottom_left": {"x": 0, "y": frame.height - 1},
+                "bottom_right": {
+                    "x": frame.width - 1,
+                    "y": frame.height - 1,
+                },
+                "resize_or_flip_forbidden": True,
+            },
         }
         # One MCP result carries both the pixels and the pose used to interpret
         # them.  Movement is blocked when an enabled arm cannot provide pose.
@@ -898,7 +935,8 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
             "Manual-pixel-test V2 grasp workflow with progress detection disabled. "
             "The Agent must supply the center pixel target_x/target_y of the requested "
             "object using top-left origin, X-right, Y-down original-image coordinates, "
-            "plus target_vertical_relation=above/below/same_y for validation. The controller uses the "
+            "with (0,0) at the top-left and (width-1,height-1) at the bottom-right. "
+            "The controller uses the "
             "user-entered grasp-point pixel, reads joint feedback/FK height, chooses "
             "height-based tolerance (40/25/13/8 px), performs V2 front/back/left/right "
             "alignment with a height-linear px/cm scale "
@@ -913,7 +951,7 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     async def control_jetarm_to_target_pixel(
         target_x: float,
         target_y: float,
-        target_vertical_relation: Literal["above", "below", "same_y"],
+        target_vertical_relation: Literal["above", "below", "same_y"] | None = None,
     ) -> Any:
         return content_result(
             await service.control_to_target_pixel(

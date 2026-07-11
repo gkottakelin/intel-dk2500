@@ -405,13 +405,18 @@ class ToolCallingSession:
         width = camera.get("width")
         height = camera.get("height")
         grasp = camera.get("grasp_point_pixel")
+        right = int(width) - 1 if isinstance(width, (int, float)) else "width-1"
+        bottom = int(height) - 1 if isinstance(height, (int, float)) else "height-1"
         return (
             f"原始图像尺寸={width}x{height}；"
-            "坐标原点严格为左上角(0,0)，X向右增大，Y向下增大；"
+            "坐标必须直接读取原始RGB图像像素；"
+            "左上角(0,0)，X向右增大，Y向下增大；"
+            f"右上角=({right},0)，左下角=(0,{bottom})，"
+            f"右下角=({right},{bottom})；"
             f"用户抓取点像素={grasp}。"
-            "目标物品在抓取点上方时target_y必须小于抓取点y，"
-            "在下方时target_y必须大于抓取点y；"
-            "禁止使用左下角原点、Y向上坐标、缩放后坐标或上下翻转坐标。"
+            "只提交目标物品中心的target_x/target_y；"
+            "禁止使用左下角原点、Y向上坐标、百分比坐标、"
+            "缩放后坐标或上下翻转坐标。"
         )
 
     def _trim_history(self) -> None:

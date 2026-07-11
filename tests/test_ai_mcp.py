@@ -287,6 +287,25 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
             "none_top_left_y_down_confirmed",
         )
 
+    async def test_agent_only_needs_top_left_target_xy(self):
+        self.service.set_grasp_point_pixel(320, 147)
+        self.service._last_rgb_frame_size = (640, 480)
+
+        result = await self.service.control_to_target_pixel(320, 70)
+
+        self.assertEqual(result["direction"], "forward")
+        self.assertEqual(
+            result["target_coordinate_validation"]["normalization"],
+            "compatibility_no_relation_check",
+        )
+
+    async def test_agent_target_pixel_outside_latest_original_image_is_rejected(self):
+        self.service.set_grasp_point_pixel(320, 147)
+        self.service._last_rgb_frame_size = (640, 480)
+
+        with self.assertRaisesRegex(RuntimeError, "超出最新RGB原图范围"):
+            await self.service.control_to_target_pixel(640, 100)
+
     async def test_unresolvable_agent_y_relation_is_rejected_before_motion(self):
         self.service.set_grasp_point_pixel(320, 147)
         self.service._last_rgb_frame_size = (640, 480)
@@ -314,6 +333,8 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("左上角(0,0)", instruction)
         self.assertIn("Y向下增大", instruction)
         self.assertIn("320", instruction)
+        self.assertIn("右下角=(639,479)", instruction)
+        self.assertIn("只提交目标物品中心的target_x/target_y", instruction)
 
     async def test_final_alignment_automatically_descends_grips_and_homes(self):
         sequence = []

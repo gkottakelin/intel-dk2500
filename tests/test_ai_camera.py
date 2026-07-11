@@ -154,7 +154,7 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(any(tool.name == "initialize_jetarm" for tool in tools))
         self.assertIsNone(camera_tool.outputSchema)
-        self.assertIn(
+        self.assertNotIn(
             "target_vertical_relation",
             target_tool.inputSchema.get("required", []),
         )
@@ -177,6 +177,15 @@ class CameraMCPAgentTest(unittest.IsolatedAsyncioTestCase):
                 "source": "user_input_before_agent_grasp",
             },
         )
+        coordinate_system = response.structuredContent["camera"][
+            "pixel_coordinate_system"
+        ]
+        self.assertEqual(coordinate_system["origin_pixel"], {"x": 0, "y": 0})
+        self.assertEqual(
+            coordinate_system["bottom_right"], {"x": 639, "y": 479}
+        )
+        self.assertEqual(coordinate_system["x_axis"], "right")
+        self.assertEqual(coordinate_system["y_axis"], "down")
         self.assertEqual(
             service._last_grasp_point_pixel,
             {
