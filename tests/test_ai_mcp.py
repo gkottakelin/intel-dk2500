@@ -428,8 +428,8 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
                 return_value={
                     "status": "ok",
                     "action": "agent_initialize",
-                    "sequence": ["home", "open_j6_to_350"],
-                    "j6_target_position": 350,
+                    "sequence": ["home", "open_j6_to_400"],
+                    "j6_target_position": 400,
                 }
             ),
             close=lambda: None,
@@ -441,7 +441,7 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         result = await self.service.initialize_agent()
 
         self.assertEqual(result["mcp"], "initialize_jetarm")
-        self.assertEqual(result["j6_target_position"], 350)
+        self.assertEqual(result["j6_target_position"], 400)
         self.assertTrue(result["grasp_workflow_reset"])
         self.assertFalse(self.service._grasp_final_phase)
         self.assertFalse(self.service._gripper_prepared_for_grasp)

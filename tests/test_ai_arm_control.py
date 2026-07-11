@@ -167,16 +167,16 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["grip_locked"])
         self.assertTrue(result["j6_stability"]["stable"])
 
-    async def test_agent_initialize_homes_before_opening_j6_to_350(self):
+    async def test_agent_initialize_homes_before_opening_j6_to_400(self):
         result = await self.controller.initialize_for_agent()
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["sequence"], ["home", "open_j6_to_350"])
-        self.assertEqual(result["j6_target_position"], 350)
+        self.assertEqual(result["sequence"], ["home", "open_j6_to_400"])
+        self.assertEqual(result["j6_target_position"], 400)
         self.assertEqual(result["home"]["joint_positions"]["J5"], 500)
         self.assertEqual(
             self.controller.controller.move_calls[-1],
-            (self.controller.settings.servo_id("J6"), 350, 500),
+            (self.controller.settings.servo_id("J6"), 400, 500),
         )
 
     async def test_gripper_release_position_and_pixel_alignment_tool(self):
@@ -224,12 +224,12 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
     def test_dynamic_pixel_tolerances_are_independent_and_use_lower_band_at_boundaries(self):
         tolerance_for = self.controller._pixel_tolerances_for_height
 
-        self.assertEqual(tolerance_for(15.001), {"x": 25.0, "y": 18.0})
-        self.assertEqual(tolerance_for(15.0), {"x": 20.0, "y": 13.0})
-        self.assertEqual(tolerance_for(10.001), {"x": 20.0, "y": 13.0})
-        self.assertEqual(tolerance_for(10.0), {"x": 15.0, "y": 10.0})
-        self.assertEqual(tolerance_for(5.001), {"x": 15.0, "y": 10.0})
-        self.assertEqual(tolerance_for(5.0), {"x": 10.0, "y": 8.0})
+        self.assertEqual(tolerance_for(15.001), {"x": 30.0, "y": 18.0})
+        self.assertEqual(tolerance_for(15.0), {"x": 25.0, "y": 15.0})
+        self.assertEqual(tolerance_for(10.001), {"x": 25.0, "y": 15.0})
+        self.assertEqual(tolerance_for(10.0), {"x": 18.0, "y": 12.0})
+        self.assertEqual(tolerance_for(5.001), {"x": 18.0, "y": 12.0})
+        self.assertEqual(tolerance_for(5.0), {"x": 15.0, "y": 10.0})
 
     async def test_only_axis_outside_its_own_tolerance_is_corrected(self):
         moved = await self.controller.move_by_pixel_error(
@@ -331,10 +331,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             aligned_hold["dynamic_tolerance_px"],
             (
-                {"x": 25.0, "y": 18.0},
-                {"x": 20.0, "y": 13.0},
+                {"x": 30.0, "y": 18.0},
+                {"x": 25.0, "y": 15.0},
+                {"x": 18.0, "y": 12.0},
                 {"x": 15.0, "y": 10.0},
-                {"x": 10.0, "y": 8.0},
             ),
         )
 
@@ -580,7 +580,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 parameters["height_tolerance_bands_px"][0],
                 {
                     "height_cm": ">15",
-                    "x_tolerance_px": 25,
+                    "x_tolerance_px": 30,
                     "y_tolerance_px": 18,
                 },
             )
@@ -1154,7 +1154,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                     "height_tolerance_bands_px"
                 ]
             ],
-            [(25, 18), (20, 13), (15, 10), (10, 8)],
+            [(30, 18), (25, 15), (18, 12), (15, 10)],
         )
         home_servo_ids = {
             servo_id

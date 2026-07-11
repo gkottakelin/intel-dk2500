@@ -32,7 +32,7 @@ MAX_AGENT_MOVE_COMMAND_CM = 100.0
 CAMERA_VECTOR_VERSIONS = ("v1", "v2")
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
-AGENT_INITIALIZE_J6_OPEN_POSITION = 350
+AGENT_INITIALIZE_J6_OPEN_POSITION = 400
 J6_STABLE_TOLERANCE_UNITS = 2
 J6_STABLE_DURATION_S = 2.0
 J6_STABLE_POLL_INTERVAL_S = 0.5
@@ -601,12 +601,12 @@ class JetArmToolController:
     @staticmethod
     def _pixel_tolerances_for_height(height_cm: float) -> dict[str, float]:
         if height_cm > 15.0:
-            return {"x": 25.0, "y": 18.0}
+            return {"x": 30.0, "y": 18.0}
         if height_cm > 10.0:
-            return {"x": 20.0, "y": 13.0}
+            return {"x": 25.0, "y": 15.0}
         if height_cm > 5.0:
-            return {"x": 15.0, "y": 10.0}
-        return {"x": 10.0, "y": 8.0}
+            return {"x": 18.0, "y": 12.0}
+        return {"x": 15.0, "y": 10.0}
 
     def _current_tcp_cm(self) -> dict[str, float]:
         tcp_cm = self.runtime.model.tcp(self.runtime.positions) * 100.0
@@ -1857,7 +1857,7 @@ class JetArmToolController:
         return {
             "status": gripper.get("status", "error"),
             "action": "agent_initialize",
-            "sequence": ["home", "open_j6_to_350"],
+            "sequence": ["home", "open_j6_to_400"],
             "home": home,
             "gripper": gripper,
             "j6_target_position": AGENT_INITIALIZE_J6_OPEN_POSITION,
@@ -2058,23 +2058,23 @@ class JetArmToolController:
                 "height_tolerance_bands_px": [
                     {
                         "height_cm": ">15",
-                        "x_tolerance_px": 25,
+                        "x_tolerance_px": 30,
                         "y_tolerance_px": 18,
                     },
                     {
                         "height_cm": ">10 and <=15",
-                        "x_tolerance_px": 20,
-                        "y_tolerance_px": 13,
+                        "x_tolerance_px": 25,
+                        "y_tolerance_px": 15,
                     },
                     {
                         "height_cm": ">5 and <=10",
-                        "x_tolerance_px": 15,
-                        "y_tolerance_px": 10,
+                        "x_tolerance_px": 18,
+                        "y_tolerance_px": 12,
                     },
                     {
                         "height_cm": "<=5",
-                        "x_tolerance_px": 10,
-                        "y_tolerance_px": 8,
+                        "x_tolerance_px": 15,
+                        "y_tolerance_px": 10,
                     },
                 ],
                 "final_alignment_threshold_cm": FINAL_ALIGNMENT_THRESHOLD_CM,
@@ -2621,5 +2621,5 @@ ARM_TOOL_SYSTEM_PROMPT = """
 14. 当前只使用单路RGB相机，不得请求或声称使用深度流。
 15. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
 16. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
-17. 用户要求初始化机械臂时调用initialize_jetarm：必须先回Home，再将J6张开到350，并重置抓取闭环。抓取完成阶段必须等待J6反馈稳定后才能回Home；J6未稳定时禁止回Home。
+17. 用户要求初始化机械臂时调用initialize_jetarm：必须先回Home，再将J6张开到400，并重置抓取闭环。抓取完成阶段必须等待J6反馈稳定后才能回Home；J6未稳定时禁止回Home。
 """.strip()

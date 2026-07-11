@@ -32,7 +32,7 @@ python3 -m src.jetarm_agent.device_config
 
 ## Agent 视觉抓取闭环
 
-用户要求初始化时，Agent 调用 `initialize_jetarm`。该工具严格按“J1-J5 回 Home → J6 张开到 350”执行，并重置当前抓取闭环。
+用户要求初始化时，Agent 调用 `initialize_jetarm`。该工具严格按“J1-J5 回 Home → J6 张开到 400”执行，并重置当前抓取闭环。
 
 1. Agent 判断用户自然语言是否为抓取任务；不是抓取任务时不得调用抓取控制工具。
 2. 抓取任务先调用 `get_rgb_camera_frame`。

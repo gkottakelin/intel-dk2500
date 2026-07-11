@@ -155,7 +155,7 @@ def _print_help(*, arm_enabled: bool = False, camera_enabled: bool = False) -> N
     if arm_enabled:
         print("  /arm-status 读取机械臂关节和TCP状态")
         print("  /arm-home   直接回到home位姿")
-        print("  /arm-init   回Home后将J6张开到350，重置抓取闭环")
+        print("  /arm-init   回Home后将J6张开到400，重置抓取闭环")
         print("  /arm-stop   立即停止J5/J6和笛卡尔运动")
         print("  /workflow   显示JetArm MCP工作流规范")
         print("  /grasp-point x y  临时覆盖配置文件中的抓取点像素")
