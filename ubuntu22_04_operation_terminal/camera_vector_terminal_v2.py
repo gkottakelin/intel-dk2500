@@ -67,7 +67,6 @@ LIMIT_FALLBACK_REFINEMENT_STEPS = 12
 LIMIT_FALLBACK_PROGRESS_EPSILON_M = 1e-6
 INITIAL_J6_POSITION = 400
 FORWARD_LOW_Z_TRIGGER_M = -0.01
-FORWARD_RECOVERY_TARGET_Z_M = 0.01
 TERMINAL_MOTION_DIRECTIONS = (
     "forward",
     "backward",
@@ -1170,22 +1169,9 @@ async def execute_terminal_motion(
     target_tcp = start_tcp + direction_unit * (
         float(speed_cm_s) * duration / 100.0
     )
-    forward_low_z_recovery_used = bool(
-        direction == "forward" and start_tcp[2] < FORWARD_LOW_Z_TRIGGER_M
-    )
-    if forward_low_z_recovery_used:
-        # A normal horizontal action locks the action-start Z.  This recovery
-        # is intentionally a combined forward/up absolute target, so disable
-        # only the height lock while retaining the session pitch/inclination
-        # references captured by the motion lock.
-        runtime._height_hold_active = False
-        runtime.z_lock = False
+    forward_low_z_recovery_used = False
     if direction in {"forward", "backward", "left", "right"}:
-        target_tcp[2] = (
-            FORWARD_RECOVERY_TARGET_Z_M
-            if forward_low_z_recovery_used
-            else start_tcp[2]
-        )
+        target_tcp[2] = start_tcp[2]
 
     if collect_tcp_samples:
         samples_m.append([float(value) for value in start_tcp])
@@ -1204,13 +1190,7 @@ async def execute_terminal_motion(
     status = "ok" if bool(plan["accepted"]) else "error"
     if status == "error":
         error = str(plan.get("message") or "V2 absolute grasp target was rejected")
-    recovery_vertical_time_s = (
-        abs(float(target_tcp[2] - start_tcp[2]))
-        / max(1e-9, float(runtime.settings.vertical_speed_m_s))
-        if forward_low_z_recovery_used
-        else 0.0
-    )
-    requested_execution_time_s = max(duration, recovery_vertical_time_s)
+    requested_execution_time_s = duration
     initial_run_time = (
         requested_execution_time_s
         if bool(plan["strict_pose"])
@@ -1437,21 +1417,7 @@ async def execute_terminal_motion(
             np.linalg.norm(target_tcp - start_tcp) * 100.0
         ),
         "forward_low_z_recovery": {
-            "used": forward_low_z_recovery_used,
-            "trigger_below_z_cm": FORWARD_LOW_Z_TRIGGER_M * 100.0,
-            "start_z_cm": float(start_tcp[2] * 100.0),
-            "target_z_cm": (
-                FORWARD_RECOVERY_TARGET_Z_M * 100.0
-                if forward_low_z_recovery_used
-                else float(start_tcp[2] * 100.0)
-            ),
-            "joint_planning": (
-                "absolute_whole_arm_ik_j1_j2_j3_j4"
-                if forward_low_z_recovery_used
-                else None
-            ),
-            "j2_locked": False,
-            "camera_grasp_pose_held": True,
+            "used": False,
         },
         "start_grasp_point_m": [float(value) for value in start_tcp],
         "target_grasp_point_m": [float(value) for value in target_tcp],
