@@ -37,6 +37,7 @@ try:
         DEFAULT_MANUAL_GRASP_X,
         DEFAULT_MANUAL_GRASP_Y,
         run_manual_pixel_test_v2,
+        validate_grasp_point_pixel,
     )
     from project.src.jetarm_agent.openai_compatible import (
         FunctionToolCall,
@@ -74,6 +75,7 @@ except ModuleNotFoundError:
         DEFAULT_MANUAL_GRASP_X,
         DEFAULT_MANUAL_GRASP_Y,
         run_manual_pixel_test_v2,
+        validate_grasp_point_pixel,
     )
     from src.jetarm_agent.openai_compatible import FunctionToolCall, ToolModelResponse
     from src.jetarm_agent.tool_agent import ToolCallingSession
@@ -1160,7 +1162,10 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         )
         output = io.StringIO()
 
-        with patch("builtins.input", return_value="q"), patch(
+        module = run_manual_pixel_test_v2.__module__
+        with patch(
+            f"{module}.prompt_grasp_point_pixel", return_value=(320.0, 147.0)
+        ), patch("builtins.input", return_value="q"), patch(
             "sys.stdout", output
         ):
             exit_code = await run_manual_pixel_test_v2(args)
@@ -1170,6 +1175,66 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("固定抓取点像素=(320, 147)", text)
         self.assertIn("camera_vector_terminal_v2 / CameraVectorV2Runtime", text)
         self.assertIn("2cm=50px/cm，25cm=18px/cm", text)
+
+    async def test_manual_pixel_v2_prompts_before_shared_workflow(self):
+        args = build_parser().parse_args(
+            ["--manual-pixel-test-v2", "--arm-mode", "hardware"]
+        )
+        module = run_manual_pixel_test_v2.__module__
+        shared_module = _resolve_manual_pixel_arm_config.__module__
+        with patch(
+            f"{module}.prompt_grasp_point_pixel", return_value=(321.0, 146.0)
+        ) as prompt, patch(
+            f"{shared_module}._run_manual_pixel_test",
+            new=AsyncMock(return_value=0),
+        ) as shared:
+            exit_code = await run_manual_pixel_test_v2(args)
+
+        self.assertEqual(exit_code, 0)
+        prompt.assert_called_once_with(
+            initial_x=320.0,
+            initial_y=147.0,
+            image_width=640,
+            image_height=480,
+        )
+        configured_args = shared.await_args.args[0]
+        self.assertEqual(configured_args.manual_grasp_x, 321.0)
+        self.assertEqual(configured_args.manual_grasp_y, 146.0)
+
+    async def test_manual_pixel_v2_cancel_does_not_start_shared_workflow(self):
+        args = build_parser().parse_args(
+            ["--manual-pixel-test-v2", "--arm-mode", "hardware"]
+        )
+        module = run_manual_pixel_test_v2.__module__
+        shared_module = _resolve_manual_pixel_arm_config.__module__
+        output = io.StringIO()
+        with patch(
+            f"{module}.prompt_grasp_point_pixel", return_value=None
+        ), patch(
+            f"{shared_module}._run_manual_pixel_test",
+            new=AsyncMock(return_value=0),
+        ) as shared, patch("sys.stdout", output):
+            exit_code = await run_manual_pixel_test_v2(args)
+
+        self.assertEqual(exit_code, 0)
+        shared.assert_not_awaited()
+        self.assertIn("未连接机械臂", output.getvalue())
+
+    def test_manual_pixel_v2_grasp_point_validation_uses_image_bounds(self):
+        self.assertEqual(
+            validate_grasp_point_pixel(
+                "320", "147", image_width=640, image_height=480
+            ),
+            (320.0, 147.0),
+        )
+        with self.assertRaisesRegex(ValueError, "X必须在0到639之间"):
+            validate_grasp_point_pixel(
+                "640", "147", image_width=640, image_height=480
+            )
+        with self.assertRaisesRegex(ValueError, "Y必须在0到479之间"):
+            validate_grasp_point_pixel(
+                "320", "-1", image_width=640, image_height=480
+            )
 
     def test_manual_pixel_hardware_without_port_delegates_to_terminal_discovery(self):
         args = SimpleNamespace(
