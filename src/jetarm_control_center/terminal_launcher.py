@@ -193,3 +193,16 @@ def open_project_folder(project_root: Path) -> subprocess.Popen[bytes]:
         cwd=str(project_root),
         start_new_session=True,
     )
+
+
+def open_usage_guide(guide_path: Path) -> subprocess.Popen[bytes]:
+    if not guide_path.is_file():
+        raise RuntimeError(f"未找到使用说明：{guide_path}")
+    executable = shutil.which("xdg-open")
+    if executable is None:
+        raise RuntimeError("未找到xdg-open，无法打开使用说明")
+    return subprocess.Popen(
+        [executable, str(guide_path)],
+        cwd=str(guide_path.parent),
+        start_new_session=True,
+    )

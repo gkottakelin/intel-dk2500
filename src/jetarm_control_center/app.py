@@ -29,6 +29,7 @@ from .terminal_launcher import (
     default_launch_specs,
     launch_in_terminal,
     open_project_folder,
+    open_usage_guide,
 )
 
 
@@ -39,6 +40,7 @@ AI_CONFIG = PROJECT_ROOT / "config" / "ai_agent.json"
 DEFAULT_TERMINAL_CONFIG = (
     PROJECT_ROOT / "ubuntu22_04_operation_terminal" / "config" / "terminal.json"
 )
+USAGE_GUIDE = PROJECT_ROOT / "使用教程.txt"
 
 
 class ControlCenterApp:
@@ -89,6 +91,7 @@ class ControlCenterApp:
         utility.grid(row=3, column=0, sticky="ew", pady=(18, 0))
         utility.columnconfigure(0, weight=1)
         utility.columnconfigure(1, weight=1)
+        utility.columnconfigure(2, weight=1)
         ttk.Button(
             utility,
             text="配置中心",
@@ -97,10 +100,16 @@ class ControlCenterApp:
         ).grid(row=0, column=0, sticky="ew", padx=(0, 7))
         ttk.Button(
             utility,
+            text="打开使用说明",
+            command=self._open_usage_guide,
+            style="Launch.TButton",
+        ).grid(row=0, column=1, sticky="ew", padx=7)
+        ttk.Button(
+            utility,
             text="打开项目目录",
             command=self._open_project_folder,
             style="Launch.TButton",
-        ).grid(row=0, column=1, sticky="ew", padx=(7, 0))
+        ).grid(row=0, column=2, sticky="ew", padx=(7, 0))
         tk.Button(
             utility,
             text="紧急停止机械臂",
@@ -113,7 +122,7 @@ class ControlCenterApp:
             font=("Noto Sans CJK SC", 13, "bold"),
             padx=12,
             pady=12,
-        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(14, 0))
 
         ttk.Label(
             outer,
@@ -178,6 +187,15 @@ class ControlCenterApp:
             self.status.set(f"打开项目目录失败：{exc}")
             return
         self.status.set(f"已打开项目目录：{PROJECT_ROOT}")
+
+    def _open_usage_guide(self) -> None:
+        try:
+            open_usage_guide(USAGE_GUIDE)
+        except Exception as exc:
+            messagebox.showerror("打开失败", str(exc), parent=self.root)
+            self.status.set(f"打开使用说明失败：{exc}")
+            return
+        self.status.set(f"已打开使用说明：{USAGE_GUIDE}")
 
     def _emergency_stop(self) -> None:
         result = request_emergency_stop(PROJECT_ROOT)

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
+from unittest.mock import patch
 
 from src.jetarm_control_center.config_store import (
     env_file_declares,
@@ -21,6 +22,7 @@ from src.jetarm_control_center.emergency_stop import (
 from src.jetarm_control_center.terminal_launcher import (
     build_shell_command,
     default_launch_specs,
+    open_usage_guide,
     terminal_argv,
 )
 
@@ -120,6 +122,30 @@ class ControlCenterLauncherTests(unittest.TestCase):
         self.assertIn("JETARM_ESTOP_TOKEN=fixed-token", command)
         self.assertIn("JETARM_ESTOP_PGID", command)
         self.assertIn("trap", command)
+
+    def test_usage_guide_opens_with_desktop_default_application(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            guide = Path(directory) / "使用教程.txt"
+            guide.write_text("JetArm说明", encoding="utf-8")
+            with patch(
+                "src.jetarm_control_center.terminal_launcher.shutil.which",
+                return_value="/usr/bin/xdg-open",
+            ), patch(
+                "src.jetarm_control_center.terminal_launcher.subprocess.Popen"
+            ) as popen:
+                open_usage_guide(guide)
+
+        popen.assert_called_once_with(
+            ["/usr/bin/xdg-open", str(guide)],
+            cwd=str(guide.parent),
+            start_new_session=True,
+        )
+
+    def test_missing_usage_guide_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "使用教程.txt"
+            with self.assertRaisesRegex(RuntimeError, "未找到使用说明"):
+                open_usage_guide(missing)
 
 
 class ControlCenterEmergencyStopTests(unittest.TestCase):
