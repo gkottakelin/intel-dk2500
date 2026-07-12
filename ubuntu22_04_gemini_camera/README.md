@@ -55,9 +55,7 @@ bash run.sh --first-device
 bash run.sh --serial 你的相机序列号 --read-intrinsics
 ```
 
-查看器只显示RGB彩色图。鼠标左键点击图像后，画面左上角会显示该点的像素坐标，
-终端也会输出`X`、`Y`；坐标原点为图像左上角，X向右、Y向下。窗口缩放时程序会
-换算回原始RGB图像坐标。按 `s` 只保存RGB图像；按 `q` 或 `Esc` 退出。
+查看器只显示RGB彩色图；按 `s` 只保存RGB图像；按 `q` 或 `Esc` 退出。
 如果确实需要单独调试原RGB-D查看器，可不经`run.sh`直接运行：
 
 ```bash

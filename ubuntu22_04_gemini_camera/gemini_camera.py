@@ -307,25 +307,6 @@ def map_display_to_depth(u: int, v: int, display_size: tuple[int, int], depth_si
     return depth_u, depth_v
 
 
-def map_window_click_to_image_pixel(
-    x: int,
-    y: int,
-    display_size: tuple[int, int],
-    image_size: tuple[int, int],
-) -> Optional[tuple[int, int]]:
-    """Map a resized HighGUI-window click to the displayed RGB pixel."""
-
-    display_width, display_height = display_size
-    image_width, image_height = image_size
-    if min(display_width, display_height, image_width, image_height) <= 0:
-        return None
-    if not (0 <= x < display_width and 0 <= y < display_height):
-        return None
-    image_x = min(image_width - 1, int(x * image_width / display_width))
-    image_y = min(image_height - 1, int(y * image_height / display_height))
-    return image_x, image_y
-
-
 def pixel_to_camera_point_mm(u: int, v: int, depth_mm: float, intrinsics: Intrinsics) -> tuple[float, float, float]:
     x = (u - intrinsics.cx) * depth_mm / intrinsics.fx
     y = (v - intrinsics.cy) * depth_mm / intrinsics.fy
@@ -363,30 +344,6 @@ def draw_click_info(
     cv2.putText(color, text, (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
 
 
-def draw_color_pixel_info(color: np.ndarray, click: ClickState) -> None:
-    """Draw the last selected RGB pixel without requiring a depth frame."""
-
-    import cv2
-
-    if click.u is None or click.v is None:
-        return
-    if not (0 <= click.u < color.shape[1] and 0 <= click.v < color.shape[0]):
-        return
-    point = (click.u, click.v)
-    cv2.circle(color, point, 7, (0, 255, 255), 2)
-    cv2.line(color, (click.u - 10, click.v), (click.u + 10, click.v), (0, 255, 255), 1)
-    cv2.line(color, (click.u, click.v - 10), (click.u, click.v + 10), (0, 255, 255), 1)
-    cv2.putText(
-        color,
-        f"pixel: ({click.u}, {click.v})",
-        (20, 34),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 255),
-        2,
-    )
-
-
 def save_snapshot(color: np.ndarray, depth_vis: np.ndarray, depth_mm: np.ndarray, output_dir: Path) -> None:
     import cv2
 
@@ -413,28 +370,6 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
 
     import cv2
 
-    click = ClickState()
-    image_size: list[Optional[tuple[int, int]]] = [None]
-    display_size: list[Optional[tuple[int, int]]] = [None]
-
-    def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: Any) -> None:
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
-        current_image_size = image_size[0]
-        current_display_size = display_size[0]
-        if current_image_size is None or current_display_size is None:
-            return
-        point = map_window_click_to_image_pixel(
-            x,
-            y,
-            current_display_size,
-            current_image_size,
-        )
-        if point is None:
-            return
-        click.u, click.v = point
-        print(f"点击像素坐标: X={click.u}, Y={click.v}")
-
     with OrbbecSession(
         device.selection_key,
         library_path=settings.sdk_library,
@@ -442,11 +377,7 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
     ) as session:
         print(f"已连接: {device.label}")
         cv2.namedWindow(RGB_WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback(RGB_WINDOW_NAME, on_mouse)
-        print(
-            "运行中：仅显示RGB彩色图；左键点击图像显示像素坐标；"
-            "按 s 保存RGB图像；按 q 或 ESC 退出。"
-        )
+        print("运行中：仅显示RGB彩色图；按 s 保存RGB图像；按 q 或 ESC 退出。")
 
         unsupported_format_reported: set[int] = set()
         last_color: Optional[np.ndarray] = None
@@ -464,17 +395,7 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
                 if settings.mirror_color:
                     color = cv2.flip(color, 1)
 
-                image_size[0] = (color.shape[1], color.shape[0])
-                display_color = color.copy()
-                draw_color_pixel_info(display_color, click)
-                cv2.imshow(RGB_WINDOW_NAME, display_color)
-                try:
-                    _window_x, _window_y, width, height = cv2.getWindowImageRect(
-                        RGB_WINDOW_NAME
-                    )
-                    display_size[0] = (width, height)
-                except (AttributeError, cv2.error):
-                    display_size[0] = image_size[0]
+                cv2.imshow(RGB_WINDOW_NAME, color)
                 last_color = color
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), ESC_KEY):
