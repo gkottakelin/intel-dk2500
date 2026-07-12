@@ -2826,7 +2826,7 @@ ARM_TOOL_SYSTEM_PROMPT = """
 4. 视觉抓取时，Agent先在最新RGB原图中识别用户指定物品，再使用zoom_rgb_target_tile进行数据层3x3分块定位：每次只选择目标物品中心所在的一块、查看返回的新裁剪图后再选下一层，共4层。分块图不绘制坐标标签；程序根据每层原图边界得到最终target_x/target_y。像素坐标固定为：左上角(0,0)，X向右、Y向下，右下角(width-1,height-1)。
 5. 抓取点像素必须来自接口与抓取点配置文件，或由用户在调用前通过/grasp-point临时覆盖；get_rgb_camera_frame会在camera.grasp_point_pixel中返回该固定值。未配置时不得猜测或使用图像中心。
 6. V2六方向都以实际抓取点XYZ为准：forward使Y减小，backward使Y增加，left使X减小，right使X增加，up使Z增加，down使Z减小；所有方向仍保持摄像头—抓取点姿态。请求点因关节限位不可达时，前往本次目标方向上距离请求点最近的可达位置，并在结果中标明限位回退。
-7. 每张最新图像只允许调用一次control_jetarm_to_target_pixel；调用前必须完成4层zoom_rgb_target_tile，且每个模型回合只能选择一层。控制程序会用最终分块的原图中心坐标覆盖模型自行填写的target_x/target_y，Agent不决定机械臂方向。控制程序完整复用人工测试V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
+7. 每张最新图像只允许调用一次control_jetarm_to_target_pixel；调用前必须完成4层zoom_rgb_target_tile，且每个模型回合只能选择一层。控制程序会用最终分块的原图中心坐标覆盖模型自行填写的target_x/target_y，Agent不决定机械臂方向。控制程序完整复用“基于摄像头的机械臂操控”V2工作流，固定关闭有效进展检测，使用camera_vector_terminal_v2执行运动。
 8. control_jetarm_to_target_pixel会按FK高度选择独立X/Y动态容差：Z>15cm为30/18px，10<Z<=15cm为25/15px，5<Z<=10cm为18/12px，Z<=5cm为15/10px；边界归入较小的一档。同时按高度线性像素比例执行水平对准或2cm分段下降；达到最终阶段后自动完成最终对准、下降到抓取高度、夹取和Home。
 9. 每次机械臂运动结束后旧图像和旧分块路径立即失效；会话会自动重新调用get_rgb_camera_frame。Agent必须在新图中重新识别同一目标，并重新完成4层数据分块定位后再运动。
 10. Home后的机械抓取结果为awaiting_visual_verification。Agent必须检查自动返回的最新图像并调用confirm_jetarm_grasp_result：只有确认目标物品已被抓起时传success=true；失败时传success=false，再用当前新图重新识别中心并继续，直到确认工具返回grasp_completed=true。

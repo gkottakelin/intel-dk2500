@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--manual-pixel-test-v2",
         action="store_true",
-        help="人工像素闭环V2；复用原工作流并使用camera-vector V2运动程序",
+        help="基于摄像头的机械臂操控；复用原V2工作流并使用camera-vector V2运动程序",
     )
     parser.add_argument("--env-file", default=None, help="可选.env文件路径")
     parser.add_argument(
@@ -403,7 +403,7 @@ def _print_workflow_summary(*, red_block_mode: bool = False) -> None:
         print("MCP执行工作流:")
         print("  1. 从接口与抓取点配置读取固定抓取点像素")
         print("  2. Agent识别目标，使用数据层3x3四级分块得到原图中心像素")
-        print("  3. 控制端强制采用分块坐标，以人工测试V2执行一次动作")
+        print("  3. 控制端强制采用分块坐标，以基于摄像头的机械臂操控V2工作流执行一次动作")
         print("  4. 每次动作结束后重新取图并清空旧分块路径，再次定位")
         print("  5. 最终下降、夹取，确认J6稳定后Home；Agent用新图确认")
 

@@ -1,6 +1,6 @@
 ---
 name: jetarm-mcp-motion
-description: Agent识别抓取意图和目标中心像素，控制端执行人工测试V2闭环。
+description: Agent识别抓取意图和目标中心像素，控制端执行“基于摄像头的机械臂操控”V2闭环。
 ---
 
 # JetArm Agent 抓取工作流规范

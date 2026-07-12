@@ -62,7 +62,7 @@ def prompt_grasp_point_pixel(
     except Exception as exc:  # pragma: no cover - depends on desktop session.
         raise RuntimeError(f"无法打开抓取点像素配置窗口：{exc}") from exc
 
-    root.title("人工测试模块V2 · 抓取点像素配置")
+    root.title("基于摄像头的机械臂操控 · 抓取点像素配置")
     root.resizable(False, False)
     result: dict[str, tuple[float, float] | None] = {"point": None}
     x_text = tk.StringVar(value=f"{initial_x:g}")
@@ -148,7 +148,7 @@ async def run_manual_pixel_test_v2(args: argparse.Namespace) -> int:
         image_height=args.manual_image_height,
     )
     if point is None:
-        print("已取消人工测试模块V2；未连接机械臂。")
+        print("已取消基于摄像头的机械臂操控；未连接机械臂。")
         return 0
 
     configured_args = argparse.Namespace(**vars(args))
@@ -164,5 +164,5 @@ async def run_manual_pixel_test_v2(args: argparse.Namespace) -> int:
         default_grasp_x=DEFAULT_MANUAL_GRASP_X,
         default_grasp_y=DEFAULT_MANUAL_GRASP_Y,
         camera_vector_version=CAMERA_VECTOR_VERSION,
-        display_name="手动像素闭环测试V2",
+        display_name="基于摄像头的机械臂操控",
     )

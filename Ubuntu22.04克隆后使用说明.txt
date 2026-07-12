@@ -155,7 +155,7 @@ Windows/Python 3.12 相关依赖。Ubuntu 主要使用：
 5.1.1 启动JetArm总控终端
 
 总控终端不会修改现有工作流。按下功能键后，它只会打开新的独立终端，
-并执行Git Pull、机械臂控制run.sh、相机显示run.sh、人工测试模块V2或Agent
+并执行Git Pull、机械臂控制run.sh、相机显示run.sh、基于摄像头的机械臂操控或Agent
 的现有入口。
 
 在项目根目录执行：

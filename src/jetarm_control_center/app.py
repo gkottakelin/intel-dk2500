@@ -127,7 +127,7 @@ class ControlCenterApp:
         ttk.Label(
             outer,
             text=(
-                "资源提示：机械臂控制、人工测试V2和Agent可能争用串口；"
+                "资源提示：机械臂控制、基于摄像头的机械臂操控和Agent可能争用串口；"
                 "相机显示和Agent可能争用相机。总控不会额外打开这些设备。"
             ),
             foreground="#8a5a00",

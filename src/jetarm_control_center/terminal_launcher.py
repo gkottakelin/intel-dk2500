@@ -59,8 +59,8 @@ def default_launch_specs() -> tuple[LaunchSpec, ...]:
         ),
         LaunchSpec(
             key="manual_v2",
-            title="JetArm · 人工测试模块V2",
-            description="启动现有人工像素闭环V2，不改动其工作流",
+            title="JetArm · 基于摄像头的机械臂操控",
+            description="启动现有基于摄像头的人工像素闭环操控，不改动其工作流",
             command=ai_command(" --manual-pixel-test-v2"),
             resource_note="硬件模式会占用机械臂串口",
             emergency_stop=True,

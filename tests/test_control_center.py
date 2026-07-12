@@ -89,6 +89,8 @@ class ControlCenterLauncherTests(unittest.TestCase):
             {spec.key for spec in specs if spec.emergency_stop},
             {"arm_terminal", "manual_v2", "agent"},
         )
+        manual_v2 = next(spec for spec in specs if spec.key == "manual_v2")
+        self.assertEqual(manual_v2.title, "JetArm · 基于摄像头的机械臂操控")
 
     def test_shell_command_changes_to_project_and_keeps_terminal_open(self) -> None:
         command = build_shell_command(PurePosixPath("/tmp/jet arm"), "example --flag")
