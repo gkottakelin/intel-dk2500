@@ -14,6 +14,7 @@ from gemini_camera import (  # noqa: E402
     CameraSettings,
     build_parser,
     map_display_to_depth,
+    map_window_click_to_image_pixel,
     median_depth_at,
     pixel_to_camera_point_mm,
     select_camera_device,
@@ -77,6 +78,30 @@ class GeminiCameraTest(unittest.TestCase):
 
     def test_maps_color_pixel_to_depth_resolution(self):
         self.assertEqual(map_display_to_depth(320, 240, (640, 480), (640, 400)), (320, 200))
+
+    def test_maps_resized_window_click_to_original_rgb_pixel(self):
+        self.assertEqual(
+            map_window_click_to_image_pixel(
+                640, 480, (1280, 960), (640, 480)
+            ),
+            (320, 240),
+        )
+        self.assertEqual(
+            map_window_click_to_image_pixel(
+                1279, 959, (1280, 960), (640, 480)
+            ),
+            (639, 479),
+        )
+        self.assertIsNone(
+            map_window_click_to_image_pixel(
+                1280, 960, (1280, 960), (640, 480)
+            )
+        )
+
+    def test_color_only_viewer_registers_pixel_click_callback(self):
+        source = (APP_ROOT / "gemini_camera.py").read_text(encoding="utf-8")
+        self.assertIn("cv2.setMouseCallback(RGB_WINDOW_NAME, on_mouse)", source)
+        self.assertIn("draw_color_pixel_info(display_color, click)", source)
 
     def test_pixel_to_camera_coordinates(self):
         intrinsics = Intrinsics(640, 400, 500.0, 500.0, 320.0, 200.0)
