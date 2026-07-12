@@ -210,8 +210,14 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
     is_grasp_workflow = looks_like_grasp_workflow_command(text)
     camera_request = required_tool == "get_rgb_camera_frame"
     movement_request = required_tool == "move_jetarm"
+    handshake_request = required_tool == "run_jetarm_handshake"
     allow_web_search = should_allow_web_search(text)
     streamed_call_ids: set[str] = set()
+    preselected_tool_name: str | None = None
+    if handshake_request:
+        preselected_tool_name = "run_jetarm_handshake"
+    elif camera_request or movement_request:
+        preselected_tool_name = "get_rgb_camera_frame"
 
     def print_completed_grasp_step(call: object) -> None:
         result = getattr(call, "result", None)
@@ -229,16 +235,12 @@ async def _send_with_tools(session: ToolCallingSession, text: str) -> str:
         require_any_tool=required_tool is not None,
         required_tool_name=required_tool,
         required_tool_retries=1,
-        preselected_tool_name=(
-            "get_rgb_camera_frame"
-            if camera_request or movement_request
-            else None
-        ),
+        preselected_tool_name=preselected_tool_name,
         preselected_tool_arguments=(
-            {} if camera_request or movement_request else None
+            {} if camera_request or movement_request or handshake_request else None
         ),
-        first_tool_choice="none" if camera_request else "auto",
-        allow_additional_tools=not camera_request,
+        first_tool_choice="none" if camera_request or handshake_request else "auto",
+        allow_additional_tools=not (camera_request or handshake_request),
         on_tool_call=print_completed_grasp_step,
         allow_web_search=allow_web_search,
         local_tools_enabled=not allow_web_search,

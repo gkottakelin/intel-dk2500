@@ -185,6 +185,21 @@ class JetArmMCPService:
             result["grasp_workflow_reset"] = True
         return result
 
+    async def handshake(self) -> dict[str, Any]:
+        result = await self.controller().perform_handshake()
+        result["mcp"] = "run_jetarm_handshake"
+        final_initialize = result.get("final_initialize")
+        if (
+            isinstance(final_initialize, dict)
+            and final_initialize.get("status") == "ok"
+        ):
+            self._grasp_final_phase = False
+            self._gripper_prepared_for_grasp = False
+            self._awaiting_grasp_visual_confirmation = False
+            self._grasp_step_records.clear()
+            result["grasp_workflow_reset"] = True
+        return result
+
     async def stop(self) -> dict[str, Any]:
         result = await self.controller().stop_all()
         result["mcp"] = "stop_jetarm"
@@ -1022,6 +1037,17 @@ def create_mcp_server(service: JetArmMCPService) -> Any:
     )
     async def initialize_jetarm() -> Any:
         return await with_rgb_image(await service.initialize_agent())
+
+    @mcp.tool(
+        description=(
+            "执行JetArm握手动作：先初始化，J6以速度100持续收紧，"
+            "抓取点以5cm/s上移5cm再下移5cm，共循环3次，最后再次初始化。"
+            "该动作不依赖相机。"
+        ),
+        structured_output=False,
+    )
+    async def run_jetarm_handshake() -> Any:
+        return content_result(await service.handshake())
 
     @mcp.tool(description="立即停止JetArm笛卡尔运动、J5和J6。")
     async def stop_jetarm() -> dict[str, Any]:

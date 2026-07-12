@@ -179,6 +179,55 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
             (self.controller.settings.servo_id("J6"), 400, 500),
         )
 
+    async def test_handshake_uses_fixed_j6_and_vertical_motion_sequence(self):
+        self.controller.initialize_for_agent = AsyncMock(
+            side_effect=[
+                {"status": "ok", "action": "agent_initialize", "phase": "initial"},
+                {"status": "ok", "action": "agent_initialize", "phase": "final"},
+            ]
+        )
+        self.controller.move_tcp = AsyncMock(
+            side_effect=[{"status": "ok"} for _ in range(6)]
+        )
+
+        result = await self.controller.perform_handshake()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["cycles_completed"], 3)
+        self.assertEqual(self.controller.initialize_for_agent.await_count, 2)
+        self.assertEqual(
+            [call.args for call in self.controller.move_tcp.await_args_list],
+            [
+                ("up", 5.0, 5.0),
+                ("down", 5.0, 5.0),
+                ("up", 5.0, 5.0),
+                ("down", 5.0, 5.0),
+                ("up", 5.0, 5.0),
+                ("down", 5.0, 5.0),
+            ],
+        )
+        j6_id = self.controller.settings.servo_id("J6")
+        self.assertEqual(
+            self.controller.controller.motor_calls,
+            [(j6_id, 100), (j6_id, 0)],
+        )
+
+    async def test_handshake_failure_still_stops_j6_and_initializes(self):
+        self.controller.initialize_for_agent = AsyncMock(
+            side_effect=[{"status": "ok"}, {"status": "ok"}]
+        )
+        self.controller.move_tcp = AsyncMock(
+            return_value={"status": "error", "error": "limit"}
+        )
+
+        result = await self.controller.perform_handshake()
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("握手第1轮up运动失败", result["motion_error"])
+        self.assertEqual(self.controller.initialize_for_agent.await_count, 2)
+        j6_id = self.controller.settings.servo_id("J6")
+        self.assertEqual(self.controller.controller.motor_calls[-1], (j6_id, 0))
+
     async def test_gripper_release_position_and_pixel_alignment_tool(self):
         release = await self.controller.set_gripper_position(370)
         aligned = await self.controller.move_by_pixel_error(104, 96, 100, 100)
@@ -1245,6 +1294,7 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
                 "control_jetarm_to_target_pixel",
                 "move_jetarm_home",
                 "initialize_jetarm",
+                "run_jetarm_handshake",
                 "stop_jetarm",
                 "get_jetarm_state",
             },
@@ -1284,9 +1334,18 @@ class ArmControlDryRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(looks_like_arm_command("向前移动5厘米"))
         self.assertTrue(looks_like_arm_command("前5"))
         self.assertTrue(looks_like_arm_command("夹紧夹爪"))
+        self.assertTrue(looks_like_arm_command("和我握个手"))
         self.assertFalse(looks_like_arm_command("请介绍一下机械臂的结构"))
         self.assertEqual(required_mcp_tool_for_command("向前移动5厘米"), "move_jetarm")
         self.assertEqual(required_mcp_tool_for_command("前5"), "move_jetarm")
+        self.assertEqual(
+            required_mcp_tool_for_command("请和我握个手"),
+            "run_jetarm_handshake",
+        )
+        self.assertEqual(
+            required_mcp_tool_for_command("handshake"),
+            "run_jetarm_handshake",
+        )
         self.assertEqual(
             required_mcp_tool_for_command("初始化机械臂"),
             "initialize_jetarm",

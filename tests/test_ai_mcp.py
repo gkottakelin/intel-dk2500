@@ -203,6 +203,31 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["motion_command_count"], 1)
         self.assertNotIn("segments", result)
 
+    async def test_mcp_handshake_resets_grasp_state_after_final_initialize(self):
+        controller = self.service.controller()
+        controller.perform_handshake = AsyncMock(
+            return_value={
+                "status": "ok",
+                "action": "handshake",
+                "final_initialize": {"status": "ok"},
+            }
+        )
+        self.service._grasp_final_phase = True
+        self.service._gripper_prepared_for_grasp = True
+        self.service._awaiting_grasp_visual_confirmation = True
+        self.service._grasp_step_records.append({"step": 1})
+
+        result = await self.service.handshake()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["mcp"], "run_jetarm_handshake")
+        self.assertTrue(result["grasp_workflow_reset"])
+        self.assertFalse(self.service._grasp_final_phase)
+        self.assertFalse(self.service._gripper_prepared_for_grasp)
+        self.assertFalse(self.service._awaiting_grasp_visual_confirmation)
+        self.assertEqual(self.service._grasp_step_records, [])
+        controller.perform_handshake.assert_awaited_once_with()
+
     async def test_mcp_service_exposes_grasp_helpers(self):
         release = await self.service.set_gripper_position(370)
         aligned = await self.service.pixel_align(104, 96, 100, 100)
@@ -588,6 +613,25 @@ class MCPServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(session.kwargs["preselected_tool_name"])
         self.assertIsNone(session.kwargs["preselected_tool_arguments"])
+
+    async def test_handshake_preselects_only_the_dedicated_tool(self):
+        class FakeSession:
+            async def ask(self, text, **kwargs):
+                self.text = text
+                self.kwargs = kwargs
+                return SimpleNamespace(text="握手完成", tool_calls=())
+
+        session = FakeSession()
+
+        with redirect_stdout(io.StringIO()):
+            await _send_with_tools(session, "请和我握个手")
+
+        self.assertEqual(
+            session.kwargs["preselected_tool_name"], "run_jetarm_handshake"
+        )
+        self.assertEqual(session.kwargs["preselected_tool_arguments"], {})
+        self.assertEqual(session.kwargs["first_tool_choice"], "none")
+        self.assertFalse(session.kwargs["allow_additional_tools"])
 
     async def test_grasp_step_terminal_record_uses_requested_field_order(self):
         result = {

@@ -33,6 +33,10 @@ CAMERA_VECTOR_VERSIONS = ("v1", "v2")
 DEFAULT_GRIPPER_RELEASE_POSITION = 370
 DEFAULT_GRIPPER_POSITION_RUN_TIME_MS = 500
 AGENT_INITIALIZE_J6_OPEN_POSITION = 400
+HANDSHAKE_J6_GRIP_SPEED = 100
+HANDSHAKE_MOVE_DISTANCE_CM = 5.0
+HANDSHAKE_MOVE_SPEED_CM_S = 5.0
+HANDSHAKE_CYCLES = 3
 J6_STABLE_TOLERANCE_UNITS = 2
 J6_STABLE_DURATION_S = 2.0
 J6_STABLE_POLL_INTERVAL_S = 0.5
@@ -1954,6 +1958,96 @@ class JetArmToolController:
             "j6_target_position": AGENT_INITIALIZE_J6_OPEN_POSITION,
         }
 
+    async def perform_handshake(self) -> dict[str, Any]:
+        """Initialize, grip at speed 100, wave vertically three times, initialize."""
+
+        initial_initialize = await self.initialize_for_agent()
+        if initial_initialize.get("status") != "ok":
+            return {
+                "status": "error",
+                "action": "handshake",
+                "stage": "initial_initialize_failed",
+                "initial_initialize": initial_initialize,
+            }
+
+        j6_id = self.settings.servo_id("J6")
+        movements: list[dict[str, Any]] = []
+        motion_error: str | None = None
+        final_initialize: dict[str, Any] | None = None
+        stop_error: str | None = None
+        try:
+            self.runtime.j6_grip_locked = False
+            self.controller.set_motor_speed(j6_id, HANDSHAKE_J6_GRIP_SPEED)
+            for cycle in range(1, HANDSHAKE_CYCLES + 1):
+                for direction in ("up", "down"):
+                    movement = await self.move_tcp(
+                        direction,
+                        HANDSHAKE_MOVE_DISTANCE_CM,
+                        HANDSHAKE_MOVE_SPEED_CM_S,
+                    )
+                    movement = {**movement, "cycle": cycle, "direction": direction}
+                    movements.append(movement)
+                    if movement.get("status") != "ok":
+                        raise ArmControlError(
+                            f"握手第{cycle}轮{direction}运动失败: "
+                            f"{movement.get('error') or movement.get('message') or '未知原因'}"
+                        )
+        except Exception as exc:
+            motion_error = str(exc)
+        finally:
+            try:
+                self.controller.set_motor_speed(j6_id, 0)
+                self.runtime.j6_grip_locked = False
+            except Exception as exc:
+                stop_error = str(exc)
+            try:
+                final_initialize = await self.initialize_for_agent()
+            except Exception as exc:
+                final_initialize = {
+                    "status": "error",
+                    "action": "agent_initialize",
+                    "error": str(exc),
+                }
+
+        final_ok = (
+            isinstance(final_initialize, dict)
+            and final_initialize.get("status") == "ok"
+        )
+        status = (
+            "ok"
+            if motion_error is None and stop_error is None and final_ok
+            else "error"
+        )
+        return {
+            "status": status,
+            "action": "handshake",
+            "sequence": [
+                "initialize",
+                "j6_grip_speed_100",
+                "up_5cm_down_5cm_x3",
+                "initialize",
+            ],
+            "j6_grip_speed": HANDSHAKE_J6_GRIP_SPEED,
+            "distance_cm_each_direction": HANDSHAKE_MOVE_DISTANCE_CM,
+            "speed_cm_s": HANDSHAKE_MOVE_SPEED_CM_S,
+            "cycles_requested": HANDSHAKE_CYCLES,
+            "cycles_completed": sum(
+                1
+                for cycle in range(1, HANDSHAKE_CYCLES + 1)
+                if sum(1 for move in movements if move.get("cycle") == cycle) == 2
+                and all(
+                    move.get("status") == "ok"
+                    for move in movements
+                    if move.get("cycle") == cycle
+                )
+            ),
+            "movements": movements,
+            "initial_initialize": initial_initialize,
+            "final_initialize": final_initialize,
+            "motion_error": motion_error,
+            "j6_stop_error": stop_error,
+        }
+
     async def stop_all(self) -> dict[str, Any]:
         self.runtime.stop_all()
         return {"status": "ok", "mode": self.config.mode, "action": "stop_all"}
@@ -2286,6 +2380,9 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
     async def initialize(_arguments: Mapping[str, Any]) -> object:
         return await controller.initialize_for_agent()
 
+    async def handshake(_arguments: Mapping[str, Any]) -> object:
+        return await controller.perform_handshake()
+
     async def stop(_arguments: Mapping[str, Any]) -> object:
         return await controller.stop_all()
 
@@ -2524,6 +2621,16 @@ def build_arm_tool_registry(controller: JetArmToolController) -> ToolRegistry:
                 handler=initialize,
             ),
             ToolDefinition(
+                name="run_jetarm_handshake",
+                description=(
+                    "Execute the fixed handshake sequence: initialize, tighten J6 at "
+                    "motor speed 100, move the grasp point up 5 cm then down 5 cm at "
+                    "5 cm/s for three cycles, stop J6, then initialize again."
+                ),
+                parameters={"type": "object", "properties": {}},
+                handler=handshake,
+            ),
+            ToolDefinition(
                 name="stop_jetarm",
                 description="Immediately stop Cartesian motion plus J5 and J6 motor motion.",
                 parameters={"type": "object", "properties": {}},
@@ -2581,6 +2688,9 @@ def looks_like_arm_command(text: str) -> bool:
         "机械臂初始化",
         "初始化jetarm",
         "初始化",
+        "握手",
+        "握个手",
+        "握一下手",
         "机械臂停止",
         "停止机械臂",
         "机械臂状态",
@@ -2596,6 +2706,8 @@ def looks_like_arm_command(text: str) -> bool:
         "movebackward",
         "gripper",
         "gohome",
+        "handshake",
+        "shakehands",
         "stoparm",
     )
     return any(phrase in normalized for phrase in phrases)
@@ -2616,6 +2728,11 @@ def required_mcp_tool_for_command(text: str) -> str | None:
     except ArmControlError:
         pass
     normalized = text.strip().lower().replace(" ", "")
+    if any(
+        phrase in normalized
+        for phrase in ("握手", "握个手", "握一下手", "handshake", "shakehands")
+    ):
+        return "run_jetarm_handshake"
     if normalized in {"初始化", "initialize"} or any(
         phrase in normalized
         for phrase in ("初始化机械臂", "机械臂初始化", "初始化jetarm", "initializejetarm")
@@ -2721,4 +2838,5 @@ ARM_TOOL_SYSTEM_PROMPT = """
 15. 用户要求查看、描述、识别或分析相机画面时，也必须调用get_rgb_camera_frame；只有收到真实图像后才能描述画面。
 16. 需要机械臂参数时调用get_jetarm_state并读取arm_parameters，禁止猜测关节限位、Home、几何尺寸或坐标系。
 17. 用户要求初始化机械臂时调用initialize_jetarm：必须先回Home，再将J6张开到400，并重置抓取闭环。抓取完成阶段必须等待J6反馈稳定后才能回Home；J6未稳定时禁止回Home。
+18. 用户要求“握手”“握个手”或handshake时必须调用run_jetarm_handshake，不得拆解或改写动作。该工具固定执行：初始化；J6以速度100持续收紧；抓取点以5cm/s上移5cm、下移5cm，循环3次；停止J6并再次初始化。握手不调用相机，也不进入抓取闭环。
 """.strip()

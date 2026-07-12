@@ -34,6 +34,11 @@ python3 -m src.jetarm_agent.device_config
 
 用户要求初始化时，Agent 调用 `initialize_jetarm`。该工具严格按“J1-J5 回 Home → J6 张开到 400”执行，并重置当前抓取闭环。
 
+用户要求“握手”“握个手”或 `handshake` 时，Agent 必须直接调用
+`run_jetarm_handshake`，不得自行拆解动作，也不得调用相机。该工具固定执行：先初始化；
+J6 以速度 100 持续收紧；抓取点以 5 cm/s 上移 5 cm、下移 5 cm，循环 3 次；
+随后停止 J6 并再次初始化。中途运动失败时仍会停止 J6，并尝试执行最终初始化。
+
 1. Agent 判断用户自然语言是否为抓取任务；不是抓取任务时不得调用抓取控制工具。
 2. 抓取任务先调用 `get_rgb_camera_frame`。
 3. Agent 在最新画面中找到用户指定物品，然后把当前画面在数据层视为 3×3：`row=0`为最上方、`column=0`为最左侧，只选择物品中心所在分块并调用一次 `zoom_rgb_target_tile`。
