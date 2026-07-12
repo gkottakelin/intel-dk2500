@@ -344,6 +344,27 @@ def draw_click_info(
     cv2.putText(color, text, (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
 
 
+def draw_pixel_info(color: np.ndarray, click: ClickState) -> None:
+    """Draw the selected pixel on the RGB-only view without using depth."""
+
+    import cv2
+
+    if click.u is None or click.v is None:
+        return
+    if not (0 <= click.u < color.shape[1] and 0 <= click.v < color.shape[0]):
+        return
+    cv2.circle(color, (click.u, click.v), 6, (0, 255, 255), 2)
+    cv2.putText(
+        color,
+        f"pixel: ({click.u}, {click.v})",
+        (20, 34),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (0, 255, 255),
+        2,
+    )
+
+
 def save_snapshot(color: np.ndarray, depth_vis: np.ndarray, depth_mm: np.ndarray, output_dir: Path) -> None:
     import cv2
 
@@ -370,6 +391,17 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
 
     import cv2
 
+    click = ClickState()
+    last_color_size = [0, 0]
+
+    def on_mouse(event: int, x: int, y: int, _flags: int, _userdata: Any) -> None:
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        width, height = last_color_size
+        if 0 <= x < width and 0 <= y < height:
+            click.u, click.v = x, y
+            print(f"点击像素坐标: X={x}, Y={y}")
+
     with OrbbecSession(
         device.selection_key,
         library_path=settings.sdk_library,
@@ -377,7 +409,11 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
     ) as session:
         print(f"已连接: {device.label}")
         cv2.namedWindow(RGB_WINDOW_NAME, cv2.WINDOW_NORMAL)
-        print("运行中：仅显示RGB彩色图；按 s 保存RGB图像；按 q 或 ESC 退出。")
+        cv2.setMouseCallback(RGB_WINDOW_NAME, on_mouse)
+        print(
+            "运行中：仅显示RGB彩色图；左键点击显示像素坐标；"
+            "按 s 保存RGB图像；按 q 或 ESC 退出。"
+        )
 
         unsupported_format_reported: set[int] = set()
         last_color: Optional[np.ndarray] = None
@@ -395,7 +431,10 @@ def run_color_viewer(device: CameraDeviceInfo, settings: CameraSettings) -> None
                 if settings.mirror_color:
                     color = cv2.flip(color, 1)
 
-                cv2.imshow(RGB_WINDOW_NAME, color)
+                last_color_size[:] = [color.shape[1], color.shape[0]]
+                display_color = color.copy()
+                draw_pixel_info(display_color, click)
+                cv2.imshow(RGB_WINDOW_NAME, display_color)
                 last_color = color
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), ESC_KEY):

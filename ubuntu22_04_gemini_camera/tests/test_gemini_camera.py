@@ -47,6 +47,13 @@ class GeminiCameraTest(unittest.TestCase):
         script = (APP_ROOT / "run.sh").read_text(encoding="utf-8")
         self.assertIn('gemini_camera.py --color-only "$@"', script)
 
+    def test_color_only_viewer_keeps_single_rgb_window_with_click_callback(self):
+        source = (APP_ROOT / "gemini_camera.py").read_text(encoding="utf-8")
+        self.assertIn("cv2.setMouseCallback(RGB_WINDOW_NAME, on_mouse)", source)
+        self.assertIn("draw_pixel_info(display_color, click)", source)
+        self.assertIn("session.wait_for_color_frame", source)
+        self.assertNotIn("np.hstack((display_color, depth_display))", source[source.index("def run_color_viewer"):source.index("def run_viewer")])
+
     def test_rejects_even_click_window(self):
         with tempfile.TemporaryDirectory() as directory:
             data = json.loads((APP_ROOT / "config" / "camera.json").read_text(encoding="utf-8"))
